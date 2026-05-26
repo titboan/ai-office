@@ -1,0 +1,45 @@
+# Секреты — никогда не в образ
+.env
+*.env
+!.env.example
+
+# Git
+.git
+.gitignore
+
+# Python-мусор
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Виртуальные окружения
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.suo
+*.swp
+
+# Логи
+*.log
+logs/
+
+# Тесты и coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Windows-скрипты (не нужны в контейнере)
+start_all.bat
+
+# OS
+.DS_Store
+Thumbs.db
