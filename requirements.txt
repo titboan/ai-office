@@ -19,3 +19,6 @@ redis==5.0.1                       # включает redis.asyncio; Railway Red
 
 # ── Веб-поиск (Каспер) ────────────────────────────────────────────────────────
 tavily-python==0.7.24              # AsyncTavilyClient для нативного async поиска
+
+# ── Notion (setup_notion.py + будущая интеграция агентов) ─────────────────────
+requests==2.32.3                   # HTTP-клиент для setup_notion.py (sync, stdlib-style)
