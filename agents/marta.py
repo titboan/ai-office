@@ -1,30 +1,59 @@
 from __future__ import annotations
 
+import re
+import traceback
+
+from loguru import logger
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
 from .base_agent import BaseAgent
 
+# ── Парсинг блока делегирования из ответа Клода ──────────────────────────────
+# Клод должен вставить такой блок когда хочет делегировать задачу:
+#
+#   ##DELEGATE##
+#   agent: kasper
+#   task: исследуй последние новости о Python 3.13
+#   ##END##
+#
+_DELEGATE_RE = re.compile(
+    r"##DELEGATE##\s*agent:\s*(\w+)\s*task:\s*(.+?)\s*##END##",
+    re.DOTALL | re.IGNORECASE,
+)
 
-MARTA_SYSTEM = """Ты — Марта, главный координатор ИИ-офиса.
 
-Твоя роль:
-- Принимать задачи от пользователей и руководства
-- Анализировать задачу и определять, кому из команды её делегировать
-- Следить за ходом выполнения и сводить результаты
+MARTA_SYSTEM = """Ты — Марта, координатор ИИ-офиса.
 
 Команда офиса:
-• Кевин (Kevin) — разработчик, пишет код, решает технические задачи
-• Каспер (Kasper) — исследователь, ищет информацию, изучает темы
-• Питер (Peter) — аналитик, анализирует данные и строит выводы
-• Элина (Elina) — копирайтер, создаёт тексты и контент
-• Алекс (Alex) — планировщик, составляет планы и стратегии
+• kasper — исследователь: поиск информации, анализ трендов, факты
+• kevin  — разработчик: код, архитектура, технические задачи
+• peter  — аналитик: данные, метрики, бизнес-анализ, SWOT
+• elina  — копирайтер: тексты, посты, email, контент
+• alex   — планировщик: стратегия, roadmap, OKR, декомпозиция
 
-Отвечай чётко и структурированно. При делегировании используй формат:
-→ [Имя агента]: [что нужно сделать]
+Твои правила:
+1. Если задача требует специализированного выполнения — делегируй нужному агенту.
+2. Если можешь ответить сама (приветствие, общий вопрос, координация) — отвечай сама.
+3. При делегировании ОБЯЗАТЕЛЬНО добавь в конец ответа блок точно в таком формате:
 
-Общайся по-русски, профессионально, но дружелюбно."""
+##DELEGATE##
+agent: <имя агента строчными буквами: kasper/kevin/peter/elina/alex>
+task: <конкретное описание задачи для агента>
+##END##
+
+Пример правильного ответа при делегировании:
+---
+Отличный вопрос! Это задача для Каспера — он найдёт актуальную информацию.
+
+##DELEGATE##
+agent: kasper
+task: исследуй последние изменения в Python 3.13, включая новые фичи и breaking changes
+##END##
+---
+
+Общайся по-русски, профессионально и дружелюбно."""
 
 
 class MartaAgent(BaseAgent):
@@ -35,24 +64,178 @@ class MartaAgent(BaseAgent):
 
     def __init__(self) -> None:
         super().__init__(config.MARTA_BOT_TOKEN)
+        # Пул агентов-исполнителей — создаётся лениво при первом делегировании
+        self._agent_pool: dict[str, BaseAgent] = {}
+
+    # ------------------------------------------------------------------ #
+    #  Реестр агентов-исполнителей                                         #
+    # ------------------------------------------------------------------ #
+
+    def _get_agent(self, key: str) -> BaseAgent | None:
+        """Вернуть агента по ключу. Создаёт экземпляр при первом обращении."""
+        if key not in self._agent_pool:
+            # Импорт здесь, чтобы избежать циклических зависимостей на уровне модуля
+            from .kevin  import KevinAgent
+            from .kasper import KasperAgent
+            from .peter  import PeterAgent
+            from .elina  import ElinaAgent
+            from .alex   import AlexAgent
+
+            registry: dict[str, type[BaseAgent]] = {
+                "kevin":  KevinAgent,
+                "kasper": KasperAgent,
+                "peter":  PeterAgent,
+                "elina":  ElinaAgent,
+                "alex":   AlexAgent,
+            }
+            agent_cls = registry.get(key)
+            if agent_cls is None:
+                logger.warning(f"[Марта] Неизвестный агент для делегирования: {key!r}")
+                return None
+            self._agent_pool[key] = agent_cls()
+            logger.info(f"[Марта] Агент {key!r} создан в пуле делегирования")
+
+        return self._agent_pool[key]
+
+    # ------------------------------------------------------------------ #
+    #  Парсинг ответа Клода                                               #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _parse_delegation(text: str) -> tuple[str, str] | None:
+        """Извлечь (agent_key, subtask) из ответа Клода. None если блока нет."""
+        m = _DELEGATE_RE.search(text)
+        if not m:
+            return None
+        return m.group(1).strip().lower(), m.group(2).strip()
+
+    @staticmethod
+    def _strip_delegate_block(text: str) -> str:
+        """Убрать блок ##DELEGATE## из текста для отправки пользователю."""
+        return _DELEGATE_RE.sub("", text).strip()
+
+    # ------------------------------------------------------------------ #
+    #  Telegram — обработчик сообщений (переопределяем BaseAgent)          #
+    # ------------------------------------------------------------------ #
+
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.message or not update.message.text:
+            return
+
+        chat_id   = update.effective_chat.id
+        user_text = update.message.text
+        user_name = (
+            update.effective_user.username
+            or update.effective_user.first_name
+            or "unknown"
+        )
+        logger.info(f"[Марта] Сообщение от @{user_name} (chat={chat_id}): {user_text!r}")
+
+        try:
+            await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+
+            # 1. Марта анализирует задачу → получаем её ответ с возможным DELEGATE-блоком
+            marta_response = await self.think(user_text, chat_id)
+            delegation = self._parse_delegation(marta_response)
+
+            if delegation is None:
+                # ── Марта отвечает сама ──────────────────────────────────
+                logger.info(f"[Марта] Отвечает самостоятельно")
+                await update.message.reply_text(marta_response)
+                await self.post_to_office(marta_response)
+                return
+
+            # ── Делегирование ────────────────────────────────────────────
+            agent_key, subtask = delegation
+
+            # Преамбула Марты (без DELEGATE-блока) → пользователю
+            preamble = self._strip_delegate_block(marta_response)
+            if preamble:
+                await update.message.reply_text(preamble)
+
+            # Находим агента
+            agent = self._get_agent(agent_key)
+            if agent is None:
+                await update.message.reply_text(
+                    f"⚠️ Не могу найти агента *{agent_key}* — отвечу сама.\n\n{preamble}",
+                    parse_mode="Markdown",
+                )
+                return
+
+            # Уведомляем пользователя что агент взял задачу
+            await update.message.reply_text(
+                f"⏳ {agent.emoji} *{agent.name}* принял задачу и работает…",
+                parse_mode="Markdown",
+            )
+            await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+            logger.info(f"[Марта] Делегирую → {agent.name}: {subtask!r}")
+
+            # 2. Вызываем агента — он делает работу и возвращает результат
+            result = await agent.handle_task(subtask, from_agent="Марты")
+            logger.info(f"[Марта] {agent.name} вернул результат ({len(result)} символов)")
+
+            # 3. Отправляем результат пользователю
+            header = f"📬 *{agent.emoji} {agent.name}* выполнил задачу:\n\n"
+            # Telegram ограничение 4096 символов — разбиваем если нужно
+            full_message = header + result
+            if len(full_message) <= 4096:
+                await update.message.reply_text(full_message, parse_mode="Markdown")
+            else:
+                await update.message.reply_text(header, parse_mode="Markdown")
+                # Режем по 4000 с запасом на Markdown
+                for chunk in [result[i:i+4000] for i in range(0, len(result), 4000)]:
+                    await update.message.reply_text(chunk)
+
+        except Exception as e:
+            logger.error(f"[Марта] Ошибка: {e}\n{traceback.format_exc()}")
+            try:
+                await update.message.reply_text("⚠️ Произошла внутренняя ошибка. Попробуй ещё раз.")
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------ #
+    #  handle_task — для вызова Марты из других агентов                   #
+    # ------------------------------------------------------------------ #
 
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
-        answer = await self.think(
-            f"Задача от {from_agent}: {task}\n\nПроанализируй и делегируй команде.",
+        """Марта анализирует задачу, при необходимости делегирует и возвращает итог."""
+        logger.info(f"[Марта] Задача от {from_agent}: {task!r}")
+
+        marta_response = await self.think(
+            f"Задача от {from_agent}: {task}",
             chat_id=0,
         )
-        await self.post_to_office(f"📋 Новая задача получена. {answer}")
-        return answer
+        delegation = self._parse_delegation(marta_response)
+
+        if delegation:
+            agent_key, subtask = delegation
+            agent = self._get_agent(agent_key)
+            if agent:
+                logger.info(f"[Марта] Делегирую (handle_task) → {agent.name}")
+                result = await agent.handle_task(subtask, from_agent="Марты")
+                await self.post_to_office(f"📋 Делегировано {agent.name}: {subtask[:100]}")
+                return result
+
+        # Fallback: Марта отвечает сама
+        clean = self._strip_delegate_block(marta_response)
+        await self.post_to_office(f"📋 {clean[:200]}")
+        return clean
+
+    # ------------------------------------------------------------------ #
+    #  Команды                                                             #
+    # ------------------------------------------------------------------ #
 
     async def cmd_delegate(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Команда /delegate — явное делегирование задачи команде."""
+        """/delegate <задача> — явная передача задачи команде."""
         task = " ".join(context.args) if context.args else ""
         if not task:
             await update.message.reply_text("Использование: /delegate <описание задачи>")
             return
 
-        result = await self.handle_task(task, from_agent="менеджера")
-        await update.message.reply_text(f"✅ Задача делегирована:\n\n{result}")
+        await update.message.reply_text("🔄 Анализирую задачу и делегирую…")
+        # Роутим через handle_message-логику повторно использовать весь цикл
+        result = await self.handle_task(task, from_agent="команды /delegate")
+        await update.message.reply_text(f"✅ Готово:\n\n{result}")
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("delegate", self.cmd_delegate))
