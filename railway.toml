@@ -1,14 +1,10 @@
 # railway.toml
-# Один файл — шесть сервисов в Railway Dashboard.
-# Каждый сервис получает переменную AGENT_NAME со своим значением.
 #
-# Сервисы:
-#   marta  | AGENT_NAME=marta
-#   kevin  | AGENT_NAME=kevin
-#   kasper | AGENT_NAME=kasper
-#   peter  | AGENT_NAME=peter
-#   elina  | AGENT_NAME=elina
-#   alex   | AGENT_NAME=alex
+# Вариант A (рекомендуется): один сервис — все 6 агентов в одном процессе.
+#   AGENT_NAME не задаётся — main.py запускает всех через asyncio.
+#
+# Вариант B: 6 отдельных сервисов, каждый с AGENT_NAME=<имя>.
+#   Преимущество: изолированные логи и рестарты.
 
 [build]
 builder        = "DOCKERFILE"
@@ -16,6 +12,5 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 # Polling-бот не поднимает HTTP — healthcheck отключён намеренно.
-# Railway следит только за тем, что процесс жив (exit code != 0 → рестарт).
 restartPolicyType       = "ON_FAILURE"
 restartPolicyMaxRetries = 5

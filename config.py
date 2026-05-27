@@ -37,14 +37,9 @@ class Config:
 
     @classmethod
     def validate(cls) -> None:
-        required = [
-            ("ANTHROPIC_API_KEY", cls.ANTHROPIC_API_KEY),
-            ("MARTA_BOT_TOKEN", cls.MARTA_BOT_TOKEN),
-            ("OFFICE_GROUP_ID", cls.OFFICE_GROUP_ID),
-        ]
-        missing = [name for name, val in required if not val]
-        if missing:
-            raise ValueError(f"Отсутствуют обязательные переменные: {', '.join(missing)}")
+        # Единственная переменная, без которой не работает ни один агент
+        if not cls.ANTHROPIC_API_KEY:
+            raise ValueError("ANTHROPIC_API_KEY не задан — без него агенты не смогут думать")
 
 
 config = Config()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import traceback
 from abc import ABC, abstractmethod
 from typing import Optional
@@ -178,6 +179,42 @@ class BaseAgent(ABC):
 
     def _register_extra_handlers(self) -> None:
         """Переопределить в потомке для регистрации дополнительных команд."""
+
+    # ------------------------------------------------------------------ #
+    #  Async-запуск (для многоагентного режима в одном event loop)       #
+    # ------------------------------------------------------------------ #
+
+    async def start_polling_async(self) -> None:
+        """Инициализировать и запустить polling без блокировки event loop.
+
+        Используется в main.py когда все агенты запускаются через asyncio.gather().
+        Порядок вызовов по документации PTB 22.x:
+          1. app.initialize()       — создаёт HTTP-сессию бота
+          2. app.start()            — запускает update processor
+          3. app.updater.start_polling() — запускает фоновый polling-цикл (non-blocking)
+        """
+        app = self.build_app()
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling(drop_pending_updates=True)
+        logger.info(f"[{self.name}] Polling активен (async mode)")
+
+    async def stop_async(self) -> None:
+        """Graceful shutdown: остановить polling и закрыть HTTP-сессию."""
+        if not self.app:
+            return
+        async with contextlib.AsyncExitStack():
+            with contextlib.suppress(Exception):
+                await self.app.updater.stop()
+            with contextlib.suppress(Exception):
+                await self.app.stop()
+            with contextlib.suppress(Exception):
+                await self.app.shutdown()
+        logger.info(f"[{self.name}] Остановлен")
+
+    # ------------------------------------------------------------------ #
+    #  Синхронный запуск (один агент — один процесс)                     #
+    # ------------------------------------------------------------------ #
 
     def run_polling(self) -> None:
         """Запустить бота в режиме long-polling (локальная разработка).
