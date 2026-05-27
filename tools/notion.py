@@ -154,42 +154,57 @@ async def save_research(
 ) -> str | None:
     """Сохранить результат исследования в NOTION_RESEARCH_DB."""
 
-    # ── Диагностический лог — видим ровно то, что читается в момент вызова ──────
-    tok_env    = os.getenv("NOTION_TOKEN", "")            # прямо из os.environ
-    db_env     = os.getenv("NOTION_RESEARCH_DB", "")      # прямо из os.environ
-    tok_config = config.NOTION_TOKEN                       # через config (import-time)
-    db_config  = config.NOTION_RESEARCH_DB                 # через config (import-time)
+    # ════════════════════════════════════════════════════════════════
+    #  МАКСИМАЛЬНАЯ ДИАГНОСТИКА — каждый шаг залогирован отдельно
+    # ════════════════════════════════════════════════════════════════
 
-    logger.info(
-        f"[notion] save_research | title={title[:60]!r} | "
-        f"content_len={len(content)} | agent={agent!r}"
-    )
-    logger.info(
-        f"[notion] NOTION_TOKEN     present: os.getenv={bool(tok_env)} | "
-        f"config={bool(tok_config)} | "
-        f"match={tok_env == tok_config}"
-    )
-    logger.info(
-        f"[notion] NOTION_RESEARCH_DB: os.getenv={db_env[:8] + '…' if db_env else 'ПУСТО'!r} | "
-        f"config={db_config[:8] + '…' if db_config else 'ПУСТО'!r} | "
-        f"match={db_env == db_config}"
-    )
+    logger.info("[notion] ── save_research START ──────────────────────────")
 
-    # Используем os.getenv() — актуальное значение, не замороженное
-    db = db_env
-    if not db:
+    # ── Шаг 1: читаем переменные окружения ───────────────────────────────────
+    try:
+        token = os.getenv("NOTION_TOKEN", "").strip()
+        db_id = os.getenv("NOTION_RESEARCH_DB", "").strip()
+
+        # Полный список ВСЕХ Notion-переменных которые видит процесс
+        all_notion_vars = {k: v for k, v in os.environ.items() if "NOTION" in k}
+
+        logger.info(f"[notion] token len={len(token)} | db_id len={len(db_id)}")
+        logger.info(f"[notion] token[:12]={token[:12]!r} | db_id[:12]={db_id[:12]!r}")
+        logger.info(f"[notion] все NOTION_* переменные в os.environ: {list(all_notion_vars.keys())}")
+
+        # Сравнение: os.getenv vs config (import-time)
+        tok_config = config.NOTION_TOKEN
+        db_config  = config.NOTION_RESEARCH_DB
+        logger.info(
+            f"[notion] config.NOTION_TOKEN len={len(tok_config)} | "
+            f"match os.getenv={token == tok_config}"
+        )
+        logger.info(
+            f"[notion] config.NOTION_RESEARCH_DB len={len(db_config)} | "
+            f"match os.getenv={db_id == db_config}"
+        )
+    except Exception as e:
+        logger.error(f"[notion] ШАГ 1 УПАЛ: {type(e).__name__}: {e}")
+        token, db_id = "", ""
+
+    # ── Шаг 2: guard-проверки ────────────────────────────────────────────────
+    if not token:
         logger.warning(
-            "[notion] save_research: NOTION_RESEARCH_DB не задан.\n"
-            "  Проверь: Railway → Variables → NOTION_RESEARCH_DB\n"
-            "  Имя переменной должно быть ровно: NOTION_RESEARCH_DB (без пробелов)"
+            "[notion] NOTION_TOKEN пустой — пропускаем.\n"
+            "  Railway: Variables → NOTION_TOKEN (точное имя, без пробелов)"
         )
         return None
-    if not _tok():
+    if not db_id:
         logger.warning(
-            "[notion] save_research: NOTION_TOKEN не задан.\n"
-            "  Проверь: Railway → Variables → NOTION_TOKEN"
+            "[notion] NOTION_RESEARCH_DB пустой — пропускаем.\n"
+            "  Railway: Variables → NOTION_RESEARCH_DB (точное имя, без пробелов)"
         )
         return None
+
+    # ── Шаг 3: прямой HTTP запрос к Notion API ───────────────────────────────
+    logger.info(f"[notion] Шаг 3: POST https://api.notion.com/v1/pages")
+    logger.info(f"[notion] Authorization: Bearer {token[:8]}…{token[-4:]}")
+    logger.info(f"[notion] parent.database_id: {db_id}")
 
     props: dict[str, Any] = {
         "Name":    {"title":     _text_blocks(title[:200], max_total=200)},
@@ -198,16 +213,64 @@ async def save_research(
         "Agent":   {"select":    {"name": agent}},
         "Date":    {"date":      {"start": _today()}},
     }
-    logger.debug(f"[notion] Content blocks count: {len(props['Content']['rich_text'])}")
+    payload = {
+        "parent":     {"database_id": db_id},
+        "properties": props,
+    }
+    req_headers = {
+        "Authorization": f"Bearer {token}",
+        "Notion-Version": _API_VERSION,
+        "Content-Type": "application/json",
+    }
 
-    result = await _create_page(db, props)
-    if result:
-        url = page_url(result["id"])
-        logger.info(f"[notion] ✅ Research сохранён ({len(content)} симв.): {url}")
-        return url
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.notion.com/v1/pages",
+                headers=req_headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                status = resp.status
+                body   = await resp.text()
 
-    logger.warning("[notion] save_research: _create_page вернул None")
-    return None
+                # Логируем статус и первые 500 символов тела
+                logger.info(f"[notion] response status={status} body={body[:500]!r}")
+
+                if status == 200:
+                    data = json.loads(body)
+                    page_id = data.get("id", "?")
+                    url = page_url(page_id)
+                    logger.info(f"[notion] ✅ Research сохранён: {url}")
+                    logger.info("[notion] ── save_research END (success) ──────────────")
+                    return url
+
+                # Разбираем ошибку
+                try:
+                    err     = json.loads(body)
+                    code    = err.get("code", "?")
+                    message = err.get("message", body[:300])
+                except Exception:
+                    code, message = "parse_error", body[:300]
+
+                logger.error(
+                    f"[notion] HTTP {status} | code={code!r} | message={message!r}"
+                )
+                logger.info("[notion] ── save_research END (api error) ────────────")
+                return None
+
+    except aiohttp.ClientConnectorError as e:
+        logger.error(f"[notion] exception: {type(e).__name__}: {e}")
+        logger.info("[notion] ── save_research END (connection error) ──────")
+        return None
+    except (asyncio.TimeoutError, aiohttp.ServerTimeoutError) as e:
+        logger.error(f"[notion] exception: {type(e).__name__}: {e}")
+        logger.info("[notion] ── save_research END (timeout) ──────────────")
+        return None
+    except Exception as e:
+        logger.error(f"[notion] exception: {type(e).__name__}: {e}")
+        logger.info("[notion] ── save_research END (unexpected error) ──────")
+        return None
 
 
 async def save_content(
