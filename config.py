@@ -27,6 +27,9 @@ class Config:
     # Общая группа офиса
     OFFICE_GROUP_ID: int = int(os.getenv("OFFICE_GROUP_ID", "0"))
 
+    # Веб-поиск (Каспер)
+    TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
+
     # Память агентов (Redis)
     # Если не задан — агенты хранят историю в памяти процесса (fallback dict)
     REDIS_URL: str = os.getenv("REDIS_URL", "")
