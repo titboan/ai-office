@@ -142,7 +142,7 @@ class MartaAgent(BaseAgent):
                 # ── Марта отвечает сама ──────────────────────────────────
                 logger.info(f"[Марта] Отвечает самостоятельно")
                 await update.message.reply_text(marta_response)
-                await self.post_to_office(marta_response)
+                await self.post_to_group(marta_response)
                 return
 
             # ── Делегирование ────────────────────────────────────────────
@@ -162,16 +162,18 @@ class MartaAgent(BaseAgent):
                 )
                 return
 
-            # Уведомляем пользователя что агент взял задачу
+            # Уведомляем пользователя и группу о делегировании
+            short_task = (subtask[:80] + "…") if len(subtask) > 80 else subtask
             await update.message.reply_text(
                 f"⏳ {agent.emoji} *{agent.name}* принял задачу и работает…",
                 parse_mode="Markdown",
             )
+            await self.post_to_group(f"🔀 Делегирую → {agent.name}: {short_task}")
             await context.bot.send_chat_action(chat_id=chat_id, action="typing")
             logger.info(f"[Марта] Делегирую → {agent.name}: {subtask!r}")
 
-            # 2. Вызываем агента — он делает работу и возвращает результат
-            result = await agent.handle_task(subtask, from_agent="Марты")
+            # 2. Вызываем агента через run_task() — он уведомит группу сам
+            result = await agent.run_task(subtask, from_agent="Марты")
             logger.info(f"[Марта] {agent.name} вернул результат ({len(result)} символов)")
 
             # 3. Отправляем результат пользователю
@@ -211,14 +213,15 @@ class MartaAgent(BaseAgent):
             agent_key, subtask = delegation
             agent = self._get_agent(agent_key)
             if agent:
+                short_task = (subtask[:80] + "…") if len(subtask) > 80 else subtask
                 logger.info(f"[Марта] Делегирую (handle_task) → {agent.name}")
-                result = await agent.handle_task(subtask, from_agent="Марты")
-                await self.post_to_office(f"📋 Делегировано {agent.name}: {subtask[:100]}")
+                await self.post_to_group(f"🔀 Делегирую → {agent.name}: {short_task}")
+                result = await agent.run_task(subtask, from_agent="Марты")
                 return result
 
         # Fallback: Марта отвечает сама
         clean = self._strip_delegate_block(marta_response)
-        await self.post_to_office(f"📋 {clean[:200]}")
+        await self.post_to_group(f"📋 {clean[:200]}")
         return clean
 
     # ------------------------------------------------------------------ #

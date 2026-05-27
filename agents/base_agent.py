@@ -9,7 +9,7 @@ from typing import Optional
 import anthropic
 import redis.asyncio as aioredis
 from loguru import logger
-from telegram import Update
+from telegram import Bot, Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -177,21 +177,44 @@ class BaseAgent(ABC):
             return f"⚠️ Claude API вернул ошибку {e.status_code}: {e.message}"
 
     # ------------------------------------------------------------------ #
-    #  Telegram — отправка в офисный чат                                  #
+    #  Telegram — отправка в офисную группу                               #
     # ------------------------------------------------------------------ #
 
-    async def post_to_office(self, text: str) -> None:
-        """Написать сообщение в общую группу офиса."""
-        if not self.app or not config.OFFICE_GROUP_ID:
+    async def post_to_group(self, text: str) -> None:
+        """Написать в общую группу офиса от имени агента.
+
+        Работает в двух режимах:
+        - self.app задан (бот запущен) → переиспользует HTTP-сессию app.bot
+        - self.app = None (worker-режим при делегировании) → создаёт Bot на лету
+
+        Формат: 👤 [Имя агента]: текст
+        Если OFFICE_GROUP_ID не задан — пропускает без ошибки.
+        """
+        if not config.OFFICE_GROUP_ID or not self.bot_token:
             return
+
+        message = f"👤 [{self.name}]: {text}"
+
         try:
-            await self.app.bot.send_message(
-                chat_id=config.OFFICE_GROUP_ID,
-                text=f"{self.emoji} *{self.name}*: {text}",
-                parse_mode="Markdown",
-            )
+            if self.app:
+                # Основной режим: переиспользуем сессию работающего бота
+                await self.app.bot.send_message(
+                    chat_id=config.OFFICE_GROUP_ID,
+                    text=message,
+                )
+            else:
+                # Worker-режим: временный Bot без запущенного Application
+                async with Bot(token=self.bot_token) as bot:
+                    await bot.send_message(
+                        chat_id=config.OFFICE_GROUP_ID,
+                        text=message,
+                    )
         except Exception as e:
-            logger.error(f"[{self.name}] Ошибка отправки в группу: {e}")
+            logger.warning(f"[{self.name}] Ошибка отправки в группу: {e}")
+
+    # Обратная совместимость — старые вызовы post_to_office() продолжают работать
+    async def post_to_office(self, text: str) -> None:
+        await self.post_to_group(text)
 
     # ------------------------------------------------------------------ #
     #  Telegram — обработчики                                             #
@@ -227,7 +250,7 @@ class BaseAgent(ABC):
             await update.message.reply_text(answer)
             logger.info(f"[{self.name}] Ответ отправлен ({len(answer)} символов)")
 
-            await self.post_to_office(answer)
+            await self.post_to_group(answer)
 
         except Exception as e:
             logger.error(f"[{self.name}] Ошибка в handle_message: {e}\n{traceback.format_exc()}")
@@ -237,6 +260,29 @@ class BaseAgent(ABC):
     @abstractmethod
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
         """Выполнить задачу, делегированную от другого агента."""
+
+    async def run_task(self, task: str, from_agent: str = "user") -> str:
+        """Публичная обёртка над handle_task() с уведомлениями в группу.
+
+        Вызывается из Марты (и агент-к-агенту) вместо handle_task() напрямую.
+        Порядок событий в группе:
+          1. "📥 [Агент]: Принял задачу от X: ..."
+          2. handle_task() выполняется (может постить своё сообщение)
+          3. "✅ [Агент]: Задача выполнена: ..."
+        """
+        short_task = (task[:80] + "…") if len(task) > 80 else task
+        await self.post_to_group(f"📥 Принял задачу от {from_agent}: {short_task}")
+        logger.info(f"[{self.name}] run_task от {from_agent}: {short_task!r}")
+
+        try:
+            result = await self.handle_task(task, from_agent)
+        except Exception as e:
+            logger.error(f"[{self.name}] Ошибка в handle_task: {e}")
+            result = f"⚠️ Не удалось выполнить задачу: {e}"
+
+        short_result = (result[:200] + "…") if len(result) > 200 else result
+        await self.post_to_group(f"✅ Задача выполнена: {short_result}")
+        return result
 
     # ------------------------------------------------------------------ #
     #  Запуск                                                             #
