@@ -8,6 +8,7 @@ from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
+from tools import create_project
 from .base_agent import BaseAgent
 
 # ── Парсинг блока делегирования из ответа Клода ──────────────────────────────
@@ -22,6 +23,31 @@ _DELEGATE_RE = re.compile(
     r"##DELEGATE##\s*agent:\s*(\w+)\s*task:\s*(.+?)\s*##END##",
     re.DOTALL | re.IGNORECASE,
 )
+
+# ── Детектирование запроса на создание проекта ────────────────────────────────
+# Срабатывает когда пользователь явно просит создать/запустить/открыть проект
+_PROJECT_TRIGGER_RE = re.compile(
+    r"(создай|создать|новый|запусти|запустить|открой|открыть|начни|начать|стартуй|стартовать)"
+    r"\s+проект",
+    re.IGNORECASE,
+)
+
+
+def _extract_project_name(text: str) -> str:
+    """Извлечь название проекта из текста запроса.
+
+    Ищет паттерны: «проект X», "проект: X", "проект «X»".
+    Если не найдено — берёт первые 80 символов запроса.
+    """
+    m = re.search(
+        r'проект[:\s«"\']+([^»"\'\n]{3,100})',
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        return m.group(1).strip().rstrip(".!?,;")
+    # Fallback: весь запрос, обрезанный
+    return text.strip()[:80].rstrip(".!?,;")
 
 
 MARTA_SYSTEM = """Ты — Марта, координатор ИИ-офиса.
@@ -143,6 +169,21 @@ class MartaAgent(BaseAgent):
                 logger.info(f"[Марта] Отвечает самостоятельно")
                 await update.message.reply_text(marta_response)
                 await self.post_to_group(marta_response)
+
+                # Если пользователь попросил создать проект — сохраняем в Notion
+                if _PROJECT_TRIGGER_RE.search(user_text):
+                    project_name = _extract_project_name(user_text)
+                    logger.info(f"[Марта] Детектирован запрос на проект: {project_name!r}")
+                    notion_url = await create_project(
+                        name=project_name,
+                        description=marta_response[:500],
+                    )
+                    if notion_url:
+                        await update.message.reply_text(
+                            f"📁 *Проект «{project_name}» создан в Notion:*\n{notion_url}",
+                            parse_mode="Markdown",
+                        )
+                        logger.info(f"[Марта] Проект сохранён в Notion: {notion_url}")
                 return
 
             # ── Делегирование ────────────────────────────────────────────
@@ -222,6 +263,19 @@ class MartaAgent(BaseAgent):
         # Fallback: Марта отвечает сама
         clean = self._strip_delegate_block(marta_response)
         await self.post_to_group(f"📋 {clean[:200]}")
+
+        # Если задача — создание проекта, сохраняем в Notion
+        if _PROJECT_TRIGGER_RE.search(task):
+            project_name = _extract_project_name(task)
+            logger.info(f"[Марта] Детектирован проект в handle_task: {project_name!r}")
+            notion_url = await create_project(
+                name=project_name,
+                description=clean[:500],
+            )
+            if notion_url:
+                logger.info(f"[Марта] Проект сохранён в Notion: {notion_url}")
+                clean = f"{clean}\n\n📁 *Проект «{project_name}» создан в Notion:* {notion_url}"
+
         return clean
 
     # ------------------------------------------------------------------ #

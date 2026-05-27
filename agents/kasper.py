@@ -5,8 +5,14 @@ from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
-from tools import search_web
+from tools import search_web, save_research
 from .base_agent import BaseAgent
+
+# Порог: если ответ длиннее — сохраняем полный текст в Notion,
+# пользователю отправляем preview + ссылку
+_NOTION_THRESHOLD = 3000
+# Размер preview-фрагмента, отправляемого в Telegram
+_PREVIEW_CHARS = 900
 
 
 KASPER_SYSTEM = """Ты — Каспер, исследователь ИИ-офиса с доступом к интернету.
@@ -44,6 +50,40 @@ class KasperAgent(BaseAgent):
         super().__init__(config.KASPER_BOT_TOKEN)
 
     # ------------------------------------------------------------------ #
+    #  Вспомогательные методы                                             #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    async def _maybe_save_to_notion(
+        title: str,
+        answer: str,
+        source_label: str = "Tavily веб-поиск",
+    ) -> str:
+        """Если ответ длиннее порога — сохраняет в Notion и возвращает
+        короткий preview + ссылку. Иначе возвращает answer без изменений.
+        """
+        if len(answer) <= _NOTION_THRESHOLD:
+            return answer
+
+        notion_url = await save_research(
+            title=title[:100],
+            content=answer,
+            source=source_label,
+            agent="Каспер",
+        )
+
+        if notion_url:
+            preview = answer[:_PREVIEW_CHARS].rstrip()
+            return (
+                f"{preview}\n\n"
+                f"… *(текст обрезан — {len(answer)} символов)*\n\n"
+                f"📄 *Полное исследование сохранено в Notion:*\n{notion_url}"
+            )
+
+        # Notion не настроен или ошибка — отдаём полный текст
+        return answer
+
+    # ------------------------------------------------------------------ #
     #  Поиск + ответ                                                       #
     # ------------------------------------------------------------------ #
 
@@ -63,27 +103,30 @@ class KasperAgent(BaseAgent):
         logger.info(f"[{self.name}] Получено от @{user_name} (chat={chat_id}): {user_text!r}")
 
         try:
-            # 1. Показываем «печатает…» пока идёт поиск
             await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
-            # 2. Веб-поиск
+            # 1. Веб-поиск
             logger.info(f"[{self.name}] Веб-поиск: {user_text!r}")
             search_results = await search_web(user_text)
 
-            # 3. Собираем обогащённый промпт: вопрос + результаты поиска
+            # 2. Обогащённый промпт → Claude
             enriched_message = (
                 f"{user_text}\n\n"
                 f"[Результаты веб-поиска]:\n{search_results}\n\n"
                 f"Проанализируй найденное и дай развёрнутый ответ."
             )
-
-            # 4. Отправляем в Claude (история сохраняется через BaseAgent)
             answer = await self.think(enriched_message, chat_id)
 
-            await update.message.reply_text(answer)
-            logger.info(f"[{self.name}] Ответ отправлен ({len(answer)} символов)")
+            # 3. Если ответ длинный — сохраняем в Notion, пользователю отдаём preview
+            answer = await self._maybe_save_to_notion(
+                title=user_text,
+                answer=answer,
+                source_label="Tavily веб-поиск",
+            )
 
-            await self.post_to_office(answer)
+            await update.message.reply_text(answer, parse_mode="Markdown")
+            logger.info(f"[{self.name}] Ответ отправлен ({len(answer)} символов)")
+            await self.post_to_group(answer)
 
         except Exception as e:
             import traceback
@@ -104,7 +147,15 @@ class KasperAgent(BaseAgent):
             f"Проанализируй и дай структурированный отчёт."
         )
         answer = await self.think(enriched, chat_id=0)
-        await self.post_to_office(f"📚 Исследование завершено: {answer[:200]}…")
+
+        # Если ответ длинный — сохраняем полную версию в Notion
+        answer = await self._maybe_save_to_notion(
+            title=task,
+            answer=answer,
+            source_label="Tavily веб-поиск",
+        )
+
+        await self.post_to_group(f"📚 Исследование завершено: {answer[:200]}…")
         return answer
 
     # ------------------------------------------------------------------ #
@@ -120,10 +171,11 @@ class KasperAgent(BaseAgent):
                 "Пример: /research последние новости о GPT-5"
             )
             return
-        # Перенаправляем через handle_message-логику
-        await update.message.reply_text(f"🔍 Ищу информацию по теме: *{topic}*…", parse_mode="Markdown")
+        await update.message.reply_text(
+            f"🔍 Ищу информацию по теме: *{topic}*…", parse_mode="Markdown"
+        )
         result = await self.handle_task(topic, from_agent="команды /research")
-        await update.message.reply_text(result)
+        await update.message.reply_text(result, parse_mode="Markdown")
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("research", self.cmd_research))
