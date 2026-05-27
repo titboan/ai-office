@@ -65,25 +65,32 @@ class KasperAgent(BaseAgent):
         answer: str,
         source_label: str = "Tavily веб-поиск",
     ) -> str:
-        """Если ответ длиннее порога — сохраняет в Notion, возвращает preview+link.
+        """Если ответ длиннее порога — сохраняет в Notion и возвращает preview+link.
 
-        Никогда не поднимает исключений — при ошибке возвращает исходный answer.
+        Если Notion недоступен или вернул ошибку — всё равно возвращает preview
+        (900 символов) + сообщение «Notion недоступен». Полный текст в Telegram
+        не отправляется никогда при длинном ответе.
+
+        Никогда не поднимает исключений.
         """
-        logger.debug(
-            f"[Каспер._maybe_save_to_notion] len(answer)={len(answer)} | "
-            f"threshold={_NOTION_THRESHOLD} | "
-            f"will_save={len(answer) > _NOTION_THRESHOLD}"
+        # ── Всегда логируем на INFO — не DEBUG ────────────────────────────────
+        logger.info(
+            f"[Каспер] Длина ответа: {len(answer)} символов | "
+            f"порог: {_NOTION_THRESHOLD} | "
+            f"сохранять в Notion: {len(answer) > _NOTION_THRESHOLD}"
         )
 
         if len(answer) <= _NOTION_THRESHOLD:
-            logger.debug("[Каспер._maybe_save_to_notion] Ответ короткий — Notion не нужен")
+            logger.info("[Каспер] Ответ короткий — отправляем целиком, Notion не нужен")
             return answer
 
         logger.info(
-            f"[Каспер._maybe_save_to_notion] Ответ длинный ({len(answer)} симв.) — "
-            f"сохраняем в Notion…"
+            f"[Каспер] Ответ длинный ({len(answer)} симв.) — "
+            f"вызываем save_research()…"
         )
 
+        # ── Вызов Notion ──────────────────────────────────────────────────────
+        notion_url: str | None = None
         try:
             notion_url = await save_research(
                 title=title[:100],
@@ -91,35 +98,45 @@ class KasperAgent(BaseAgent):
                 source=source_label,
                 agent="Каспер",
             )
+            if notion_url:
+                logger.info(f"[Каспер] save_research() вернул URL: {notion_url}")
+            else:
+                logger.warning(
+                    "[Каспер] save_research() вернул None — "
+                    "Notion недоступен или ошибка API (см. логи [notion] выше)"
+                )
         except Exception as e:
             logger.error(
-                f"[Каспер._maybe_save_to_notion] save_research выбросил исключение: "
+                f"[Каспер] save_research() выбросил исключение: "
                 f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
             )
-            notion_url = None
+
+        # ── Всегда формируем preview — независимо от статуса Notion ──────────
+        preview = answer[:_PREVIEW_CHARS].rstrip()
 
         if notion_url:
-            logger.info(f"[Каспер._maybe_save_to_notion] Notion URL получен: {notion_url}")
-            preview = answer[:_PREVIEW_CHARS].rstrip()
-            # ВАЖНО: не используем parse_mode=Markdown — текст Клода содержит
-            # неэкранированные символы *, _, [ и Telegram отклоняет сообщение
+            # Notion сохранил — даём ссылку
             result = (
                 f"{preview}\n\n"
                 f"... (текст обрезан — {len(answer)} символов)\n\n"
                 f"📄 Полное исследование в Notion:\n{notion_url}"
             )
             logger.info(
-                f"[Каспер._maybe_save_to_notion] Возвращаем preview "
-                f"({len(result)} симв.) + ссылку"
+                f"[Каспер] Возвращаем preview ({_PREVIEW_CHARS} симв.) + Notion ссылку"
             )
-            return result
+        else:
+            # Notion недоступен — preview + объяснение
+            result = (
+                f"{preview}\n\n"
+                f"... (текст обрезан — {len(answer)} символов)\n\n"
+                f"⚠️ Notion недоступен — полный текст не сохранён.\n"
+                f"Для настройки добавь NOTION_TOKEN и NOTION_RESEARCH_DB в .env"
+            )
+            logger.warning(
+                f"[Каспер] Возвращаем preview ({_PREVIEW_CHARS} симв.) + сообщение об ошибке Notion"
+            )
 
-        # Notion не настроен или ошибка — возвращаем полный ответ
-        logger.warning(
-            "[Каспер._maybe_save_to_notion] notion_url=None — "
-            "отправляем полный текст пользователю"
-        )
-        return answer
+        return result
 
     # ------------------------------------------------------------------ #
     #  Поиск + ответ (прямые сообщения пользователя)                       #
