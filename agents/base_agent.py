@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import traceback
 from abc import ABC, abstractmethod
 from typing import Optional
 
 import anthropic
+import redis.asyncio as aioredis
 from loguru import logger
 from telegram import Update
 from telegram.ext import (
@@ -18,13 +20,18 @@ from telegram.ext import (
 
 from config import config
 
+# TTL истории в Redis: 7 дней. После этого Redis сам удалит ключ.
+_HISTORY_TTL_SECONDS: int = 60 * 60 * 24 * 7
+# Максимум сообщений в истории (пар user/assistant → 10 диалогов)
+_MAX_HISTORY: int = 20
+
 
 class BaseAgent(ABC):
     """Базовый класс для всех агентов ИИ-офиса.
 
-    Использует:
-    - anthropic.AsyncAnthropic (нативный async-клиент, без run_in_executor)
-    - python-telegram-bot 22.x (Application / polling / webhook)
+    Хранение истории:
+    - Если REDIS_URL задан → Redis (персистентная память между перезапусками)
+    - Если REDIS_URL не задан → dict в памяти процесса (работает локально без Redis)
     """
 
     name: str = "Agent"
@@ -34,10 +41,100 @@ class BaseAgent(ABC):
 
     def __init__(self, bot_token: str) -> None:
         self.bot_token = bot_token
-        # AsyncAnthropic — нативный async-клиент (появился в anthropic >= 0.3)
         self.claude = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
         self.app: Optional[Application] = None
-        self._conversation_history: dict[int, list[dict]] = {}
+
+        # Redis-клиент (создаётся лениво при первом обращении)
+        self._redis: Optional[aioredis.Redis] = None
+
+        # Fallback: dict в памяти, если Redis не задан
+        self._history_fallback: dict[int, list[dict]] = {}
+
+        backend = "Redis" if config.REDIS_URL else "dict (fallback, Redis не задан)"
+        logger.debug(f"[{self.name}] Хранилище истории: {backend}")
+
+    # ------------------------------------------------------------------ #
+    #  Redis — подключение                                                #
+    # ------------------------------------------------------------------ #
+
+    async def _get_redis(self) -> Optional[aioredis.Redis]:
+        """Вернуть Redis-клиент или None, если REDIS_URL не задан."""
+        if not config.REDIS_URL:
+            return None
+        if self._redis is None:
+            self._redis = aioredis.from_url(
+                config.REDIS_URL,
+                decode_responses=True,   # получаем str, не bytes
+                socket_connect_timeout=3,
+                socket_timeout=3,
+            )
+        return self._redis
+
+    async def _close_redis(self) -> None:
+        """Закрыть Redis-соединение при остановке агента."""
+        if self._redis is not None:
+            with contextlib.suppress(Exception):
+                await self._redis.aclose()
+            self._redis = None
+
+    # ------------------------------------------------------------------ #
+    #  История диалога — чтение / запись                                  #
+    # ------------------------------------------------------------------ #
+
+    def _history_key(self, chat_id: int) -> str:
+        """Redis-ключ для истории конкретного чата."""
+        return f"history:{self.name}:{chat_id}"
+
+    async def _load_history(self, chat_id: int) -> list[dict]:
+        """Загрузить историю из Redis (или из fallback dict)."""
+        redis = await self._get_redis()
+
+        if redis is None:
+            # Fallback: простой dict в памяти
+            return list(self._history_fallback.get(chat_id, []))
+
+        try:
+            raw = await redis.get(self._history_key(chat_id))
+            if raw:
+                return json.loads(raw)
+        except Exception as e:
+            logger.warning(f"[{self.name}] Redis read error (chat={chat_id}): {e}")
+
+        return []
+
+    async def _save_history(self, chat_id: int, history: list[dict]) -> None:
+        """Сохранить историю в Redis (или в fallback dict)."""
+        # Обрезаем до лимита перед сохранением
+        if len(history) > _MAX_HISTORY:
+            history = history[-_MAX_HISTORY:]
+
+        redis = await self._get_redis()
+
+        if redis is None:
+            # Fallback: dict в памяти
+            self._history_fallback[chat_id] = history
+            return
+
+        try:
+            await redis.set(
+                self._history_key(chat_id),
+                json.dumps(history, ensure_ascii=False),
+                ex=_HISTORY_TTL_SECONDS,
+            )
+        except Exception as e:
+            logger.warning(f"[{self.name}] Redis write error (chat={chat_id}): {e}")
+            # При ошибке Redis — сохраняем в dict, чтобы не потерять контекст
+            self._history_fallback[chat_id] = history
+
+    async def _delete_history(self, chat_id: int) -> None:
+        """Удалить историю из Redis и из fallback dict."""
+        self._history_fallback.pop(chat_id, None)
+
+        redis = await self._get_redis()
+        if redis is None:
+            return
+        with contextlib.suppress(Exception):
+            await redis.delete(self._history_key(chat_id))
 
     # ------------------------------------------------------------------ #
     #  Claude                                                              #
@@ -45,16 +142,11 @@ class BaseAgent(ABC):
 
     async def think(self, user_message: str, chat_id: int) -> str:
         """Отправить сообщение в Claude и получить ответ."""
-        history = self._conversation_history.setdefault(chat_id, [])
+        # Загружаем историю (Redis или dict)
+        history = await self._load_history(chat_id)
         history.append({"role": "user", "content": user_message})
 
-        # Храним не более 20 последних сообщений (10 пар user/assistant)
-        if len(history) > 20:
-            history = history[-20:]
-            self._conversation_history[chat_id] = history
-
         try:
-            # anthropic 0.104.1: AsyncAnthropic.messages.create() — нативный корутин
             response = await self.claude.messages.create(
                 model=config.CLAUDE_MODEL,
                 max_tokens=config.MAX_TOKENS,
@@ -63,6 +155,9 @@ class BaseAgent(ABC):
             )
             answer = response.content[0].text
             history.append({"role": "assistant", "content": answer})
+
+            # Сохраняем обновлённую историю (Redis или dict)
+            await self._save_history(chat_id, history)
             return answer
 
         except anthropic.RateLimitError as e:
@@ -78,7 +173,6 @@ class BaseAgent(ABC):
             return "🌐 Нет связи с Claude API. Проверь сеть."
 
         except anthropic.APIStatusError as e:
-            # HTTP 4xx / 5xx от сервера
             logger.error(f"[{self.name}] API status {e.status_code}: {e.message}")
             return f"⚠️ Claude API вернул ошибку {e.status_code}: {e.message}"
 
@@ -112,11 +206,11 @@ class BaseAgent(ABC):
 
     async def cmd_reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id
-        self._conversation_history.pop(chat_id, None)
-        await update.message.reply_text("🔄 История диалога очищена.")
+        await self._delete_history(chat_id)
+        backend = "Redis" if config.REDIS_URL else "памяти"
+        await update.message.reply_text(f"🔄 История диалога очищена (из {backend}).")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        # Защита: update или message могут быть None (редактирование, канал и т.д.)
         if not update.message or not update.message.text:
             logger.debug(f"[{self.name}] Пропуск: нет текста в update")
             return
@@ -125,7 +219,6 @@ class BaseAgent(ABC):
         user_text = update.message.text
         user_name = update.effective_user.username or update.effective_user.first_name or "unknown"
 
-        # ← Логирование каждого входящего сообщения
         logger.info(f"[{self.name}] Получено сообщение от @{user_name} (chat={chat_id}): {user_text!r}")
 
         try:
@@ -134,15 +227,12 @@ class BaseAgent(ABC):
             await update.message.reply_text(answer)
             logger.info(f"[{self.name}] Ответ отправлен ({len(answer)} символов)")
 
-            # Агент дублирует ответ в общий офисный чат
             await self.post_to_office(answer)
 
         except Exception as e:
             logger.error(f"[{self.name}] Ошибка в handle_message: {e}\n{traceback.format_exc()}")
-            try:
+            with contextlib.suppress(Exception):
                 await update.message.reply_text("⚠️ Произошла внутренняя ошибка. Попробуй ещё раз.")
-            except Exception:
-                pass
 
     @abstractmethod
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
@@ -153,7 +243,7 @@ class BaseAgent(ABC):
     # ------------------------------------------------------------------ #
 
     async def _error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Глобальный обработчик ошибок PTB — логирует всё что падает внутри handlers."""
+        """Глобальный обработчик ошибок PTB."""
         logger.error(f"[{self.name}] PTB error: {context.error}")
         if context.error:
             logger.error(traceback.format_exc())
@@ -164,9 +254,7 @@ class BaseAgent(ABC):
             .token(self.bot_token)
             .build()
         )
-        # Глобальный error handler — исключения больше не теряются молча
         self.app.add_error_handler(self._error_handler)
-
         self.app.add_handler(CommandHandler("start", self.cmd_start))
         self.app.add_handler(CommandHandler("reset", self.cmd_reset))
         self.app.add_handler(
@@ -180,19 +268,10 @@ class BaseAgent(ABC):
     def _register_extra_handlers(self) -> None:
         """Переопределить в потомке для регистрации дополнительных команд."""
 
-    # ------------------------------------------------------------------ #
-    #  Async-запуск (для многоагентного режима в одном event loop)       #
-    # ------------------------------------------------------------------ #
+    # ── Async-запуск (многоагентный режим) ──────────────────────────────
 
     async def start_polling_async(self) -> None:
-        """Инициализировать и запустить polling без блокировки event loop.
-
-        Используется в main.py когда все агенты запускаются через asyncio.gather().
-        Порядок вызовов по документации PTB 22.x:
-          1. app.initialize()       — создаёт HTTP-сессию бота
-          2. app.start()            — запускает update processor
-          3. app.updater.start_polling() — запускает фоновый polling-цикл (non-blocking)
-        """
+        """Инициализировать и запустить polling без блокировки event loop."""
         app = self.build_app()
         await app.initialize()
         await app.start()
@@ -200,36 +279,27 @@ class BaseAgent(ABC):
         logger.info(f"[{self.name}] Polling активен (async mode)")
 
     async def stop_async(self) -> None:
-        """Graceful shutdown: остановить polling и закрыть HTTP-сессию."""
-        if not self.app:
-            return
-        async with contextlib.AsyncExitStack():
+        """Graceful shutdown: polling + HTTP-сессия + Redis."""
+        if self.app:
             with contextlib.suppress(Exception):
                 await self.app.updater.stop()
             with contextlib.suppress(Exception):
                 await self.app.stop()
             with contextlib.suppress(Exception):
                 await self.app.shutdown()
+        await self._close_redis()
         logger.info(f"[{self.name}] Остановлен")
 
-    # ------------------------------------------------------------------ #
-    #  Синхронный запуск (один агент — один процесс)                     #
-    # ------------------------------------------------------------------ #
+    # ── Синхронный запуск (один агент — один процесс) ───────────────────
 
     def run_polling(self) -> None:
-        """Запустить бота в режиме long-polling (локальная разработка).
-
-        PTB 22.x: run_polling() — синхронный метод, управляет event loop сам.
-        """
+        """PTB 22.x: синхронный, управляет event loop сам."""
         app = self.build_app()
         logger.info(f"[{self.name}] Запуск polling...")
         app.run_polling(drop_pending_updates=True)
 
     def run_webhook(self, path_suffix: str) -> None:
-        """Запустить бота на вебхуке (Railway / production).
-
-        PTB 22.x: run_webhook() — синхронный метод, управляет event loop сам.
-        """
+        """PTB 22.x: синхронный, управляет event loop сам."""
         app = self.build_app()
         webhook_url = f"{config.WEBHOOK_BASE_URL}/{path_suffix}"
         logger.info(f"[{self.name}] Запуск webhook: {webhook_url}")

@@ -27,6 +27,10 @@ class Config:
     # Общая группа офиса
     OFFICE_GROUP_ID: int = int(os.getenv("OFFICE_GROUP_ID", "0"))
 
+    # Память агентов (Redis)
+    # Если не задан — агенты хранят историю в памяти процесса (fallback dict)
+    REDIS_URL: str = os.getenv("REDIS_URL", "")
+
     # Webhook (Railway)
     WEBHOOK_BASE_URL: str = os.getenv("WEBHOOK_BASE_URL", "")
     PORT: int = int(os.getenv("PORT", "8080"))
