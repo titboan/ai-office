@@ -10,6 +10,8 @@ tools/notion.py — Notion API integration for ai-office agents.
 
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import date
 from typing import Any
 
@@ -27,18 +29,16 @@ _MAX_CONTENT = 9900   # 5 блоков × 1990 = максимум для rich_te
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _headers() -> dict[str, str]:
+    tok = config.NOTION_TOKEN
     return {
-        "Authorization": f"Bearer {config.NOTION_TOKEN}",
+        "Authorization": f"Bearer {tok}",
         "Content-Type":  "application/json",
         "Notion-Version": _API_VERSION,
     }
 
 
 def _text_blocks(text: str, max_total: int = _MAX_CONTENT) -> list[dict]:
-    """Разбить текст на блоки для rich_text / title (лимит 2000 символов на блок).
-
-    Возвращает список блоков, пригодных как для поля title, так и для rich_text.
-    """
+    """Разбить текст на блоки для rich_text / title (лимит 2000 символов на блок)."""
     text = (text or "").strip()[:max_total]
     if not text:
         return [{"type": "text", "text": {"content": ""}}]
@@ -49,51 +49,85 @@ def _text_blocks(text: str, max_total: int = _MAX_CONTENT) -> list[dict]:
 
 
 def _today() -> str:
-    """Сегодняшняя дата в формате YYYY-MM-DD."""
     return date.today().isoformat()
 
 
 def page_url(page_id: str) -> str:
-    """Notion URL страницы по её ID (с дефисами или без — оба формата работают)."""
     return f"https://www.notion.so/{page_id.replace('-', '')}"
 
+
+# ── Core HTTP ──────────────────────────────────────────────────────────────────
 
 async def _create_page(database_id: str, properties: dict[str, Any]) -> dict | None:
     """POST /v1/pages — создать запись в базе данных Notion.
 
-    Возвращает JSON-ответ или None при ошибке.
+    Возвращает JSON-ответ или None при ошибке. Никогда не поднимает исключений.
     """
-    if not config.NOTION_TOKEN:
+    # ── Guard: конфигурация ────────────────────────────────────────────────────
+    tok = config.NOTION_TOKEN
+    if not tok:
+        logger.warning("[notion] _create_page: NOTION_TOKEN пустой — пропускаем")
         return None
+    if not database_id:
+        logger.warning("[notion] _create_page: database_id пустой — пропускаем")
+        return None
+
+    logger.debug(
+        f"[notion] POST /pages | db={database_id[:8]}… | "
+        f"token={tok[:8]}… (len={len(tok)}) | "
+        f"props={list(properties.keys())}"
+    )
 
     payload = {
         "parent":     {"database_id": database_id},
         "properties": properties,
     }
+
+    # ── HTTP запрос ────────────────────────────────────────────────────────────
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{_BASE_URL}/pages",
                 headers=_headers(),
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=15),
+                timeout=aiohttp.ClientTimeout(total=20),
             ) as resp:
-                data = await resp.json(content_type=None)
-                if resp.status == 200:
+                status = resp.status
+                raw    = await resp.text()                # читаем сырой текст всегда
+
+                logger.debug(f"[notion] Ответ: HTTP {status} | body_len={len(raw)}")
+
+                if status == 200:
+                    data = json.loads(raw)
+                    logger.debug(f"[notion] Страница создана: id={data.get('id', '?')}")
                     return data
-                logger.warning(
-                    f"[notion] Ошибка {resp.status} для базы {database_id[:8]}…: "
-                    f"{data.get('message', data)}"
+
+                # ── Ошибка от Notion — логируем полный body ────────────────────
+                try:
+                    err = json.loads(raw)
+                    code    = err.get("code", "?")
+                    message = err.get("message", raw[:300])
+                except Exception:
+                    code, message = "?", raw[:300]
+
+                logger.error(
+                    f"[notion] HTTP {status} для db={database_id[:8]}… | "
+                    f"code={code!r} | message={message!r}"
                 )
                 return None
-    except aiohttp.ClientConnectorError:
-        logger.warning("[notion] Нет соединения с api.notion.com")
+
+    # ── Сетевые ошибки ────────────────────────────────────────────────────────
+    except aiohttp.ClientConnectorError as e:
+        logger.error(f"[notion] Нет соединения с api.notion.com: {e}")
         return None
-    except TimeoutError:
-        logger.warning("[notion] Таймаут запроса к Notion API")
+    except (asyncio.TimeoutError, aiohttp.ServerTimeoutError) as e:
+        logger.error(f"[notion] Таймаут запроса к Notion API (>20 с): {e}")
+        return None
+    except aiohttp.ClientError as e:
+        logger.error(f"[notion] aiohttp.ClientError: {type(e).__name__}: {e}")
         return None
     except Exception as e:
-        logger.warning(f"[notion] Неожиданная ошибка: {e}")
+        logger.error(f"[notion] Неожиданная ошибка: {type(e).__name__}: {e}")
         return None
 
 
@@ -105,20 +139,15 @@ async def save_research(
     source: str = "",
     agent: str = "Каспер",
 ) -> str | None:
-    """Сохранить результат исследования в NOTION_RESEARCH_DB.
-
-    Args:
-        title:   Заголовок записи (до 200 символов).
-        content: Полный текст исследования (до 9900 символов сохраняется в Notion).
-        source:  Источник (URL или описание, до 500 символов).
-        agent:   Имя агента-исполнителя (Каспер/Кевин/Питер/Элина/Алекс/Марта).
-
-    Returns:
-        URL созданной страницы Notion или None при ошибке/отсутствии настроек.
-    """
+    """Сохранить результат исследования в NOTION_RESEARCH_DB."""
     db = config.NOTION_RESEARCH_DB
+    logger.info(
+        f"[notion] save_research | title={title[:60]!r} | "
+        f"content_len={len(content)} | agent={agent!r} | "
+        f"db={'SET (' + db[:8] + '…)' if db else 'НЕ ЗАДАН'}"
+    )
     if not db:
-        logger.debug("[notion] save_research: NOTION_RESEARCH_DB не задан")
+        logger.warning("[notion] save_research: NOTION_RESEARCH_DB не задан — пропускаем")
         return None
 
     props: dict[str, Any] = {
@@ -128,12 +157,16 @@ async def save_research(
         "Agent":   {"select":    {"name": agent}},
         "Date":    {"date":      {"start": _today()}},
     }
+    logger.debug(f"[notion] save_research props keys: {list(props.keys())}")
+    logger.debug(f"[notion] Content blocks count: {len(props['Content']['rich_text'])}")
 
     result = await _create_page(db, props)
     if result:
         url = page_url(result["id"])
-        logger.info(f"[notion] Research сохранён ({len(content)} симв.): {url}")
+        logger.info(f"[notion] ✅ Research сохранён ({len(content)} симв.): {url}")
         return url
+
+    logger.warning("[notion] save_research: _create_page вернул None")
     return None
 
 
@@ -142,19 +175,15 @@ async def save_content(
     text: str,
     content_type: str = "Статья",
 ) -> str | None:
-    """Сохранить текстовый контент в NOTION_CONTENT_DB.
-
-    Args:
-        title:        Заголовок записи.
-        text:         Текст контента.
-        content_type: 'Статья' | 'Пост' | 'Письмо' | 'Идея'
-
-    Returns:
-        URL созданной страницы Notion или None при ошибке/отсутствии настроек.
-    """
+    """Сохранить текстовый контент в NOTION_CONTENT_DB."""
     db = config.NOTION_CONTENT_DB
+    logger.info(
+        f"[notion] save_content | title={title[:60]!r} | "
+        f"type={content_type!r} | text_len={len(text)} | "
+        f"db={'SET' if db else 'НЕ ЗАДАН'}"
+    )
     if not db:
-        logger.debug("[notion] save_content: NOTION_CONTENT_DB не задан")
+        logger.warning("[notion] save_content: NOTION_CONTENT_DB не задан — пропускаем")
         return None
 
     props: dict[str, Any] = {
@@ -167,8 +196,10 @@ async def save_content(
     result = await _create_page(db, props)
     if result:
         url = page_url(result["id"])
-        logger.info(f"[notion] Content сохранён ({content_type}): {url}")
+        logger.info(f"[notion] ✅ Content сохранён ({content_type}): {url}")
         return url
+
+    logger.warning("[notion] save_content: _create_page вернул None")
     return None
 
 
@@ -177,19 +208,15 @@ async def create_task(
     deadline: str | None = None,
     priority: str = "Средний",
 ) -> str | None:
-    """Создать задачу в NOTION_TASKS_DB со статусом 'Сделать'.
-
-    Args:
-        name:     Название задачи.
-        deadline: Дата в формате 'YYYY-MM-DD' или None.
-        priority: 'Высокий' | 'Средний' | 'Низкий'
-
-    Returns:
-        URL созданной страницы Notion или None при ошибке/отсутствии настроек.
-    """
+    """Создать задачу в NOTION_TASKS_DB со статусом 'Сделать'."""
     db = config.NOTION_TASKS_DB
+    logger.info(
+        f"[notion] create_task | name={name[:60]!r} | "
+        f"priority={priority!r} | deadline={deadline!r} | "
+        f"db={'SET' if db else 'НЕ ЗАДАН'}"
+    )
     if not db:
-        logger.debug("[notion] create_task: NOTION_TASKS_DB не задан")
+        logger.warning("[notion] create_task: NOTION_TASKS_DB не задан — пропускаем")
         return None
 
     props: dict[str, Any] = {
@@ -203,8 +230,10 @@ async def create_task(
     result = await _create_page(db, props)
     if result:
         url = page_url(result["id"])
-        logger.info(f"[notion] Task создан ({priority}): {url}")
+        logger.info(f"[notion] ✅ Task создан ({priority}): {url}")
         return url
+
+    logger.warning("[notion] create_task: _create_page вернул None")
     return None
 
 
@@ -214,20 +243,15 @@ async def save_idea(
     tags: list[str] | None = None,
     priority: str = "Средний",
 ) -> str | None:
-    """Сохранить идею в NOTION_IDEAS_DB.
-
-    Args:
-        name:        Название идеи.
-        description: Описание идеи.
-        tags:        Список тегов (multi_select).
-        priority:    'Высокий' | 'Средний' | 'Низкий'
-
-    Returns:
-        URL созданной страницы Notion или None при ошибке/отсутствии настроек.
-    """
+    """Сохранить идею в NOTION_IDEAS_DB."""
     db = config.NOTION_IDEAS_DB
+    logger.info(
+        f"[notion] save_idea | name={name[:60]!r} | "
+        f"priority={priority!r} | tags={tags} | "
+        f"db={'SET' if db else 'НЕ ЗАДАН'}"
+    )
     if not db:
-        logger.debug("[notion] save_idea: NOTION_IDEAS_DB не задан")
+        logger.warning("[notion] save_idea: NOTION_IDEAS_DB не задан — пропускаем")
         return None
 
     props: dict[str, Any] = {
@@ -236,7 +260,6 @@ async def save_idea(
         "Priority":    {"select":    {"name": priority}},
     }
     if tags:
-        # Notion multi_select: каждый тег — отдельный объект, лимит имени 100 символов
         props["Tags"] = {
             "multi_select": [{"name": t[:100]} for t in tags[:10]]
         }
@@ -244,8 +267,10 @@ async def save_idea(
     result = await _create_page(db, props)
     if result:
         url = page_url(result["id"])
-        logger.info(f"[notion] Idea сохранена: {url}")
+        logger.info(f"[notion] ✅ Idea сохранена: {url}")
         return url
+
+    logger.warning("[notion] save_idea: _create_page вернул None")
     return None
 
 
@@ -254,19 +279,15 @@ async def create_project(
     description: str = "",
     deadline: str | None = None,
 ) -> str | None:
-    """Создать проект в NOTION_PROJECTS_DB со статусом 'В работе'.
-
-    Args:
-        name:        Название проекта.
-        description: Краткое описание (до 9900 символов).
-        deadline:    Дата дедлайна 'YYYY-MM-DD' или None.
-
-    Returns:
-        URL созданной страницы Notion или None при ошибке/отсутствии настроек.
-    """
+    """Создать проект в NOTION_PROJECTS_DB со статусом 'В работе'."""
     db = config.NOTION_PROJECTS_DB
+    logger.info(
+        f"[notion] create_project | name={name[:60]!r} | "
+        f"deadline={deadline!r} | "
+        f"db={'SET' if db else 'НЕ ЗАДАН'}"
+    )
     if not db:
-        logger.debug("[notion] create_project: NOTION_PROJECTS_DB не задан")
+        logger.warning("[notion] create_project: NOTION_PROJECTS_DB не задан — пропускаем")
         return None
 
     props: dict[str, Any] = {
@@ -280,6 +301,8 @@ async def create_project(
     result = await _create_page(db, props)
     if result:
         url = page_url(result["id"])
-        logger.info(f"[notion] Project создан '{name[:50]}': {url}")
+        logger.info(f"[notion] ✅ Project создан '{name[:50]}': {url}")
         return url
+
+    logger.warning("[notion] create_project: _create_page вернул None")
     return None

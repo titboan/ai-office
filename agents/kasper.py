@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import traceback
+
 from loguru import logger
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
@@ -48,9 +50,13 @@ class KasperAgent(BaseAgent):
 
     def __init__(self) -> None:
         super().__init__(config.KASPER_BOT_TOKEN)
+        logger.debug(
+            f"[Каспер] Init | NOTION_TOKEN={'SET' if config.NOTION_TOKEN else 'НЕ ЗАДАН'} | "
+            f"NOTION_RESEARCH_DB={'SET (' + config.NOTION_RESEARCH_DB[:8] + '…)' if config.NOTION_RESEARCH_DB else 'НЕ ЗАДАН'}"
+        )
 
     # ------------------------------------------------------------------ #
-    #  Вспомогательные методы                                             #
+    #  Notion helper                                                        #
     # ------------------------------------------------------------------ #
 
     @staticmethod
@@ -59,32 +65,64 @@ class KasperAgent(BaseAgent):
         answer: str,
         source_label: str = "Tavily веб-поиск",
     ) -> str:
-        """Если ответ длиннее порога — сохраняет в Notion и возвращает
-        короткий preview + ссылку. Иначе возвращает answer без изменений.
-        """
-        if len(answer) <= _NOTION_THRESHOLD:
-            return answer
+        """Если ответ длиннее порога — сохраняет в Notion, возвращает preview+link.
 
-        notion_url = await save_research(
-            title=title[:100],
-            content=answer,
-            source=source_label,
-            agent="Каспер",
+        Никогда не поднимает исключений — при ошибке возвращает исходный answer.
+        """
+        logger.debug(
+            f"[Каспер._maybe_save_to_notion] len(answer)={len(answer)} | "
+            f"threshold={_NOTION_THRESHOLD} | "
+            f"will_save={len(answer) > _NOTION_THRESHOLD}"
         )
 
-        if notion_url:
-            preview = answer[:_PREVIEW_CHARS].rstrip()
-            return (
-                f"{preview}\n\n"
-                f"… *(текст обрезан — {len(answer)} символов)*\n\n"
-                f"📄 *Полное исследование сохранено в Notion:*\n{notion_url}"
-            )
+        if len(answer) <= _NOTION_THRESHOLD:
+            logger.debug("[Каспер._maybe_save_to_notion] Ответ короткий — Notion не нужен")
+            return answer
 
-        # Notion не настроен или ошибка — отдаём полный текст
+        logger.info(
+            f"[Каспер._maybe_save_to_notion] Ответ длинный ({len(answer)} симв.) — "
+            f"сохраняем в Notion…"
+        )
+
+        try:
+            notion_url = await save_research(
+                title=title[:100],
+                content=answer,
+                source=source_label,
+                agent="Каспер",
+            )
+        except Exception as e:
+            logger.error(
+                f"[Каспер._maybe_save_to_notion] save_research выбросил исключение: "
+                f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+            )
+            notion_url = None
+
+        if notion_url:
+            logger.info(f"[Каспер._maybe_save_to_notion] Notion URL получен: {notion_url}")
+            preview = answer[:_PREVIEW_CHARS].rstrip()
+            # ВАЖНО: не используем parse_mode=Markdown — текст Клода содержит
+            # неэкранированные символы *, _, [ и Telegram отклоняет сообщение
+            result = (
+                f"{preview}\n\n"
+                f"... (текст обрезан — {len(answer)} символов)\n\n"
+                f"📄 Полное исследование в Notion:\n{notion_url}"
+            )
+            logger.info(
+                f"[Каспер._maybe_save_to_notion] Возвращаем preview "
+                f"({len(result)} симв.) + ссылку"
+            )
+            return result
+
+        # Notion не настроен или ошибка — возвращаем полный ответ
+        logger.warning(
+            "[Каспер._maybe_save_to_notion] notion_url=None — "
+            "отправляем полный текст пользователю"
+        )
         return answer
 
     # ------------------------------------------------------------------ #
-    #  Поиск + ответ                                                       #
+    #  Поиск + ответ (прямые сообщения пользователя)                       #
     # ------------------------------------------------------------------ #
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -99,56 +137,82 @@ class KasperAgent(BaseAgent):
             or update.effective_user.first_name
             or "unknown"
         )
-
-        logger.info(f"[{self.name}] Получено от @{user_name} (chat={chat_id}): {user_text!r}")
+        logger.info(f"[Каспер] Сообщение от @{user_name} (chat={chat_id}): {user_text!r}")
 
         try:
             await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
-            # 1. Веб-поиск
-            logger.info(f"[{self.name}] Веб-поиск: {user_text!r}")
+            # ── Шаг 1: веб-поиск ──────────────────────────────────────────────
+            logger.info(f"[Каспер] Шаг 1 — веб-поиск: {user_text!r}")
             search_results = await search_web(user_text)
+            logger.debug(f"[Каспер] Результаты поиска: {len(search_results)} симв.")
 
-            # 2. Обогащённый промпт → Claude
+            # ── Шаг 2: Claude ─────────────────────────────────────────────────
             enriched_message = (
                 f"{user_text}\n\n"
                 f"[Результаты веб-поиска]:\n{search_results}\n\n"
                 f"Проанализируй найденное и дай развёрнутый ответ."
             )
+            logger.info(f"[Каспер] Шаг 2 — Claude (enriched_len={len(enriched_message)})")
             answer = await self.think(enriched_message, chat_id)
+            logger.info(f"[Каспер] Claude вернул {len(answer)} символов")
 
-            # 3. Если ответ длинный — сохраняем в Notion, пользователю отдаём preview
+            # ── Шаг 3: Notion (если длинный) ─────────────────────────────────
+            logger.info(f"[Каспер] Шаг 3 — проверка Notion (len={len(answer)})")
             answer = await self._maybe_save_to_notion(
                 title=user_text,
                 answer=answer,
                 source_label="Tavily веб-поиск",
             )
 
-            await update.message.reply_text(answer, parse_mode="Markdown")
-            logger.info(f"[{self.name}] Ответ отправлен ({len(answer)} символов)")
-            await self.post_to_group(answer)
+            # ── Шаг 4: отправка пользователю ─────────────────────────────────
+            # НЕ используем parse_mode — текст содержит неэкранированный Markdown
+            logger.info(f"[Каспер] Шаг 4 — reply_text ({len(answer)} симв.), no parse_mode")
+            if len(answer) <= 4096:
+                await update.message.reply_text(answer)
+            else:
+                # Telegram ограничение 4096 — разбиваем
+                logger.info(f"[Каспер] Разбиваем на части (>{4096} симв.)")
+                for chunk in [answer[i : i + 4000] for i in range(0, len(answer), 4000)]:
+                    await update.message.reply_text(chunk)
+
+            logger.info(f"[Каспер] Ответ отправлен")
+            await self.post_to_group(answer[:500] + ("…" if len(answer) > 500 else ""))
 
         except Exception as e:
-            import traceback
-            logger.error(f"[{self.name}] Ошибка: {e}\n{traceback.format_exc()}")
+            logger.error(f"[Каспер] НЕОБРАБОТАННАЯ ОШИБКА: {type(e).__name__}: {e}\n{traceback.format_exc()}")
             try:
-                await update.message.reply_text("⚠️ Произошла ошибка. Попробуй ещё раз.")
-            except Exception:
-                pass
+                await update.message.reply_text(
+                    f"⚠️ Произошла ошибка: {type(e).__name__}: {e}\n\nПопробуй ещё раз."
+                )
+            except Exception as e2:
+                logger.error(f"[Каспер] Не удалось отправить сообщение об ошибке: {e2}")
+
+    # ------------------------------------------------------------------ #
+    #  Делегированная задача от Марты                                       #
+    # ------------------------------------------------------------------ #
 
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
-        """Делегированная задача: поиск + ответ без Telegram update."""
-        logger.info(f"[{self.name}] Задача от {from_agent}: {task!r}")
+        """Поиск + ответ без Telegram update."""
+        logger.info(f"[Каспер] handle_task от {from_agent}: {task!r}")
 
+        # ── Шаг 1: поиск ──────────────────────────────────────────────────────
+        logger.info(f"[Каспер] handle_task шаг 1 — веб-поиск")
         search_results = await search_web(task)
+        logger.debug(f"[Каспер] handle_task поиск: {len(search_results)} симв.")
+
+        # ── Шаг 2: Claude ─────────────────────────────────────────────────────
         enriched = (
             f"Исследовательская задача от {from_agent}: {task}\n\n"
             f"[Результаты веб-поиска]:\n{search_results}\n\n"
             f"Проанализируй и дай структурированный отчёт."
         )
+        logger.info(f"[Каспер] handle_task шаг 2 — Claude")
         answer = await self.think(enriched, chat_id=0)
+        logger.info(f"[Каспер] handle_task Claude вернул {len(answer)} символов")
 
-        # Если ответ длинный — сохраняем полную версию в Notion
+        # ── Шаг 3: Notion ─────────────────────────────────────────────────────
+        logger.info(f"[Каспер] handle_task шаг 3 — Notion")
         answer = await self._maybe_save_to_notion(
             title=task,
             answer=answer,
@@ -171,11 +235,14 @@ class KasperAgent(BaseAgent):
                 "Пример: /research последние новости о GPT-5"
             )
             return
-        await update.message.reply_text(
-            f"🔍 Ищу информацию по теме: *{topic}*…", parse_mode="Markdown"
-        )
+        await update.message.reply_text(f"🔍 Ищу информацию по теме: {topic}…")
         result = await self.handle_task(topic, from_agent="команды /research")
-        await update.message.reply_text(result, parse_mode="Markdown")
+        # Разбиваем если нужно, без parse_mode
+        if len(result) <= 4096:
+            await update.message.reply_text(result)
+        else:
+            for chunk in [result[i : i + 4000] for i in range(0, len(result), 4000)]:
+                await update.message.reply_text(chunk)
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("research", self.cmd_research))
