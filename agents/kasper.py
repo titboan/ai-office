@@ -44,6 +44,7 @@ KASPER_SYSTEM = """Ты — Каспер, исследователь ИИ-офи
 
 class KasperAgent(BaseAgent):
     name = "Каспер"
+    agent_key = "kasper"
     role = "Исследователь"
     emoji = "🔍"
     system_prompt = KASPER_SYSTEM

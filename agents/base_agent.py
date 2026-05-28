@@ -55,6 +55,7 @@ class BaseAgent(ABC):
     role: str = "Агент"
     emoji: str = "🤖"
     system_prompt: str = ""
+    agent_key: str = ""  # английский ключ для task queue (kasper, kevin, ...)
 
     def __init__(self, bot_token: str) -> None:
         self.bot_token = bot_token
@@ -418,7 +419,7 @@ class BaseAgent(ABC):
                 iteration += 1
                 if iteration % 30 == 0:
                     await cleanup_timed_out_tasks()
-                task = await get_next_task(self.name.lower())
+                task = await get_next_task(self.agent_key or self.name.lower())
                 if task is None:
                     await asyncio.sleep(2)
                     continue

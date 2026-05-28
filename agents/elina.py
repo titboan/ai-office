@@ -54,6 +54,7 @@ def _detect_content_type(task: str) -> str:
 
 class ElinaAgent(BaseAgent):
     name = "Элина"
+    agent_key = "elina"
     role = "Копирайтер"
     emoji = "✍️"
     system_prompt = ELINA_SYSTEM

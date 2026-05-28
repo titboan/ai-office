@@ -67,6 +67,7 @@ def _extract_priority(task: str) -> str:
 
 class AlexAgent(BaseAgent):
     name = "Алекс"
+    agent_key = "alex"
     role = "Планировщик"
     emoji = "🗓️"
     system_prompt = ALEX_SYSTEM

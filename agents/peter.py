@@ -28,6 +28,7 @@ PETER_SYSTEM = """Ты — Питер, аналитик ИИ-офиса.
 
 class PeterAgent(BaseAgent):
     name = "Питер"
+    agent_key = "peter"
     role = "Аналитик"
     emoji = "📊"
     system_prompt = PETER_SYSTEM
