@@ -12,6 +12,22 @@ from task_queue import create_task as enqueue_task
 from tools import create_project
 from .base_agent import BaseAgent
 
+def _detect_priority(text: str) -> int:
+    """Определить приоритет задачи из текста запроса.
+
+    Returns:
+        20 — срочно/urgent/asap/немедленно
+        10 — важно/важная/high priority
+         0 — всё остальное
+    """
+    t = text.lower()
+    if any(w in t for w in ("срочно", "срочная", "срочный", "urgent", "asap", "немедленно")):
+        return 20
+    if any(w in t for w in ("важно", "важная", "важный", "high priority", "приоритет")):
+        return 10
+    return 0
+
+
 # ── Парсинг блока делегирования из ответа Клода ──────────────────────────────
 # Клод должен вставить такой блок когда хочет делегировать задачу:
 #
@@ -193,17 +209,20 @@ class MartaAgent(BaseAgent):
             payload=subtask,
             from_agent="marta",
             chat_id=chat_id,
+            priority=_detect_priority(user_text),
         )
 
         if task_id:
+            prio = _detect_priority(user_text)
+            prio_label = {20: " 🔴 СРОЧНО", 10: " 🟠 ВАЖНО", 0: ""}.get(prio, "")
             await reply_func(
-                f"🟡 {agent.emoji} *{agent.name}* принял задачу.\n"
+                f"🟡 {agent.emoji} *{agent.name}* принял задачу{prio_label}.\n"
                 f"Результат придёт когда будет готов.\n"
                 f"`task_id: {task_id} | corr: {corr_id[:8]}`",
                 parse_mode="Markdown",
             )
             await self.post_to_group(f"🟡 Задача #{task_id} → {agent.name}: {short_task}")
-            logger.info(f"[Марта] Задача #{task_id} → {agent.name}")
+            logger.info(f"[Марта] Задача #{task_id} → {agent.name} (priority={prio})")
         else:
             logger.warning("[Марта] task_queue недоступен — fallback на прямой вызов")
             await reply_func(
@@ -367,9 +386,11 @@ class MartaAgent(BaseAgent):
 
             created = t["created_at"].strftime("%H:%M:%S")
             short_payload = (t["payload"][:50] + "…") if len(t["payload"]) > 50 else t["payload"]
+            prio = t.get("priority", 0)
+            prio_label = {20: " 🔴", 10: " 🟠", 0: ""}.get(prio, "")
 
             lines.append(
-                f"{status_emoji} *{t['assigned_agent']}* | "
+                f"{status_emoji}{prio_label} *{t['assigned_agent']}* | "
                 f"id={t['id']} | {t['status']}\n"
                 f"    `{short_payload}`\n"
                 f"    corr={t['correlation_id'][:8]} | {created}"

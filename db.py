@@ -57,10 +57,14 @@ async def _create_schema() -> None:
                 retry_count      INT         NOT NULL DEFAULT 0,
                 max_retries      INT         NOT NULL DEFAULT 3,
                 timeout_seconds  INT         NOT NULL DEFAULT 300,
+                priority         INT         NOT NULL DEFAULT 0,
                 created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 started_at       TIMESTAMPTZ,
                 finished_at      TIMESTAMPTZ
             );
+        """)
+        await conn.execute("""
+            ALTER TABLE tasks ADD COLUMN IF NOT EXISTS priority INT NOT NULL DEFAULT 0;
         """)
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_tasks_agent_status

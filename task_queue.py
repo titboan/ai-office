@@ -40,6 +40,7 @@ async def create_task(
     parent_task_id: int | None = None,
     max_retries: int = 3,
     timeout_seconds: int = 300,
+    priority: int = 0,  # 0=обычный, 10=высокий, 20=срочный
 ) -> tuple[int, str] | tuple[None, None]:
     try:
         pool = await get_pool()
@@ -54,14 +55,14 @@ async def create_task(
                     assigned_agent, task_type, payload,
                     from_agent, chat_id,
                     correlation_id, parent_task_id,
-                    max_retries, timeout_seconds
+                    max_retries, timeout_seconds, priority
                 )
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
                 RETURNING id, correlation_id
             """, assigned_agent, task_type, payload,
                 from_agent, chat_id,
                 corr_id, parent_task_id,
-                max_retries, timeout_seconds)
+                max_retries, timeout_seconds, priority)
             task_id = row["id"]
             corr_id = row["correlation_id"]
             logger.info(
@@ -91,7 +92,7 @@ async def get_next_task(agent_name: str) -> Task | None:
                     SELECT id FROM tasks
                     WHERE assigned_agent = $1
                       AND status = 'queued'
-                    ORDER BY created_at ASC
+                    ORDER BY priority DESC, created_at ASC
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED
                 )
@@ -174,10 +175,10 @@ async def get_active_tasks() -> list[dict]:
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT id, assigned_agent, status, payload, correlation_id, created_at
+                SELECT id, assigned_agent, status, payload, correlation_id, created_at, priority
                 FROM tasks
                 WHERE status IN ('queued', 'acknowledged', 'running')
-                ORDER BY created_at ASC
+                ORDER BY priority DESC, created_at ASC
             """)
             return [dict(r) for r in rows]
     except Exception as e:
