@@ -534,25 +534,12 @@ class BaseAgent(ABC):
 
     # ── Async-запуск (многоагентный режим) ──────────────────────────────
 
-    @staticmethod
-    def _on_polling_error(error: Exception) -> None:
-        from telegram.error import Conflict
-        if isinstance(error, Conflict):
-            # Новый деплой уже поллит — старый процесс завершает работу.
-            # Код 0 → Railway (ON_FAILURE) не перезапускает.
-            logger.warning("Conflict при polling — другой инстанс запущен, завершаю процесс.")
-            import os
-            os._exit(0)
-
     async def start_polling_async(self) -> None:
         """Инициализировать и запустить polling без блокировки event loop."""
         app = self.build_app()
         await app.initialize()
         await app.start()
-        await app.updater.start_polling(
-            drop_pending_updates=True,
-            error_callback=self._on_polling_error,
-        )
+        await app.updater.start_polling(drop_pending_updates=True)
         logger.info(f"[{self.name}] Polling активен (async mode)")
 
         # Запускаем worker loop как фоновую задачу asyncio
