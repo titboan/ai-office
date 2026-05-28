@@ -54,8 +54,8 @@ class BaseAgent(ABC):
     name: str = "Agent"
     role: str = "Агент"
     emoji: str = "🤖"
+    agent_key: str = ""  # латиница для БД: "kasper", "kevin", etc.
     system_prompt: str = ""
-    agent_key: str = ""  # английский ключ для task queue (kasper, kevin, ...)
 
     def __init__(self, bot_token: str) -> None:
         self.bot_token = bot_token
@@ -413,6 +413,10 @@ class BaseAgent(ABC):
         Каждые ~60 сек — cleanup_timed_out_tasks() для зависших задач других агентов.
         """
         logger.info(f"[{self.name}] Worker loop запущен")
+        if not self.agent_key:
+            logger.error(f"[{self.name}] agent_key не задан! Worker loop остановлен.")
+            return
+        logger.info(f"[{self.name}] agent_key={self.agent_key!r}")
         iteration = 0
         while not self._worker_stop_event.is_set():
             try:
