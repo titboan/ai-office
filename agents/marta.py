@@ -142,6 +142,85 @@ class MartaAgent(BaseAgent):
         return _DELEGATE_RE.sub("", text).strip()
 
     # ------------------------------------------------------------------ #
+    #  Общая логика обработки текста                                       #
+    # ------------------------------------------------------------------ #
+
+    async def _process_text(
+        self,
+        user_text: str,
+        chat_id: int,
+        reply_func,  # callable: async def reply(text, parse_mode=None)
+    ) -> None:
+        """Общая логика обработки текста — используется из handle_message и handle_voice."""
+        marta_response = await self.think(user_text, chat_id)
+        delegation = self._parse_delegation(marta_response)
+
+        if delegation is None:
+            await reply_func(marta_response)
+            await self.post_to_group(marta_response)
+
+            if _PROJECT_TRIGGER_RE.search(user_text):
+                project_name = _extract_project_name(user_text)
+                notion_url = await create_project(
+                    name=project_name,
+                    description=marta_response[:500],
+                )
+                if notion_url:
+                    await reply_func(
+                        f"📁 *Проект «{project_name}» создан в Notion:*\n{notion_url}",
+                        parse_mode="Markdown",
+                    )
+            return
+
+        agent_key, subtask = delegation
+        preamble = self._strip_delegate_block(marta_response)
+        if preamble:
+            await reply_func(preamble)
+
+        agent = self._get_agent(agent_key)
+        if agent is None:
+            await reply_func(
+                f"⚠️ Не могу найти агента *{agent_key}*.",
+                parse_mode="Markdown",
+            )
+            return
+
+        short_task = (subtask[:80] + "…") if len(subtask) > 80 else subtask
+
+        task_id = await enqueue_task(
+            assigned_agent=agent_key,
+            payload=subtask,
+            from_agent="marta",
+            chat_id=chat_id,
+        )
+
+        if task_id:
+            await reply_func(
+                f"🟡 {agent.emoji} *{agent.name}* принял задачу.\n"
+                f"Результат придёт когда будет готов.\n"
+                f"`task_id: {task_id}`",
+                parse_mode="Markdown",
+            )
+            await self.post_to_group(f"🟡 Задача #{task_id} → {agent.name}: {short_task}")
+            logger.info(f"[Марта] Задача #{task_id} → {agent.name}")
+        else:
+            logger.warning("[Марта] task_queue недоступен — fallback на прямой вызов")
+            await reply_func(
+                f"⏳ {agent.emoji} *{agent.name}* работает…",
+                parse_mode="Markdown",
+            )
+            await self.post_to_group(f"🔀 Делегирую → {agent.name}: {short_task}")
+            result = await agent.run_task(subtask, from_agent="Марты")
+            header = f"📬 *{agent.emoji} {agent.name}* выполнил задачу:\n\n"
+            full = header + result
+            if len(full) <= 4096:
+                await reply_func(full, parse_mode="Markdown")
+            else:
+                await reply_func(header, parse_mode="Markdown")
+                for chunk in [result[i:i+4000] for i in range(0, len(result), 4000)]:
+                    await reply_func(chunk)
+
+    # ------------------------------------------------------------------ #
     #  Telegram — обработчик сообщений (переопределяем BaseAgent)          #
     # ------------------------------------------------------------------ #
 
@@ -161,99 +240,10 @@ class MartaAgent(BaseAgent):
         try:
             await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
-            # 1. Марта анализирует задачу → получаем её ответ с возможным DELEGATE-блоком
-            marta_response = await self.think(user_text, chat_id)
-            delegation = self._parse_delegation(marta_response)
+            async def reply(text, parse_mode=None):
+                await update.message.reply_text(text, parse_mode=parse_mode)
 
-            if delegation is None:
-                # ── Марта отвечает сама ──────────────────────────────────
-                logger.info(f"[Марта] Отвечает самостоятельно")
-                await update.message.reply_text(marta_response)
-                await self.post_to_group(marta_response)
-
-                # Если пользователь попросил создать проект — сохраняем в Notion
-                if _PROJECT_TRIGGER_RE.search(user_text):
-                    project_name = _extract_project_name(user_text)
-                    logger.info(f"[Марта] Детектирован запрос на проект: {project_name!r}")
-                    notion_url = await create_project(
-                        name=project_name,
-                        description=marta_response[:500],
-                    )
-                    if notion_url:
-                        await update.message.reply_text(
-                            f"📁 *Проект «{project_name}» создан в Notion:*\n{notion_url}",
-                            parse_mode="Markdown",
-                        )
-                        logger.info(f"[Марта] Проект сохранён в Notion: {notion_url}")
-                return
-
-            # ── Делегирование ────────────────────────────────────────────
-            agent_key, subtask = delegation
-
-            # Преамбула Марты (без DELEGATE-блока) → пользователю
-            preamble = self._strip_delegate_block(marta_response)
-            if preamble:
-                await update.message.reply_text(preamble)
-
-            # Находим агента
-            agent = self._get_agent(agent_key)
-            if agent is None:
-                await update.message.reply_text(
-                    f"⚠️ Не могу найти агента *{agent_key}* — отвечу сама.\n\n{preamble}",
-                    parse_mode="Markdown",
-                )
-                return
-
-            short_task = (subtask[:80] + "…") if len(subtask) > 80 else subtask
-
-            # Создаём задачу в Postgres — надёжная очередь вместо fire-and-forget
-            task_id = await enqueue_task(
-                assigned_agent=agent_key,
-                payload=subtask,
-                from_agent="marta",
-                chat_id=chat_id,   # агент-воркер отправит результат напрямую
-            )
-
-            if task_id:
-                # Задача принята в очередь — агент сам уведомит когда будет готово
-                await update.message.reply_text(
-                    f"🟡 {agent.emoji} *{agent.name}* принял задачу.\n"
-                    f"Результат придёт как только будет готов.\n"
-                    f"`task_id: {task_id}`",
-                    parse_mode="Markdown",
-                )
-                await self.post_to_group(
-                    f"🟡 Задача #{task_id} → {agent.name}: {short_task}"
-                )
-                logger.info(
-                    f"[Марта] Задача #{task_id} поставлена в очередь → {agent.name}"
-                )
-            else:
-                # БД недоступна — fallback на прямой синхронный вызов
-                logger.warning(
-                    "[Марта] task_queue недоступен — fallback на прямой вызов"
-                )
-                await update.message.reply_text(
-                    f"⏳ {agent.emoji} *{agent.name}* принял задачу и работает…",
-                    parse_mode="Markdown",
-                )
-                await self.post_to_group(f"🔀 Делегирую → {agent.name}: {short_task}")
-                await context.bot.send_chat_action(chat_id=chat_id, action="typing")
-                logger.info(f"[Марта] Делегирую (fallback) → {agent.name}: {subtask!r}")
-
-                result = await agent.run_task(subtask, from_agent="Марты")
-                logger.info(
-                    f"[Марта] {agent.name} вернул результат ({len(result)} символов)"
-                )
-
-                header = f"📬 *{agent.emoji} {agent.name}* выполнил задачу:\n\n"
-                full_message = header + result
-                if len(full_message) <= 4096:
-                    await update.message.reply_text(full_message, parse_mode="Markdown")
-                else:
-                    await update.message.reply_text(header, parse_mode="Markdown")
-                    for chunk in [result[i:i+4000] for i in range(0, len(result), 4000)]:
-                        await update.message.reply_text(chunk)
+            await self._process_text(user_text, chat_id, reply)
 
         except Exception as e:
             logger.error(f"[Марта] Ошибка: {e}\n{traceback.format_exc()}")
@@ -261,6 +251,53 @@ class MartaAgent(BaseAgent):
                 await update.message.reply_text("⚠️ Произошла внутренняя ошибка. Попробуй ещё раз.")
             except Exception:
                 pass
+
+    async def handle_voice(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Голосовые сообщения: транскрибируем → роутим через _process_text()."""
+        if not update.message or not update.message.voice:
+            return
+
+        chat_id = update.effective_chat.id
+        user_name = (
+            update.effective_user.username
+            or update.effective_user.first_name
+            or "unknown"
+        )
+
+        try:
+            await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+
+            from groq import AsyncGroq as _AsyncGroq
+            if not hasattr(self, "_groq") or self._groq is None:
+                self._groq = _AsyncGroq(api_key=config.GROQ_API_KEY)
+
+            tg_file = await context.bot.get_file(update.message.voice.file_id)
+            voice_bytes = await tg_file.download_as_bytearray()
+
+            transcript = await self._groq.audio.transcriptions.create(
+                model="whisper-large-v3",
+                file=("voice.ogg", bytes(voice_bytes)),
+                language="ru",
+            )
+            user_text = transcript.text.strip()
+
+            if not user_text:
+                await update.message.reply_text("🎤 Не удалось распознать речь.")
+                return
+
+            logger.info(f"[Марта] Голос от @{user_name}: {user_text!r}")
+            await update.message.reply_text(f"🎤 Распознано: {user_text}")
+
+            async def reply(text, parse_mode=None):
+                await update.message.reply_text(text, parse_mode=parse_mode)
+
+            await self._process_text(user_text, chat_id, reply)
+
+        except Exception as e:
+            logger.error(f"[Марта] handle_voice ошибка: {e}")
+            await update.message.reply_text(f"⚠️ Ошибка распознавания голоса: {e}")
 
     # ------------------------------------------------------------------ #
     #  handle_task — для вызова Марты из других агентов                   #
