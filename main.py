@@ -55,6 +55,10 @@ async def run_all_async() -> None:
       5. asyncio.Event().wait()    — держим event loop живым до SIGTERM/Ctrl+C
       6. stop_async()              — graceful shutdown всех агентов
     """
+    # Инициализируем PostgreSQL (создаёт таблицу tasks если не существует)
+    from db import init_db, close_db
+    await init_db()
+
     agents = []
     for key, (agent_cls, _) in AGENTS.items():
         try:
@@ -104,6 +108,8 @@ async def run_all_async() -> None:
     for agent in reversed(started):
         await agent.stop_async()
     logger.info("Все агенты остановлены.")
+
+    await close_db()
 
 
 # ────────────────────────────────────────────────────────────────────────────

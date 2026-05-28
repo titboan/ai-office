@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import io
 import json
@@ -20,6 +21,13 @@ from telegram.ext import (
 )
 
 from config import config
+from task_queue import (
+    get_next_task,
+    mark_running,
+    mark_completed,
+    mark_failed,
+    cleanup_timed_out_tasks,
+)
 
 # Groq SDK — опциональная зависимость (транскрипция голосовых через Whisper)
 try:
@@ -61,6 +69,10 @@ class BaseAgent(ABC):
 
         # Groq AsyncGroq клиент — создаётся лениво при первом голосовом сообщении
         self._groq: Any | None = None
+
+        # Worker loop — управление фоновой задачей (создаются в start_polling_async)
+        self._worker_stop_event: asyncio.Event = asyncio.Event()
+        self._worker_task: asyncio.Task | None = None
 
         backend = "Redis" if config.REDIS_URL else "dict (fallback, Redis не задан)"
         logger.debug(f"[{self.name}] Хранилище истории: {backend}")
@@ -383,6 +395,139 @@ class BaseAgent(ABC):
         return result
 
     # ------------------------------------------------------------------ #
+    #  Worker loop — агент поллит свои задачи из Postgres                 #
+    # ------------------------------------------------------------------ #
+
+    async def _worker_loop(self) -> None:
+        """Фоновый цикл: берёт задачи из очереди и выполняет.
+
+        Алгоритм одной итерации:
+          1. get_next_task() — атомарно берём задачу (UPDATE...RETURNING)
+          2. Нет задач → sleep 2s и повторяем
+          3. mark_running() — no-op, статус уже проставлен в get_next_task
+          4. Уведомляем пользователя: 🔵 выполняется
+          5. asyncio.wait_for(handle_task(), timeout) — выполняем с таймаутом
+          6. mark_completed() / mark_failed() — пишем результат
+          7. Уведомляем пользователя: 🟢 готово / 🔴 ошибка
+        Каждые ~60 сек — cleanup_timed_out_tasks() для зависших задач других агентов.
+        """
+        logger.info(f"[{self.name}] Worker loop запущен")
+        iteration = 0
+
+        while not self._worker_stop_event.is_set():
+            try:
+                iteration += 1
+
+                # Периодическая очистка зависших задач (~каждые 60 сек при sleep=2)
+                if iteration % 30 == 0:
+                    await cleanup_timed_out_tasks()
+
+                task = await get_next_task(self.name.lower())
+
+                if task is None:
+                    await asyncio.sleep(2)
+                    continue
+
+                logger.info(f"[{self.name}] Worker взял: {task}")
+                await mark_running(task.id)
+
+                # Уведомляем пользователя о начале работы
+                if task.chat_id:
+                    await self._notify_user(
+                        task.chat_id,
+                        f"🔵 *{self.emoji} {self.name}* выполняет задачу…\n"
+                        f"`corr_id: {task.correlation_id[:8]}`",
+                    )
+
+                short = (task.payload[:80] + "…") if len(task.payload) > 80 else task.payload
+                await self.post_to_group(
+                    f"🔵 Выполняю (corr={task.correlation_id[:8]}): {short}"
+                )
+
+                # Выполняем с таймаутом
+                try:
+                    result = await asyncio.wait_for(
+                        self.handle_task(task.payload, from_agent=task.from_agent),
+                        timeout=float(task.timeout_seconds),
+                    )
+                    await mark_completed(task.id, result)
+                    logger.info(
+                        f"[{self.name}] ✅ Задача #{task.id} завершена "
+                        f"({len(result)} символов)"
+                    )
+
+                    if task.chat_id:
+                        header = f"🟢 *{self.emoji} {self.name}* выполнил задачу:\n\n"
+                        await self._notify_user(task.chat_id, header + result)
+
+                    await self.post_to_group(
+                        f"✅ Задача #{task.id} завершена (corr={task.correlation_id[:8]})"
+                    )
+
+                except asyncio.TimeoutError:
+                    error = f"Таймаут {task.timeout_seconds}с превышен"
+                    await mark_failed(task.id, error, retry=False)
+                    logger.warning(f"[{self.name}] ⏱️ Задача #{task.id} — таймаут")
+                    if task.chat_id:
+                        await self._notify_user(
+                            task.chat_id,
+                            f"⏱️ *{self.name}*: задача превысила лимит времени "
+                            f"({task.timeout_seconds}с). Попробуй ещё раз.",
+                        )
+
+                except Exception as e:
+                    error = f"{type(e).__name__}: {e}"
+                    await mark_failed(task.id, error, retry=True)
+                    logger.error(
+                        f"[{self.name}] ❌ Задача #{task.id} ошибка "
+                        f"(retry {task.retry_count + 1}/{task.max_retries}): {e}"
+                    )
+                    if task.chat_id and task.retry_count + 1 >= task.max_retries:
+                        await self._notify_user(
+                            task.chat_id,
+                            f"🔴 *{self.name}*: задача не выполнена после "
+                            f"{task.max_retries} попыток.\nОшибка: `{error[:200]}`",
+                        )
+
+            except asyncio.CancelledError:
+                logger.info(f"[{self.name}] Worker loop отменён")
+                break
+            except Exception as e:
+                logger.error(f"[{self.name}] Worker loop неожиданная ошибка: {e}")
+                await asyncio.sleep(5)
+
+        logger.info(f"[{self.name}] Worker loop остановлен")
+
+    async def _notify_user(self, chat_id: int, text: str) -> None:
+        """Отправить сообщение пользователю через бота этого агента.
+
+        Разбивает длинные сообщения на части (лимит Telegram 4096 символов).
+        """
+        if not self.bot_token:
+            return
+
+        chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)]
+
+        try:
+            if self.app:
+                for chunk in chunks:
+                    await self.app.bot.send_message(
+                        chat_id=chat_id,
+                        text=chunk,
+                        parse_mode="Markdown",
+                    )
+            else:
+                async with Bot(token=self.bot_token) as bot:
+                    for chunk in chunks:
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=chunk,
+                            parse_mode="Markdown",
+                        )
+        except Exception as e:
+            logger.warning(f"[{self.name}] _notify_user ошибка (chat={chat_id}): {e}")
+
+    # ------------------------------------------------------------------ #
     #  Запуск                                                             #
     # ------------------------------------------------------------------ #
 
@@ -429,8 +574,23 @@ class BaseAgent(ABC):
         await app.updater.start_polling(drop_pending_updates=True)
         logger.info(f"[{self.name}] Polling активен (async mode)")
 
+        # Запускаем worker loop как фоновую задачу asyncio
+        self._worker_stop_event = asyncio.Event()
+        self._worker_task = asyncio.create_task(
+            self._worker_loop(),
+            name=f"worker_{self.name.lower()}",
+        )
+        logger.info(f"[{self.name}] Worker task запущен")
+
     async def stop_async(self) -> None:
-        """Graceful shutdown: polling + HTTP-сессия + Redis."""
+        """Graceful shutdown: worker + polling + HTTP-сессия + Redis."""
+        # Останавливаем worker loop
+        self._worker_stop_event.set()
+        if self._worker_task is not None and not self._worker_task.done():
+            self._worker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._worker_task
+
         if self.app:
             with contextlib.suppress(Exception):
                 await self.app.updater.stop()

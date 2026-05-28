@@ -8,6 +8,7 @@ from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
+from task_queue import create_task as enqueue_task
 from tools import create_project
 from .base_agent import BaseAgent
 
@@ -203,31 +204,56 @@ class MartaAgent(BaseAgent):
                 )
                 return
 
-            # Уведомляем пользователя и группу о делегировании
             short_task = (subtask[:80] + "…") if len(subtask) > 80 else subtask
-            await update.message.reply_text(
-                f"⏳ {agent.emoji} *{agent.name}* принял задачу и работает…",
-                parse_mode="Markdown",
+
+            # Создаём задачу в Postgres — надёжная очередь вместо fire-and-forget
+            task_id = await enqueue_task(
+                assigned_agent=agent_key,
+                payload=subtask,
+                from_agent="marta",
+                chat_id=chat_id,   # агент-воркер отправит результат напрямую
             )
-            await self.post_to_group(f"🔀 Делегирую → {agent.name}: {short_task}")
-            await context.bot.send_chat_action(chat_id=chat_id, action="typing")
-            logger.info(f"[Марта] Делегирую → {agent.name}: {subtask!r}")
 
-            # 2. Вызываем агента через run_task() — он уведомит группу сам
-            result = await agent.run_task(subtask, from_agent="Марты")
-            logger.info(f"[Марта] {agent.name} вернул результат ({len(result)} символов)")
-
-            # 3. Отправляем результат пользователю
-            header = f"📬 *{agent.emoji} {agent.name}* выполнил задачу:\n\n"
-            # Telegram ограничение 4096 символов — разбиваем если нужно
-            full_message = header + result
-            if len(full_message) <= 4096:
-                await update.message.reply_text(full_message, parse_mode="Markdown")
+            if task_id:
+                # Задача принята в очередь — агент сам уведомит когда будет готово
+                await update.message.reply_text(
+                    f"🟡 {agent.emoji} *{agent.name}* принял задачу.\n"
+                    f"Результат придёт как только будет готов.\n"
+                    f"`task_id: {task_id}`",
+                    parse_mode="Markdown",
+                )
+                await self.post_to_group(
+                    f"🟡 Задача #{task_id} → {agent.name}: {short_task}"
+                )
+                logger.info(
+                    f"[Марта] Задача #{task_id} поставлена в очередь → {agent.name}"
+                )
             else:
-                await update.message.reply_text(header, parse_mode="Markdown")
-                # Режем по 4000 с запасом на Markdown
-                for chunk in [result[i:i+4000] for i in range(0, len(result), 4000)]:
-                    await update.message.reply_text(chunk)
+                # БД недоступна — fallback на прямой синхронный вызов
+                logger.warning(
+                    "[Марта] task_queue недоступен — fallback на прямой вызов"
+                )
+                await update.message.reply_text(
+                    f"⏳ {agent.emoji} *{agent.name}* принял задачу и работает…",
+                    parse_mode="Markdown",
+                )
+                await self.post_to_group(f"🔀 Делегирую → {agent.name}: {short_task}")
+                await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+                logger.info(f"[Марта] Делегирую (fallback) → {agent.name}: {subtask!r}")
+
+                result = await agent.run_task(subtask, from_agent="Марты")
+                logger.info(
+                    f"[Марта] {agent.name} вернул результат ({len(result)} символов)"
+                )
+
+                header = f"📬 *{agent.emoji} {agent.name}* выполнил задачу:\n\n"
+                full_message = header + result
+                if len(full_message) <= 4096:
+                    await update.message.reply_text(full_message, parse_mode="Markdown")
+                else:
+                    await update.message.reply_text(header, parse_mode="Markdown")
+                    for chunk in [result[i:i+4000] for i in range(0, len(result), 4000)]:
+                        await update.message.reply_text(chunk)
 
         except Exception as e:
             logger.error(f"[Марта] Ошибка: {e}\n{traceback.format_exc()}")
