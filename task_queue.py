@@ -40,11 +40,11 @@ async def create_task(
     parent_task_id: int | None = None,
     max_retries: int = 3,
     timeout_seconds: int = 300,
-) -> int | None:
+) -> tuple[int, str] | tuple[None, None]:
     try:
         pool = await get_pool()
     except RuntimeError:
-        return None
+        return None, None
 
     corr_id = correlation_id or str(uuid.uuid4())
     try:
@@ -57,17 +57,21 @@ async def create_task(
                     max_retries, timeout_seconds
                 )
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-                RETURNING id
+                RETURNING id, correlation_id
             """, assigned_agent, task_type, payload,
                 from_agent, chat_id,
                 corr_id, parent_task_id,
                 max_retries, timeout_seconds)
             task_id = row["id"]
-            logger.info(f"[task_queue] ✅ Создана задача id={task_id} agent={assigned_agent!r} corr={corr_id[:8]}")
-            return task_id
+            corr_id = row["correlation_id"]
+            logger.info(
+                f"[task_queue] ✅ Задача id={task_id} "
+                f"corr={corr_id[:8]}… agent={assigned_agent!r}"
+            )
+            return task_id, corr_id
     except Exception as e:
         logger.error(f"[task_queue] create_task error: {e}")
-        return None
+        return None, None
 
 
 async def get_next_task(agent_name: str) -> Task | None:
@@ -163,6 +167,22 @@ async def cleanup_timed_out_tasks() -> int:
     except Exception as e:
         logger.error(f"[task_queue] cleanup error: {e}")
         return 0
+
+
+async def get_active_tasks() -> list[dict]:
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, assigned_agent, status, payload, correlation_id, created_at
+                FROM tasks
+                WHERE status IN ('queued', 'acknowledged', 'running')
+                ORDER BY created_at ASC
+            """)
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"[task_queue] get_active_tasks error: {e}")
+        return []
 
 
 async def _set_status(task_id: int, status: str) -> None:

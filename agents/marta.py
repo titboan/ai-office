@@ -188,7 +188,7 @@ class MartaAgent(BaseAgent):
 
         short_task = (subtask[:80] + "…") if len(subtask) > 80 else subtask
 
-        task_id = await enqueue_task(
+        task_id, corr_id = await enqueue_task(
             assigned_agent=agent_key,
             payload=subtask,
             from_agent="marta",
@@ -199,7 +199,7 @@ class MartaAgent(BaseAgent):
             await reply_func(
                 f"🟡 {agent.emoji} *{agent.name}* принял задачу.\n"
                 f"Результат придёт когда будет готов.\n"
-                f"`task_id: {task_id}`",
+                f"`task_id: {task_id} | corr: {corr_id[:8]}`",
                 parse_mode="Markdown",
             )
             await self.post_to_group(f"🟡 Задача #{task_id} → {agent.name}: {short_task}")
@@ -346,6 +346,40 @@ class MartaAgent(BaseAgent):
     #  Команды                                                             #
     # ------------------------------------------------------------------ #
 
+    async def cmd_status(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """/status — показать активные задачи в очереди."""
+        from task_queue import get_active_tasks
+        tasks = await get_active_tasks()
+
+        if not tasks:
+            await update.message.reply_text("✅ Очередь пуста — нет активных задач.")
+            return
+
+        lines = ["📋 *Активные задачи:*\n"]
+        for t in tasks:
+            status_emoji = {
+                "queued":       "🟡",
+                "acknowledged": "🔵",
+                "running":      "🔵",
+            }.get(t["status"], "⚪")
+
+            created = t["created_at"].strftime("%H:%M:%S")
+            short_payload = (t["payload"][:50] + "…") if len(t["payload"]) > 50 else t["payload"]
+
+            lines.append(
+                f"{status_emoji} *{t['assigned_agent']}* | "
+                f"id={t['id']} | {t['status']}\n"
+                f"    `{short_payload}`\n"
+                f"    corr={t['correlation_id'][:8]} | {created}"
+            )
+
+        await update.message.reply_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+        )
+
     async def cmd_delegate(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/delegate <задача> — явная передача задачи команде."""
         task = " ".join(context.args) if context.args else ""
@@ -360,3 +394,4 @@ class MartaAgent(BaseAgent):
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("delegate", self.cmd_delegate))
+        self.app.add_handler(CommandHandler("status", self.cmd_status))

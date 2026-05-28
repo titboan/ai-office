@@ -428,6 +428,10 @@ class BaseAgent(ABC):
                     await asyncio.sleep(2)
                     continue
                 await mark_running(task.id)
+                logger.info(
+                    f"[{self.name}] corr={task.correlation_id[:8]} | "
+                    f"task_id={task.id} | payload={task.payload[:60]!r}"
+                )
                 if task.chat_id:
                     await self._notify_user(
                         task.chat_id,
