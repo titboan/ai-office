@@ -25,6 +25,7 @@ _BASE_URL    = "https://api.notion.com/v1"
 _API_VERSION = "2022-06-28"
 _BLOCK_SIZE  = 1990   # Notion limit per rich_text block = 2000, берём с запасом
 _MAX_CONTENT = 9900   # 5 блоков × 1990 = максимум для rich_text поля
+_CHUNK_SIZE  = 90     # Блоков за один PATCH /blocks/{id}/children (лимит API = 100)
 
 
 # ── Env-var accessors (читаем КАЖДЫЙ раз из os.environ, не из замороженного config) ──
@@ -67,6 +68,63 @@ def _today() -> str:
 
 def page_url(page_id: str) -> str:
     return f"https://www.notion.so/{page_id.replace('-', '')}"
+
+
+def _content_to_paragraph_blocks(text: str) -> list[dict]:
+    """Разбить произвольный текст на paragraph-блоки Notion (по 1990 символов каждый).
+
+    Каждый блок имеет вид:
+        {"object": "block", "type": "paragraph",
+         "paragraph": {"rich_text": [{"type": "text", "text": {"content": "..."}}]}}
+    Таким образом контент не ограничен 9900 символами свойства rich_text.
+    """
+    text = (text or "").strip()
+    if not text:
+        return [{
+            "object": "block", "type": "paragraph",
+            "paragraph": {"rich_text": [{"type": "text", "text": {"content": ""}}]},
+        }]
+    return [
+        {
+            "object": "block", "type": "paragraph",
+            "paragraph": {"rich_text": [{"type": "text", "text": {"content": text[i : i + _BLOCK_SIZE]}}]},
+        }
+        for i in range(0, len(text), _BLOCK_SIZE)
+    ]
+
+
+async def _append_blocks(page_id: str, blocks: list[dict], session: aiohttp.ClientSession) -> bool:
+    """PATCH /v1/blocks/{page_id}/children — добавить блоки на страницу.
+
+    Возвращает True при успехе (HTTP 200), False иначе. Не поднимает исключений.
+    """
+    url = f"{_BASE_URL}/blocks/{page_id}/children"
+    payload = {"children": blocks}
+    try:
+        async with session.patch(
+            url,
+            headers=_headers(),
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            status = resp.status
+            if status == 200:
+                return True
+            raw = await resp.text()
+            try:
+                err = json.loads(raw)
+                code    = err.get("code", "?")
+                message = err.get("message", raw[:300])
+            except Exception:
+                code, message = "?", raw[:300]
+            logger.error(
+                f"[notion] PATCH /blocks/{page_id[:8]}…/children → "
+                f"HTTP {status} | code={code!r} | message={message!r}"
+            )
+            return False
+    except Exception as e:
+        logger.error(f"[notion] _append_blocks исключение: {type(e).__name__}: {e}")
+        return False
 
 
 # ── Core HTTP ──────────────────────────────────────────────────────────────────
@@ -152,12 +210,16 @@ async def save_research(
     source: str = "",
     agent: str = "Каспер",
 ) -> str | None:
-    """Сохранить результат исследования в NOTION_RESEARCH_DB."""
+    """Сохранить результат исследования в NOTION_RESEARCH_DB.
 
-    # ════════════════════════════════════════════════════════════════
-    #  МАКСИМАЛЬНАЯ ДИАГНОСТИКА — каждый шаг залогирован отдельно
-    # ════════════════════════════════════════════════════════════════
-
+    Алгоритм:
+      1. Создать страницу с метаданными (Name, Source, Agent, Date).
+         Content в свойства НЕ кладём — там лимит 9900 символов.
+      2. Разбить content на paragraph-блоки по 1990 символов.
+      3. Группировать по 90 блоков (Notion лимит 100 блоков за запрос).
+      4. PATCH /v1/blocks/{page_id}/children для каждого чанка.
+      5. asyncio.sleep(0.3) между чанками — защита от rate limit.
+    """
     logger.info("[notion] ── save_research START ──────────────────────────")
 
     # ── Шаг 1: читаем переменные окружения ───────────────────────────────────
@@ -165,14 +227,11 @@ async def save_research(
         token = os.getenv("NOTION_TOKEN", "").strip()
         db_id = os.getenv("NOTION_RESEARCH_DB", "").strip()
 
-        # Полный список ВСЕХ Notion-переменных которые видит процесс
         all_notion_vars = {k: v for k, v in os.environ.items() if "NOTION" in k}
-
         logger.info(f"[notion] token len={len(token)} | db_id len={len(db_id)}")
         logger.info(f"[notion] token[:12]={token[:12]!r} | db_id[:12]={db_id[:12]!r}")
         logger.info(f"[notion] все NOTION_* переменные в os.environ: {list(all_notion_vars.keys())}")
 
-        # Сравнение: os.getenv vs config (import-time)
         tok_config = config.NOTION_TOKEN
         db_config  = config.NOTION_RESEARCH_DB
         logger.info(
@@ -201,76 +260,114 @@ async def save_research(
         )
         return None
 
-    # ── Шаг 3: прямой HTTP запрос к Notion API ───────────────────────────────
-    logger.info(f"[notion] Шаг 3: POST https://api.notion.com/v1/pages")
+    # ── Шаг 3: создаём страницу с метаданными (без Content) ─────────────────
+    logger.info(f"[notion] Шаг 3: POST /pages (только метаданные, без Content)")
     logger.info(f"[notion] Authorization: Bearer {token[:8]}…{token[-4:]}")
     logger.info(f"[notion] parent.database_id: {db_id}")
 
     props: dict[str, Any] = {
-        "Name":    {"title":     _text_blocks(title[:200], max_total=200)},
-        "Content": {"rich_text": _text_blocks(content)},
-        "Source":  {"rich_text": _text_blocks(source[:500], max_total=500)},
-        "Agent":   {"select":    {"name": agent}},
-        "Date":    {"date":      {"start": _today()}},
+        "Name":   {"title":     _text_blocks(title[:200], max_total=200)},
+        "Source": {"rich_text": _text_blocks(source[:500], max_total=500)},
+        "Agent":  {"select":    {"name": agent}},
+        "Date":   {"date":      {"start": _today()}},
     }
-    payload = {
-        "parent":     {"database_id": db_id},
-        "properties": props,
-    }
+    payload = {"parent": {"database_id": db_id}, "properties": props}
     req_headers = {
-        "Authorization": f"Bearer {token}",
+        "Authorization":  f"Bearer {token}",
         "Notion-Version": _API_VERSION,
-        "Content-Type": "application/json",
+        "Content-Type":   "application/json",
     }
 
+    page_id: str | None = None
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                "https://api.notion.com/v1/pages",
+                f"{_BASE_URL}/pages",
                 headers=req_headers,
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=20),
             ) as resp:
                 status = resp.status
                 body   = await resp.text()
+                logger.info(f"[notion] POST /pages → HTTP {status} | body={body[:300]!r}")
 
-                # Логируем статус и первые 500 символов тела
-                logger.info(f"[notion] response status={status} body={body[:500]!r}")
+                if status != 200:
+                    try:
+                        err     = json.loads(body)
+                        code    = err.get("code", "?")
+                        message = err.get("message", body[:300])
+                    except Exception:
+                        code, message = "parse_error", body[:300]
+                    logger.error(
+                        f"[notion] Создание страницы провалилось: "
+                        f"HTTP {status} | code={code!r} | message={message!r}"
+                    )
+                    logger.info("[notion] ── save_research END (page creation error) ──")
+                    return None
 
-                if status == 200:
-                    data = json.loads(body)
-                    page_id = data.get("id", "?")
-                    url = page_url(page_id)
-                    logger.info(f"[notion] ✅ Research сохранён: {url}")
-                    logger.info("[notion] ── save_research END (success) ──────────────")
-                    return url
+                data    = json.loads(body)
+                page_id = data.get("id", "")
+                logger.info(f"[notion] ✅ Страница создана: id={page_id}")
 
-                # Разбираем ошибку
-                try:
-                    err     = json.loads(body)
-                    code    = err.get("code", "?")
-                    message = err.get("message", body[:300])
-                except Exception:
-                    code, message = "parse_error", body[:300]
+            # ── Шаг 4: разбиваем content на paragraph-блоки ──────────────────
+            all_blocks = _content_to_paragraph_blocks(content)
+            total_blocks = len(all_blocks)
 
-                logger.error(
-                    f"[notion] HTTP {status} | code={code!r} | message={message!r}"
+            # Делим на чанки по _CHUNK_SIZE блоков
+            chunks = [
+                all_blocks[i : i + _CHUNK_SIZE]
+                for i in range(0, total_blocks, _CHUNK_SIZE)
+            ]
+            total_chunks = len(chunks)
+            logger.info(
+                f"[notion] Текст разбит на {total_blocks} блоков → "
+                f"{total_chunks} чанков по ≤{_CHUNK_SIZE} блоков"
+            )
+
+            # ── Шаг 5: PATCH для каждого чанка ───────────────────────────────
+            failed_chunks = 0
+            for idx, chunk in enumerate(chunks, start=1):
+                logger.info(
+                    f"[notion] PATCH чанк {idx}/{total_chunks} "
+                    f"({len(chunk)} блоков) → /blocks/{page_id[:8]}…/children"
                 )
-                logger.info("[notion] ── save_research END (api error) ────────────")
-                return None
+                ok = await _append_blocks(page_id, chunk, session)
+                if not ok:
+                    failed_chunks += 1
+                    logger.warning(
+                        f"[notion] Чанк {idx}/{total_chunks} не загружен — продолжаем"
+                    )
+                if idx < total_chunks:
+                    await asyncio.sleep(0.3)
+
+            if failed_chunks:
+                logger.warning(
+                    f"[notion] {failed_chunks}/{total_chunks} чанков не загружены — "
+                    "часть текста может отсутствовать на странице"
+                )
+            else:
+                logger.info(f"[notion] Все {total_chunks} чанков успешно загружены")
 
     except aiohttp.ClientConnectorError as e:
-        logger.error(f"[notion] exception: {type(e).__name__}: {e}")
+        logger.error(f"[notion] Нет соединения с api.notion.com: {e}")
         logger.info("[notion] ── save_research END (connection error) ──────")
         return None
     except (asyncio.TimeoutError, aiohttp.ServerTimeoutError) as e:
-        logger.error(f"[notion] exception: {type(e).__name__}: {e}")
+        logger.error(f"[notion] Таймаут запроса к Notion API: {e}")
         logger.info("[notion] ── save_research END (timeout) ──────────────")
         return None
     except Exception as e:
-        logger.error(f"[notion] exception: {type(e).__name__}: {e}")
+        logger.error(f"[notion] Неожиданная ошибка: {type(e).__name__}: {e}")
         logger.info("[notion] ── save_research END (unexpected error) ──────")
         return None
+
+    if not page_id:
+        return None
+
+    url = page_url(page_id)
+    logger.info(f"[notion] ✅ Research полностью сохранён: {url}")
+    logger.info("[notion] ── save_research END (success) ──────────────────")
+    return url
 
 
 async def save_content(
