@@ -30,6 +30,9 @@ class Config:
     # Веб-поиск (Каспер)
     TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
 
+    # Голосовые сообщения — Groq Whisper API (бесплатно: https://console.groq.com)
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+
     # Память агентов (Redis)
     # Если не задан — агенты хранят историю в памяти процесса (fallback dict)
     REDIS_URL: str = os.getenv("REDIS_URL", "")

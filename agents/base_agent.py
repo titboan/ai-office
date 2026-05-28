@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import traceback
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Any, Optional
 
 import anthropic
 import redis.asyncio as aioredis
@@ -19,6 +20,14 @@ from telegram.ext import (
 )
 
 from config import config
+
+# Groq SDK — опциональная зависимость (транскрипция голосовых через Whisper)
+try:
+    from groq import AsyncGroq as _AsyncGroq
+    _GROQ_AVAILABLE = True
+except ImportError:
+    _AsyncGroq = None          # type: ignore[assignment,misc]
+    _GROQ_AVAILABLE = False
 
 # TTL истории в Redis: 7 дней. После этого Redis сам удалит ключ.
 _HISTORY_TTL_SECONDS: int = 60 * 60 * 24 * 7
@@ -49,6 +58,9 @@ class BaseAgent(ABC):
 
         # Fallback: dict в памяти, если Redis не задан
         self._history_fallback: dict[int, list[dict]] = {}
+
+        # Groq AsyncGroq клиент — создаётся лениво при первом голосовом сообщении
+        self._groq: Any | None = None
 
         backend = "Redis" if config.REDIS_URL else "dict (fallback, Redis не задан)"
         logger.debug(f"[{self.name}] Хранилище истории: {backend}")
@@ -257,6 +269,92 @@ class BaseAgent(ABC):
             with contextlib.suppress(Exception):
                 await update.message.reply_text("⚠️ Произошла внутренняя ошибка. Попробуй ещё раз.")
 
+    # ------------------------------------------------------------------ #
+    #  Голосовые сообщения — Groq Whisper                                  #
+    # ------------------------------------------------------------------ #
+
+    async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Транскрибирует голосовое через Groq Whisper, затем передаёт в handle_message().
+
+        Работает для всех агентов: Касперу достанется транскрипция → он сделает
+        веб-поиск; Марте → она делегирует нужному агенту; остальным → think().
+        Если GROQ_API_KEY не задан — вежливо сообщает об этом пользователю.
+        """
+        if not update.message:
+            return
+
+        chat_id = update.effective_chat.id
+        user_name = (
+            update.effective_user.username
+            or update.effective_user.first_name
+            or "unknown"
+        )
+
+        # ── Проверяем доступность Groq ─────────────────────────────────────
+        if not _GROQ_AVAILABLE:
+            logger.warning(f"[{self.name}] groq не установлен — pip install groq")
+            await update.message.reply_text(
+                "⚠️ Голосовые сообщения не поддерживаются: пакет groq не установлен.\n"
+                "Напиши запрос текстом."
+            )
+            return
+
+        if not config.GROQ_API_KEY:
+            logger.warning(f"[{self.name}] GROQ_API_KEY не задан — голосовые недоступны")
+            await update.message.reply_text(
+                "⚠️ Голосовые сообщения не поддерживаются: GROQ_API_KEY не задан.\n"
+                "Добавь ключ на https://console.groq.com → API Keys, "
+                "затем пропиши GROQ_API_KEY в переменных окружения."
+            )
+            return
+
+        # ── Ленивая инициализация клиента ─────────────────────────────────
+        if self._groq is None:
+            self._groq = _AsyncGroq(api_key=config.GROQ_API_KEY)
+
+        voice = update.message.voice
+        logger.info(
+            f"[{self.name}] Голосовое от @{user_name} (chat={chat_id}): "
+            f"duration={voice.duration}s size={voice.file_size}b"
+        )
+
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+
+        # ── Скачиваем файл в память ────────────────────────────────────────
+        try:
+            tg_file = await context.bot.get_file(voice.file_id)
+            voice_bytes: bytearray = await tg_file.download_as_bytearray()
+        except Exception as e:
+            logger.error(f"[{self.name}] Ошибка скачивания голосового: {e}")
+            await update.message.reply_text("⚠️ Не удалось загрузить голосовое сообщение.")
+            return
+
+        # ── Транскрипция через Groq Whisper ────────────────────────────────
+        try:
+            transcription = await self._groq.audio.transcriptions.create(
+                model="whisper-large-v3",
+                file=("voice.ogg", bytes(voice_bytes)),
+                language="ru",
+            )
+            user_text = transcription.text.strip()
+            logger.info(f"[{self.name}] Whisper распознал: {user_text!r}")
+        except Exception as e:
+            logger.error(f"[{self.name}] Ошибка Groq Whisper: {type(e).__name__}: {e}")
+            await update.message.reply_text("⚠️ Не удалось распознать голосовое сообщение.")
+            return
+
+        if not user_text:
+            await update.message.reply_text("🎤 Голосовое получено, но текст пустой. Попробуй ещё раз.")
+            return
+
+        # ── Показываем транскрипцию и передаём в handle_message ───────────
+        await update.message.reply_text(f"🎤 Распознано: {user_text}")
+
+        # Подставляем текст в объект update — handle_message любого агента
+        # (base / Kasper / Marta) получит его через update.message.text как обычно
+        update.message.text = user_text
+        await self.handle_message(update, context)
+
     @abstractmethod
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
         """Выполнить задачу, делегированную от другого агента."""
@@ -306,9 +404,16 @@ class BaseAgent(ABC):
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
         )
+        self.app.add_handler(
+            MessageHandler(filters.VOICE, self.handle_voice)
+        )
         self._register_extra_handlers()
 
-        logger.info(f"[{self.name}] Handlers зарегистрированы: /start, /reset, MessageHandler(TEXT)")
+        voice_status = "Groq ✓" if (_GROQ_AVAILABLE and config.GROQ_API_KEY) else "Groq — нет ключа"
+        logger.info(
+            f"[{self.name}] Handlers зарегистрированы: "
+            f"/start, /reset, MessageHandler(TEXT), MessageHandler(VOICE) [{voice_status}]"
+        )
         return self.app
 
     def _register_extra_handlers(self) -> None:
