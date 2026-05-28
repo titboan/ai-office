@@ -413,89 +413,48 @@ class BaseAgent(ABC):
         """
         logger.info(f"[{self.name}] Worker loop запущен")
         iteration = 0
-
         while not self._worker_stop_event.is_set():
             try:
                 iteration += 1
-
-                # Периодическая очистка зависших задач (~каждые 60 сек при sleep=2)
                 if iteration % 30 == 0:
                     await cleanup_timed_out_tasks()
-
                 task = await get_next_task(self.name.lower())
-
                 if task is None:
                     await asyncio.sleep(2)
                     continue
-
-                logger.info(f"[{self.name}] Worker взял: {task}")
                 await mark_running(task.id)
-
-                # Уведомляем пользователя о начале работы
                 if task.chat_id:
                     await self._notify_user(
                         task.chat_id,
-                        f"🔵 *{self.emoji} {self.name}* выполняет задачу…\n"
-                        f"`corr_id: {task.correlation_id[:8]}`",
+                        f"🔵 *{self.emoji} {self.name}* выполняет задачу…\n`corr: {task.correlation_id[:8]}`"
                     )
-
                 short = (task.payload[:80] + "…") if len(task.payload) > 80 else task.payload
-                await self.post_to_group(
-                    f"🔵 Выполняю (corr={task.correlation_id[:8]}): {short}"
-                )
-
-                # Выполняем с таймаутом
+                await self.post_to_group(f"🔵 Выполняю (corr={task.correlation_id[:8]}): {short}")
                 try:
                     result = await asyncio.wait_for(
                         self.handle_task(task.payload, from_agent=task.from_agent),
                         timeout=float(task.timeout_seconds),
                     )
                     await mark_completed(task.id, result)
-                    logger.info(
-                        f"[{self.name}] ✅ Задача #{task.id} завершена "
-                        f"({len(result)} символов)"
-                    )
-
                     if task.chat_id:
-                        header = f"🟢 *{self.emoji} {self.name}* выполнил задачу:\n\n"
-                        await self._notify_user(task.chat_id, header + result)
-
-                    await self.post_to_group(
-                        f"✅ Задача #{task.id} завершена (corr={task.correlation_id[:8]})"
-                    )
-
+                        await self._notify_user(
+                            task.chat_id,
+                            f"🟢 *{self.emoji} {self.name}* выполнил задачу:\n\n{result}"
+                        )
+                    await self.post_to_group(f"✅ Задача #{task.id} завершена")
                 except asyncio.TimeoutError:
-                    error = f"Таймаут {task.timeout_seconds}с превышен"
-                    await mark_failed(task.id, error, retry=False)
-                    logger.warning(f"[{self.name}] ⏱️ Задача #{task.id} — таймаут")
+                    await mark_failed(task.id, f"Таймаут {task.timeout_seconds}с", retry=False)
                     if task.chat_id:
-                        await self._notify_user(
-                            task.chat_id,
-                            f"⏱️ *{self.name}*: задача превысила лимит времени "
-                            f"({task.timeout_seconds}с). Попробуй ещё раз.",
-                        )
-
+                        await self._notify_user(task.chat_id, f"⏱️ *{self.name}*: задача превысила лимит времени.")
                 except Exception as e:
-                    error = f"{type(e).__name__}: {e}"
-                    await mark_failed(task.id, error, retry=True)
-                    logger.error(
-                        f"[{self.name}] ❌ Задача #{task.id} ошибка "
-                        f"(retry {task.retry_count + 1}/{task.max_retries}): {e}"
-                    )
+                    await mark_failed(task.id, f"{type(e).__name__}: {e}", retry=True)
                     if task.chat_id and task.retry_count + 1 >= task.max_retries:
-                        await self._notify_user(
-                            task.chat_id,
-                            f"🔴 *{self.name}*: задача не выполнена после "
-                            f"{task.max_retries} попыток.\nОшибка: `{error[:200]}`",
-                        )
-
+                        await self._notify_user(task.chat_id, f"🔴 *{self.name}*: задача не выполнена.\n`{e}`")
             except asyncio.CancelledError:
-                logger.info(f"[{self.name}] Worker loop отменён")
                 break
             except Exception as e:
-                logger.error(f"[{self.name}] Worker loop неожиданная ошибка: {e}")
+                logger.error(f"[{self.name}] Worker loop ошибка: {e}")
                 await asyncio.sleep(5)
-
         logger.info(f"[{self.name}] Worker loop остановлен")
 
     async def _notify_user(self, chat_id: int, text: str) -> None:
