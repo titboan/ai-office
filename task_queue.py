@@ -1,41 +1,33 @@
 """
-task_queue.py — async Postgres-based task queue для ai-office.
-
-Агенты создают задачи через create_task(), воркер-цикл в BaseAgent
-поллит get_next_task() и обновляет статус через mark_*.
-
-Атомарность: get_next_task() использует UPDATE...RETURNING, что исключает
-race condition при параллельных воркерах (каждый агент — отдельный loop).
+task_queue.py — очередь задач на Postgres
+get_next_task использует UPDATE...RETURNING — атомарно, без race conditions
 """
-
 from __future__ import annotations
-
-import os
-from dataclasses import dataclass
-from typing import Optional
-
+import uuid
+from datetime import datetime
 from loguru import logger
-
 from db import get_pool
 
 
-@dataclass
 class Task:
-    id: int
-    payload: str
-    from_agent: str
-    chat_id: Optional[int]
-    correlation_id: str
-    timeout_seconds: int
-    retry_count: int
-    max_retries: int
+    def __init__(self, row: dict) -> None:
+        self.id              = row["id"]
+        self.assigned_agent  = row["assigned_agent"]
+        self.task_type       = row["task_type"]
+        self.status          = row["status"]
+        self.payload         = row["payload"]
+        self.result          = row.get("result")
+        self.correlation_id  = row["correlation_id"]
+        self.parent_task_id  = row.get("parent_task_id")
+        self.from_agent      = row["from_agent"]
+        self.chat_id         = row.get("chat_id")
+        self.retry_count     = row["retry_count"]
+        self.max_retries     = row["max_retries"]
+        self.timeout_seconds = row["timeout_seconds"]
+        self.created_at      = row["created_at"]
 
-    def __str__(self) -> str:
-        short = (self.payload[:60] + "…") if len(self.payload) > 60 else self.payload
-        return (
-            f"Task(id={self.id}, corr={self.correlation_id[:8]}, "
-            f"payload={short!r}, retry={self.retry_count}/{self.max_retries})"
-        )
+    def __repr__(self):
+        return f"Task(id={self.id}, agent={self.assigned_agent!r}, status={self.status!r}, corr={self.correlation_id[:8]}…)"
 
 
 async def create_task(
@@ -43,168 +35,140 @@ async def create_task(
     payload: str,
     from_agent: str = "user",
     chat_id: int | None = None,
-    timeout_seconds: int = 300,
+    task_type: str = "general",
+    correlation_id: str | None = None,
+    parent_task_id: int | None = None,
     max_retries: int = 3,
+    timeout_seconds: int = 300,
 ) -> int | None:
-    """Добавить задачу в очередь. Возвращает task.id или None если БД недоступна."""
-    pool = get_pool()
-    if pool is None:
-        logger.warning("[task_queue] create_task: pool недоступен")
-        return None
     try:
-        row = await pool.fetchrow(
-            """
-            INSERT INTO tasks (assigned_agent, payload, from_agent, chat_id,
-                               timeout_seconds, max_retries)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id
-            """,
-            assigned_agent, payload, from_agent, chat_id,
-            timeout_seconds, max_retries,
-        )
-        task_id: int = row["id"]
-        logger.info(
-            f"[task_queue] Задача #{task_id} создана → {assigned_agent} "
-            f"(timeout={timeout_seconds}s, retries={max_retries})"
-        )
-        return task_id
+        pool = await get_pool()
+    except RuntimeError:
+        return None
+
+    corr_id = correlation_id or str(uuid.uuid4())
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                INSERT INTO tasks (
+                    assigned_agent, task_type, payload,
+                    from_agent, chat_id,
+                    correlation_id, parent_task_id,
+                    max_retries, timeout_seconds
+                )
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                RETURNING id
+            """, assigned_agent, task_type, payload,
+                from_agent, chat_id,
+                corr_id, parent_task_id,
+                max_retries, timeout_seconds)
+            task_id = row["id"]
+            logger.info(f"[task_queue] ✅ Создана задача id={task_id} agent={assigned_agent!r} corr={corr_id[:8]}")
+            return task_id
     except Exception as e:
-        logger.error(f"[task_queue] create_task ошибка: {type(e).__name__}: {e}")
+        logger.error(f"[task_queue] create_task error: {e}")
         return None
 
 
 async def get_next_task(agent_name: str) -> Task | None:
-    """Атомарно взять следующую pending-задачу агента и пометить как running.
-
-    Использует UPDATE...RETURNING — исключает двойное взятие задачи.
-    Возвращает None если нет задач или БД недоступна.
-    """
-    pool = get_pool()
-    if pool is None:
+    # UPDATE...RETURNING — атомарно берём задачу без отдельного SELECT FOR UPDATE
+    # Два воркера одновременно получат разные задачи — race condition исключён
+    try:
+        pool = await get_pool()
+    except RuntimeError:
         return None
     try:
-        row = await pool.fetchrow(
-            """
-            UPDATE tasks
-            SET status = 'running', started_at = NOW()
-            WHERE id = (
-                SELECT id FROM tasks
-                WHERE assigned_agent = $1
-                  AND status = 'pending'
-                  AND retry_count < max_retries
-                ORDER BY created_at
-                LIMIT 1
-                FOR UPDATE SKIP LOCKED
-            )
-            RETURNING id, payload, from_agent, chat_id,
-                      correlation_id::text,
-                      timeout_seconds, retry_count, max_retries
-            """,
-            agent_name,
-        )
-        if row is None:
-            return None
-        return Task(
-            id=row["id"],
-            payload=row["payload"],
-            from_agent=row["from_agent"],
-            chat_id=row["chat_id"],
-            correlation_id=row["correlation_id"],
-            timeout_seconds=row["timeout_seconds"],
-            retry_count=row["retry_count"],
-            max_retries=row["max_retries"],
-        )
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                UPDATE tasks
+                SET status     = 'acknowledged',
+                    started_at = NOW()
+                WHERE id = (
+                    SELECT id FROM tasks
+                    WHERE assigned_agent = $1
+                      AND status = 'queued'
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                )
+                RETURNING *
+            """, agent_name)
+            if row is None:
+                return None
+            task = Task(dict(row))
+            logger.info(f"[task_queue] 📥 {agent_name} взял: {task}")
+            return task
     except Exception as e:
-        logger.error(f"[task_queue] get_next_task ошибка: {type(e).__name__}: {e}")
+        logger.error(f"[task_queue] get_next_task error: {e}")
         return None
 
 
 async def mark_running(task_id: int) -> None:
-    """No-op: get_next_task() уже атомарно ставит status='running'."""
+    await _set_status(task_id, "running")
 
 
 async def mark_completed(task_id: int, result: str) -> None:
-    """Пометить задачу выполненной, сохранить результат."""
-    pool = get_pool()
-    if pool is None:
-        return
     try:
-        await pool.execute(
-            """
-            UPDATE tasks
-            SET status = 'completed', result = $2, completed_at = NOW()
-            WHERE id = $1
-            """,
-            task_id, result,
-        )
-        logger.debug(f"[task_queue] Задача #{task_id} → completed")
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE tasks SET status='completed', result=$2, finished_at=NOW()
+                WHERE id=$1
+            """, task_id, result)
+        logger.info(f"[task_queue] ✅ task_id={task_id} → completed")
     except Exception as e:
-        logger.error(f"[task_queue] mark_completed ошибка (id={task_id}): {e}")
+        logger.error(f"[task_queue] mark_completed error: {e}")
 
 
-async def mark_failed(task_id: int, error: str, retry: bool = True) -> None:
-    """Пометить задачу провалившейся.
-
-    retry=True — если есть попытки: retry_count+1, status='pending' (воркер повторит).
-    retry=False — сразу status='failed' (таймаут, намеренный отказ).
-    """
-    pool = get_pool()
-    if pool is None:
-        return
+async def mark_failed(task_id: int, error: str, retry: bool = False) -> None:
     try:
-        if retry:
-            await pool.execute(
-                """
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if retry:
+                row = await conn.fetchrow(
+                    "SELECT retry_count, max_retries FROM tasks WHERE id=$1", task_id
+                )
+                if row and row["retry_count"] < row["max_retries"]:
+                    await conn.execute("""
+                        UPDATE tasks
+                        SET status='queued', retry_count=retry_count+1,
+                            error_message=$2, started_at=NULL
+                        WHERE id=$1
+                    """, task_id, error)
+                    logger.warning(f"[task_queue] 🔄 task_id={task_id} → retry ({row['retry_count']+1}/{row['max_retries']})")
+                    return
+            await conn.execute("""
+                UPDATE tasks SET status='failed', error_message=$2, finished_at=NOW()
+                WHERE id=$1
+            """, task_id, error)
+            logger.error(f"[task_queue] ❌ task_id={task_id} → failed")
+    except Exception as e:
+        logger.error(f"[task_queue] mark_failed error: {e}")
+
+
+async def cleanup_timed_out_tasks() -> int:
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
                 UPDATE tasks
-                SET retry_count = retry_count + 1,
-                    error       = $2,
-                    status      = CASE
-                                    WHEN retry_count + 1 >= max_retries THEN 'failed'
-                                    ELSE 'pending'
-                                  END,
-                    started_at  = NULL
-                WHERE id = $1
-                """,
-                task_id, error,
-            )
-        else:
-            await pool.execute(
-                """
-                UPDATE tasks
-                SET status = 'failed', error = $2, completed_at = NOW()
-                WHERE id = $1
-                """,
-                task_id, error,
-            )
-        logger.debug(f"[task_queue] Задача #{task_id} → failed (retry={retry}): {error[:100]}")
+                SET status='timeout', error_message='Timeout exceeded', finished_at=NOW()
+                WHERE status IN ('acknowledged','running')
+                  AND started_at < NOW() - INTERVAL '1 second' * timeout_seconds
+                RETURNING id
+            """)
+            if rows:
+                logger.warning(f"[task_queue] ⏱️ Таймаут задач: {[r['id'] for r in rows]}")
+            return len(rows)
     except Exception as e:
-        logger.error(f"[task_queue] mark_failed ошибка (id={task_id}): {e}")
+        logger.error(f"[task_queue] cleanup error: {e}")
+        return 0
 
 
-async def cleanup_timed_out_tasks() -> None:
-    """Перевести зависшие running-задачи в failed.
-
-    Задача считается зависшей если она в статусе 'running' дольше timeout_seconds.
-    Вызывается воркером раз в ~60 секунд.
-    """
-    pool = get_pool()
-    if pool is None:
-        return
+async def _set_status(task_id: int, status: str) -> None:
     try:
-        result = await pool.execute(
-            """
-            UPDATE tasks
-            SET status       = 'failed',
-                error        = 'Таймаут: задача не завершена вовремя',
-                completed_at = NOW()
-            WHERE status = 'running'
-              AND started_at < NOW() - (timeout_seconds || ' seconds')::INTERVAL
-            """
-        )
-        count = int(result.split()[-1])
-        if count > 0:
-            logger.warning(
-                f"[task_queue] cleanup: {count} зависших задач → failed"
-            )
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE tasks SET status=$2 WHERE id=$1", task_id, status)
     except Exception as e:
-        logger.error(f"[task_queue] cleanup_timed_out_tasks ошибка: {e}")
+        logger.error(f"[task_queue] _set_status error: {e}")
