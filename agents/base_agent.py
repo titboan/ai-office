@@ -513,6 +513,7 @@ class BaseAgent(ABC):
                         timeout=float(task.timeout_seconds),
                     )
                     await mark_completed(task.id, result)
+                    task.result = result  # обновляем объект — нужно для _advance_chain → Notion
                     if task.chain_id:
                         await self._advance_chain(task)
                     else:
