@@ -340,8 +340,18 @@ class MartaAgent(BaseAgent):
         try:
             await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
+            from telegram import ReplyKeyboardMarkup, KeyboardButton
+            _kb = ReplyKeyboardMarkup(
+                [
+                    [KeyboardButton("📋 Статус"), KeyboardButton("📜 История")],
+                    [KeyboardButton("❌ Отмена задачи")],
+                ],
+                resize_keyboard=True,
+                persistent=True,
+            )
+
             async def reply(text, parse_mode=None):
-                await update.message.reply_text(text, parse_mode=parse_mode)
+                await update.message.reply_text(text, parse_mode=parse_mode, reply_markup=_kb)
 
             await self._process_text(user_text, chat_id, reply)
 
@@ -390,8 +400,18 @@ class MartaAgent(BaseAgent):
             logger.info(f"[Марта] Голос от @{user_name}: {user_text!r}")
             await update.message.reply_text(f"🎤 Распознано: {user_text}")
 
+            from telegram import ReplyKeyboardMarkup, KeyboardButton
+            _kb = ReplyKeyboardMarkup(
+                [
+                    [KeyboardButton("📋 Статус"), KeyboardButton("📜 История")],
+                    [KeyboardButton("❌ Отмена задачи")],
+                ],
+                resize_keyboard=True,
+                persistent=True,
+            )
+
             async def reply(text, parse_mode=None):
-                await update.message.reply_text(text, parse_mode=parse_mode)
+                await update.message.reply_text(text, parse_mode=parse_mode, reply_markup=_kb)
 
             await self._process_text(user_text, chat_id, reply)
 
