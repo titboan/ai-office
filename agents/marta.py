@@ -8,7 +8,7 @@ from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
-from task_queue import create_task as enqueue_task
+from task_queue import create_task as enqueue_task, get_active_tasks
 from tools import create_project
 from .base_agent import BaseAgent
 
@@ -175,6 +175,25 @@ class MartaAgent(BaseAgent):
     #  Общая логика обработки текста                                       #
     # ------------------------------------------------------------------ #
 
+    async def cmd_start(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        from telegram import ReplyKeyboardMarkup, KeyboardButton
+        keyboard = ReplyKeyboardMarkup(
+            [
+                [KeyboardButton("📋 Статус"), KeyboardButton("📜 История")],
+                [KeyboardButton("❌ Отмена задачи")],
+            ],
+            resize_keyboard=True,
+            persistent=True,
+        )
+        await update.message.reply_text(
+            f"{self.emoji} Привет! Я *{self.name}* — {self.role}.\n"
+            f"Напиши задачу или выбери действие:",
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+
     async def _process_text(
         self,
         user_text: str,
@@ -182,6 +201,54 @@ class MartaAgent(BaseAgent):
         reply_func,  # callable: async def reply(text, parse_mode=None)
     ) -> None:
         """Общая логика обработки текста — используется из handle_message и handle_voice."""
+
+        # Обработка кнопок клавиатуры
+        if user_text.strip() == "📋 Статус":
+            tasks = await get_active_tasks()
+            if not tasks:
+                await reply_func("✅ Очередь пуста — нет активных задач.")
+                return
+            lines = ["📋 *Активные задачи:*\n"]
+            for t in tasks:
+                status_emoji = {"queued": "🟡", "acknowledged": "🔵", "running": "🔵"}.get(t["status"], "⚪")
+                priority_label = {20: "🔴", 10: "🟠", 0: ""}.get(t.get("priority", 0), "")
+                created = t["created_at"].strftime("%H:%M:%S")
+                short_payload = (t["payload"][:50] + "…") if len(t["payload"]) > 50 else t["payload"]
+                lines.append(
+                    f"{status_emoji}{priority_label} *{t['assigned_agent']}* | id={t['id']}\n"
+                    f"    `{short_payload}`\n"
+                    f"    corr={t['correlation_id'][:8]} | {created}"
+                )
+            await reply_func("\n".join(lines), parse_mode="Markdown")
+            return
+
+        if user_text.strip() == "📜 История":
+            from task_queue import get_recent_tasks
+            tasks = await get_recent_tasks(10)
+            if not tasks:
+                await reply_func("📭 История задач пуста.")
+                return
+            lines = ["📜 *Последние задачи:*\n"]
+            for t in tasks:
+                status_emoji = {"completed": "✅", "failed": "❌", "timeout": "⏱️"}.get(t["status"], "⚪")
+                finished = t["finished_at"].strftime("%d.%m %H:%M") if t["finished_at"] else "—"
+                short_payload = (t["payload"][:50] + "…") if len(t["payload"]) > 50 else t["payload"]
+                lines.append(
+                    f"{status_emoji} *{t['assigned_agent']}* | id={t['id']}\n"
+                    f"    `{short_payload}`\n"
+                    f"    {finished} | corr={t['correlation_id'][:8]}"
+                )
+            await reply_func("\n".join(lines), parse_mode="Markdown")
+            return
+
+        if user_text.strip() == "❌ Отмена задачи":
+            await reply_func(
+                "Напиши номер задачи которую отменить:\n`/cancel <task_id>`\n\n"
+                "Узнать номера: нажми 📋 Статус",
+                parse_mode="Markdown",
+            )
+            return
+
         marta_response = await self.think(user_text, chat_id)
         delegation = self._parse_delegation(marta_response)
 
@@ -382,7 +449,6 @@ class MartaAgent(BaseAgent):
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """/status — показать активные задачи в очереди."""
-        from task_queue import get_active_tasks
         tasks = await get_active_tasks()
 
         if not tasks:
