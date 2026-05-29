@@ -246,6 +246,26 @@ async def create_reminder(
     return task_id, corr_id
 
 
+async def cancel_task(task_id: int) -> bool:
+    """Отменить задачу если она ещё в статусе queued."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                UPDATE tasks
+                SET status        = 'failed',
+                    error_message = 'Cancelled by user',
+                    finished_at   = NOW()
+                WHERE id = $1
+                  AND status = 'queued'
+                RETURNING id
+            """, task_id)
+            return row is not None
+    except Exception as e:
+        logger.error(f"[task_queue] cancel_task error: {e}")
+        return False
+
+
 async def _set_status(task_id: int, status: str) -> None:
     try:
         pool = await get_pool()

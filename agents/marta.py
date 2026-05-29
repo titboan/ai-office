@@ -414,6 +414,31 @@ class MartaAgent(BaseAgent):
             parse_mode="Markdown",
         )
 
+    async def cmd_cancel(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """/cancel <task_id> — отменить задачу из очереди."""
+        if not context.args:
+            await update.message.reply_text(
+                "Использование: /cancel <task_id>\n"
+                "Узнать task_id: /status"
+            )
+            return
+        try:
+            task_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("task_id должен быть числом.")
+            return
+
+        from task_queue import cancel_task
+        cancelled = await cancel_task(task_id)
+        if cancelled:
+            await update.message.reply_text(f"✅ Задача #{task_id} отменена.")
+        else:
+            await update.message.reply_text(
+                f"⚠️ Задача #{task_id} не найдена или уже выполняется."
+            )
+
     async def cmd_delegate(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/delegate <задача> — явная передача задачи команде."""
         task = " ".join(context.args) if context.args else ""
@@ -429,3 +454,4 @@ class MartaAgent(BaseAgent):
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("delegate", self.cmd_delegate))
         self.app.add_handler(CommandHandler("status", self.cmd_status))
+        self.app.add_handler(CommandHandler("cancel", self.cmd_cancel))
