@@ -410,8 +410,8 @@ async def save_content(
     props: dict[str, Any] = {
         "Name": {"title":     _text_blocks(title[:200], max_total=200)},
         "Text": {"rich_text": [
-            {"type": "text", "text": {"content": c}}
-            for c in _utf16_split((text or "").strip()[:_MAX_CONTENT])
+            {"type": "text", "text": {"content": chunk}}
+            for chunk in _utf16_split(text, 2000)
         ]},
         "Type": {"select":    {"name": content_type}},
         "Date": {"date":      {"start": _today()}},
