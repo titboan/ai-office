@@ -346,7 +346,6 @@ class MartaAgent(BaseAgent):
                     [KeyboardButton("❌ Отмена задачи")],
                 ],
                 resize_keyboard=True,
-                persistent=True,
             )
 
             async def reply(text, parse_mode=None):
@@ -406,7 +405,6 @@ class MartaAgent(BaseAgent):
                     [KeyboardButton("❌ Отмена задачи")],
                 ],
                 resize_keyboard=True,
-                persistent=True,
             )
 
             async def reply(text, parse_mode=None):
