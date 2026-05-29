@@ -172,8 +172,9 @@ class MartaAgent(BaseAgent):
         prompt = (
             f"Запрос: {user_request}\n\n"
             "Если нужна цепочка (2+ агентов) — верни JSON:\n"
-            '{"is_chain": true, "needs_project_page": false, "steps": ['
+            '{"is_chain": true, "needs_project_page": true, "steps": ['
             '{"agent": "kasper", "task": "...", "required": true}, ...]}\n'
+            "needs_project_page=true для проектных/продуктовых задач, false для простых запросов.\n"
             "Если достаточно одного агента — верни:\n"
             '{"is_chain": false, "agent": "agent_key", "task": "..."}'
         )
