@@ -590,10 +590,34 @@ class BaseAgent(ABC):
 
         next_index = chain_index + 1
 
+        logger.info(
+            f"chain_advance | chain_id={chain_id[:8]} | "
+            f"completed_index={chain_index} | next_index={next_index} | "
+            f"chain_total={chain_total} | is_final={next_index >= chain_total}"
+        )
+
         if next_index >= chain_total:
-            if chat_id:
-                await self._notify_user(chat_id, "✅ Все агенты завершили работу над задачей!")
             logger.info(f"chain_done | chain_id={chain_id[:8]} | total={chain_total}")
+            if chat_id:
+                notion_page_id = getattr(completed_task, "notion_page_id", None)
+                if notion_page_id:
+                    notion_url = f"https://notion.so/{notion_page_id.replace('-', '')}"
+                    final_msg = (
+                        f"✅ Команда завершила работу!\n\n"
+                        f"📋 Проект готов в Notion:\n{notion_url}"
+                    )
+                else:
+                    prev_results = await get_chain_results(None, chain_id)
+                    parts = []
+                    for r in prev_results:
+                        agent = r.get("assigned_agent", "?")
+                        res   = r.get("result") or ""
+                        label = _AGENT_NAMES.get(agent, agent)
+                        short = res[:300] + ("…" if len(res) > 300 else "")
+                        parts.append(f"*{label}:*\n{short}")
+                    summary = "\n\n".join(parts) if parts else "Результаты агентов сохранены."
+                    final_msg = f"✅ Команда завершила работу!\n\n{summary}"
+                await self._notify_user(chat_id, final_msg)
             return
 
         next_step  = plan["steps"][next_index]
