@@ -7,7 +7,7 @@ import uuid
 
 import anthropic
 from loguru import logger
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import CommandHandler, CallbackQueryHandler, ContextTypes
 
 from config import config
@@ -111,6 +111,12 @@ class MartaAgent(BaseAgent):
         super().__init__(config.MARTA_BOT_TOKEN)
         # Пул агентов-исполнителей — создаётся лениво при первом делегировании
         self._agent_pool: dict[str, BaseAgent] = {}
+
+    def _main_keyboard(self) -> ReplyKeyboardMarkup:
+        return ReplyKeyboardMarkup([
+            ["📋 Статус", "📜 История"],
+            ["📂 Проекты", "❌ Отмена задачи"],
+        ], resize_keyboard=True)
 
     # ------------------------------------------------------------------ #
     #  Реестр агентов-исполнителей                                         #
@@ -235,6 +241,7 @@ class MartaAgent(BaseAgent):
         """Запустить цепочку: enqueue первой задачи + уведомить пользователя."""
         steps    = plan.get("steps", [])
         chain_id = str(uuid.uuid4())
+        resume_page_id = getattr(self, "_resume_notion_page_id", None)
 
         notion_page_id = None
         if plan.get("needs_project_page"):
@@ -246,6 +253,8 @@ class MartaAgent(BaseAgent):
                     notion_page_id=notion_page_id,
                     chain_id=chain_id,
                 )
+        elif resume_page_id:
+            notion_page_id = resume_page_id
 
         first = steps[0]
         corr_id = str(uuid.uuid4())
@@ -323,6 +332,7 @@ class MartaAgent(BaseAgent):
             await self._delete_pending_chain(chat_id)
             if plan:
                 await self._start_chain(plan, user_text, chat_id)
+                self._resume_notion_page_id = None
                 await query.edit_message_text(
                     f"🚀 Цепочка запущена!\n{' → '.join(_AGENT_NAMES.get(s['agent'], s['agent']) for s in plan.get('steps', []))}"
                 )
@@ -334,12 +344,7 @@ class MartaAgent(BaseAgent):
             await self._delete_pending_chain(chat_id)
             await query.edit_message_text("Хорошо, отвечу сам!")
             if user_text:
-                from telegram import ReplyKeyboardMarkup, KeyboardButton
-                _kb = ReplyKeyboardMarkup(
-                    [[KeyboardButton("📋 Статус"), KeyboardButton("📜 История")],
-                     [KeyboardButton("❌ Отмена задачи")]],
-                    resize_keyboard=True,
-                )
+                _kb = self._main_keyboard()
 
                 async def reply(text, parse_mode=None):
                     await context.bot.send_message(
@@ -356,14 +361,7 @@ class MartaAgent(BaseAgent):
     async def cmd_start(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        from telegram import ReplyKeyboardMarkup, KeyboardButton
-        keyboard = ReplyKeyboardMarkup(
-            [
-                [KeyboardButton("📋 Статус"), KeyboardButton("📜 История")],
-                [KeyboardButton("❌ Отмена задачи")],
-            ],
-            resize_keyboard=True,
-        )
+        keyboard = self._main_keyboard()
         await update.message.reply_text(
             f"{self.emoji} Привет! Я *{self.name}* — {self.role}.\n"
             f"Напиши задачу или выбери действие:",
@@ -433,6 +431,7 @@ class MartaAgent(BaseAgent):
             proj_name = cm.group(1).strip()
             project = await find_project(chat_id, proj_name)
             if project is None:
+                self._resume_notion_page_id = None
                 projects = await list_projects(chat_id)
                 if projects:
                     proj_list = "\n".join(f"• {p['name']}" for p in projects)
@@ -440,6 +439,7 @@ class MartaAgent(BaseAgent):
                     proj_list = "(нет сохранённых проектов)"
                 await reply_func(f"Проект '{proj_name}' не найден. Доступные проекты:\n{proj_list}")
                 return
+            self._resume_notion_page_id = project.get("notion_page_id")
             ctx = ""
             if project.get("notion_page_id"):
                 ctx = await get_project_context(project["notion_page_id"])
@@ -450,6 +450,8 @@ class MartaAgent(BaseAgent):
                     f"[КОНЕЦ КОНТЕКСТА]\n\n"
                     f"Исходный запрос пользователя: {user_text}"
                 )
+        else:
+            self._resume_notion_page_id = None
 
         # ── Проверяем нужна ли цепочка агентов ───────────────────────────────
         if not skip_chain:
@@ -567,17 +569,14 @@ class MartaAgent(BaseAgent):
         try:
             await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
-            from telegram import ReplyKeyboardMarkup, KeyboardButton
-            _kb = ReplyKeyboardMarkup(
-                [
-                    [KeyboardButton("📋 Статус"), KeyboardButton("📜 История")],
-                    [KeyboardButton("❌ Отмена задачи")],
-                ],
-                resize_keyboard=True,
-            )
+            _kb = self._main_keyboard()
 
             async def reply(text, parse_mode=None):
                 await update.message.reply_text(text, parse_mode=parse_mode, reply_markup=_kb)
+
+            if user_text.strip() == "📂 Проекты":
+                await self._cmd_projects(update, context)
+                return
 
             await self._process_text(user_text, chat_id, reply)
 
@@ -626,14 +625,7 @@ class MartaAgent(BaseAgent):
             logger.info(f"[Марта] Голос от @{user_name}: {user_text!r}")
             await update.message.reply_text(f"🎤 Распознано: {user_text}")
 
-            from telegram import ReplyKeyboardMarkup, KeyboardButton
-            _kb = ReplyKeyboardMarkup(
-                [
-                    [KeyboardButton("📋 Статус"), KeyboardButton("📜 История")],
-                    [KeyboardButton("❌ Отмена задачи")],
-                ],
-                resize_keyboard=True,
-            )
+            _kb = self._main_keyboard()
 
             async def reply(text, parse_mode=None):
                 await update.message.reply_text(text, parse_mode=parse_mode, reply_markup=_kb)
@@ -795,6 +787,27 @@ class MartaAgent(BaseAgent):
         # Роутим через handle_message-логику повторно использовать весь цикл
         result = await self.handle_task(task, from_agent="команды /delegate")
         await update.message.reply_text(f"✅ Готово:\n\n{result}")
+
+    async def _cmd_projects(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показать список сохранённых проектов пользователя."""
+        chat_id = update.effective_chat.id
+        projects = await list_projects(chat_id)
+        if not projects:
+            await update.message.reply_text(
+                "📂 Проектов пока нет.\n\nЗапусти цепочку агентов — проект сохранится автоматически.",
+                reply_markup=self._main_keyboard(),
+            )
+            return
+        lines = ["📂 *Проекты:*\n"]
+        for p in projects:
+            pid = p["notion_page_id"]
+            link = f" [→ Notion](https://notion.so/{pid.replace('-', '')})" if pid else ""
+            lines.append(f"• {p['name']}{link}")
+        await update.message.reply_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_markup=self._main_keyboard(),
+        )
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("delegate", self.cmd_delegate))
