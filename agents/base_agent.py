@@ -612,6 +612,10 @@ class BaseAgent(ABC):
                         agent_key=self.agent_key,
                         result=last_result,
                     )
+                    logger.debug(
+                        f"notion_append | agent={self.agent_key} | "
+                        f"page={notion_page_id[:8]}… | final=True"
+                    )
                 except Exception as e:
                     logger.warning(f"notion_append_failed | agent={self.agent_key} | error={e}")
 
