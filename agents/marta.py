@@ -414,6 +414,39 @@ class MartaAgent(BaseAgent):
             parse_mode="Markdown",
         )
 
+    async def cmd_history(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """/history — последние 10 выполненных задач."""
+        from task_queue import get_recent_tasks
+        tasks = await get_recent_tasks(10)
+
+        if not tasks:
+            await update.message.reply_text("📭 История задач пуста.")
+            return
+
+        lines = ["📜 *Последние задачи:*\n"]
+        for t in tasks:
+            status_emoji = {
+                "completed": "✅",
+                "failed":    "❌",
+                "timeout":   "⏱️",
+            }.get(t["status"], "⚪")
+
+            finished = t["finished_at"].strftime("%d.%m %H:%M") if t["finished_at"] else "—"
+            short_payload = (t["payload"][:50] + "…") if len(t["payload"]) > 50 else t["payload"]
+
+            lines.append(
+                f"{status_emoji} *{t['assigned_agent']}* | id={t['id']}\n"
+                f"    `{short_payload}`\n"
+                f"    {finished} | corr={t['correlation_id'][:8]}"
+            )
+
+        await update.message.reply_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+        )
+
     async def cmd_cancel(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -455,3 +488,4 @@ class MartaAgent(BaseAgent):
         self.app.add_handler(CommandHandler("delegate", self.cmd_delegate))
         self.app.add_handler(CommandHandler("status", self.cmd_status))
         self.app.add_handler(CommandHandler("cancel", self.cmd_cancel))
+        self.app.add_handler(CommandHandler("history", self.cmd_history))

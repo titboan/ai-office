@@ -246,6 +246,26 @@ async def create_reminder(
     return task_id, corr_id
 
 
+async def get_recent_tasks(limit: int = 10) -> list[dict]:
+    """Получить последние завершённые задачи."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, assigned_agent, status, payload,
+                       result, correlation_id, created_at,
+                       finished_at, priority
+                FROM tasks
+                WHERE status IN ('completed', 'failed', 'timeout')
+                ORDER BY finished_at DESC NULLS LAST
+                LIMIT $1
+            """, limit)
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"[task_queue] get_recent_tasks error: {e}")
+        return []
+
+
 async def cancel_task(task_id: int) -> bool:
     """Отменить задачу если она ещё в статусе queued."""
     try:
