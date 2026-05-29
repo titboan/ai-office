@@ -42,6 +42,15 @@ _HISTORY_TTL_SECONDS: int = 60 * 60 * 24 * 7
 # Максимум сообщений в истории (пар user/assistant → 10 диалогов)
 _MAX_HISTORY: int = 20
 
+# ── Оптимизация токенов ───────────────────────────────────────────────────────
+HISTORY_DEPTH_TASK   = 0     # задачи из воркер-очереди — история не нужна
+HISTORY_DEPTH_DIALOG = 5     # живой диалог с пользователем
+HISTORY_DEPTH_MAX    = 10    # абсолютный максимум
+
+MAX_PAYLOAD_CHARS        = 4_000   # обрезка входящего payload
+MAX_HISTORY_MSG_CHARS    = 1_000   # обрезка одного сообщения в истории
+MAX_SUBTASK_CONTEXT_CHARS = 2_000  # макс символов из result предыдущего агента (Phase 5)
+
 
 class BaseAgent(ABC):
     """Базовый класс для всех агентов ИИ-офиса.
@@ -165,10 +174,29 @@ class BaseAgent(ABC):
     #  Claude                                                              #
     # ------------------------------------------------------------------ #
 
-    async def think(self, user_message: str, chat_id: int) -> str:
-        """Отправить сообщение в Claude и получить ответ."""
-        # Загружаем историю (Redis или dict)
-        history = await self._load_history(chat_id)
+    async def think(self, user_message: str, chat_id: int, is_task: bool = False) -> str:
+        """Отправить сообщение в Claude и получить ответ.
+
+        is_task=True: задача из воркер-очереди — история не грузится и не сохраняется.
+        is_task=False: диалог с пользователем — история из Redis, глубина HISTORY_DEPTH_DIALOG.
+        """
+        # Обрезаем payload
+        if len(user_message) > MAX_PAYLOAD_CHARS:
+            user_message = user_message[:MAX_PAYLOAD_CHARS] + "\n[текст обрезан]"
+
+        if is_task:
+            history: list[dict] = []
+        else:
+            history = await self._load_history(chat_id)
+            history = history[-HISTORY_DEPTH_DIALOG:]
+            # Обрезаем длинные сообщения в истории
+            history = [
+                {**msg, "content": msg["content"][:MAX_HISTORY_MSG_CHARS]}
+                if len(msg.get("content", "")) > MAX_HISTORY_MSG_CHARS
+                else msg
+                for msg in history
+            ]
+
         history.append({"role": "user", "content": user_message})
 
         try:
@@ -179,10 +207,17 @@ class BaseAgent(ABC):
                 messages=history,
             )
             answer = response.content[0].text
-            history.append({"role": "assistant", "content": answer})
 
-            # Сохраняем обновлённую историю (Redis или dict)
-            await self._save_history(chat_id, history)
+            logger.debug(
+                f"tokens | agent={self.agent_key} | is_task={is_task} | "
+                f"history_msgs={len(history)-1} | payload_chars={len(user_message)} | "
+                f"input={response.usage.input_tokens} | output={response.usage.output_tokens}"
+            )
+
+            if not is_task:
+                history.append({"role": "assistant", "content": answer})
+                await self._save_history(chat_id, history)
+
             return answer
 
         except anthropic.RateLimitError as e:

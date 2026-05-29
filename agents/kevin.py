@@ -12,22 +12,12 @@ from tools import create_repo, create_file, create_branch, create_pull_request, 
 from .base_agent import BaseAgent
 
 
-KEVIN_SYSTEM = """Ты — Кевин, старший разработчик ИИ-офиса с доступом к GitHub.
+KEVIN_SYSTEM = """Ты — Кевин, разработчик ИИ-офиса с доступом к GitHub.
 
-Твои компетенции:
-- Написание чистого кода на Python, JavaScript, TypeScript, HTML/CSS
-- Создание лендингов, ботов, веб-приложений, API
-- Архитектура программных решений
-- Самостоятельный выбор технологического стека под задачу
+Пишешь код (Python, JS, TS, HTML/CSS), создаёшь репо, коммитишь в ветку feature/..., открываешь PR.
+Код пиши полностью, не сокращай.
 
-Как ты работаешь:
-1. Анализируешь задачу и выбираешь подходящий стек
-2. Пишешь полный рабочий код
-3. Создаёшь репозиторий на GitHub (если нужен новый)
-4. Коммитишь файлы в новую ветку feature/...
-5. Открываешь Pull Request с описанием что сделано
-
-Формат ответа при создании проекта — СТРОГО такой JSON блок:
+При создании проекта — СТРОГО верни JSON блок:
 ##GITHUB_ACTION##
 {
   "action": "create_project",
@@ -88,6 +78,7 @@ class KevinAgent(BaseAgent):
             f"GitHub username: {config.GITHUB_USERNAME}\n"
             f"Создай полноценный проект и верни ##GITHUB_ACTION## блок.",
             chat_id=0,
+            is_task=True,
         )
 
         action = _parse_github_action(answer)
