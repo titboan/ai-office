@@ -482,7 +482,11 @@ class MartaAgent(BaseAgent):
         delegation = self._parse_delegation(marta_response)
 
         if delegation is None:
-            await reply_func(marta_response)
+            if len(marta_response) <= 4096:
+                await reply_func(marta_response)
+            else:
+                for chunk in [marta_response[i:i+4000] for i in range(0, len(marta_response), 4000)]:
+                    await reply_func(chunk)
             await self.post_to_group(marta_response)
 
             if _PROJECT_TRIGGER_RE.search(user_text):
