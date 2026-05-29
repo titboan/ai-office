@@ -522,7 +522,10 @@ _SECTION_MAP: dict[str, str] = {
 def _h2_block(text: str) -> dict:
     return {
         "object": "block", "type": "heading_2",
-        "heading_2": {"rich_text": [{"type": "text", "text": {"content": text}}]},
+        "heading_2": {
+            "rich_text": [{"type": "text", "text": {"content": text}}],
+            "is_toggleable": True,  # toggle heading — поддерживает children
+        },
     }
 
 
@@ -614,7 +617,11 @@ async def append_agent_result(
     agent_key: str,
     result: str,
 ) -> None:
-    """Добавить результат агента под соответствующий H2 раздел страницы."""
+    """Добавить результат агента внутрь toggle-заголовка соответствующего раздела.
+
+    Ищет toggle H2 блок по тексту, PATCH-ит его children напрямую.
+    Если toggle не найден — добавляет в конец страницы с новым toggle.
+    """
     if not token or not page_id:
         return
 
@@ -628,10 +635,11 @@ async def append_agent_result(
         "Content-Type":  "application/json",
         "Notion-Version": _API_VERSION,
     }
+    result_blocks = _content_to_paragraph_blocks(result)
 
     try:
         async with aiohttp.ClientSession() as session:
-            # Шаг 1: получаем все блоки страницы
+            # Шаг 1: GET children страницы — ищем toggle heading_2
             async with session.get(
                 f"{_BASE_URL}/blocks/{page_id}/children",
                 headers=headers,
@@ -639,40 +647,60 @@ async def append_agent_result(
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 if resp.status != 200:
-                    logger.error(f"[notion] GET blocks HTTP {resp.status}")
+                    raw = await resp.text()
+                    logger.error(f"[notion] GET blocks HTTP {resp.status}: {raw[:200]}")
                     return
                 data = await resp.json()
 
-            # Шаг 2: ищем H2 с нужным текстом
-            h2_block_id: str | None = None
+            # Шаг 2: ищем toggle H2 с нужным текстом
+            target_block_id: str | None = None
             for block in data.get("results", []):
-                if block.get("type") == "heading_2":
-                    texts = block.get("heading_2", {}).get("rich_text", [])
-                    plain = "".join(t.get("plain_text", "") or t.get("text", {}).get("content", "") for t in texts)
+                btype = block.get("type", "")
+                if btype == "heading_2":
+                    h2 = block.get("heading_2", {})
+                    if not h2.get("is_toggleable"):
+                        continue
+                    texts = h2.get("rich_text", [])
+                    plain = "".join(
+                        t.get("plain_text", "") or t.get("text", {}).get("content", "")
+                        for t in texts
+                    )
                     if section_title in plain:
-                        h2_block_id = block["id"]
+                        target_block_id = block["id"]
                         break
 
-            # Шаг 3: создаём параграфы с результатом
-            result_blocks = _content_to_paragraph_blocks(result)
-
-            if h2_block_id:
-                # Вставляем после H2 блока
-                patch_payload: dict = {"children": result_blocks, "after": h2_block_id}
+            if target_block_id:
+                # Шаг 3a: PATCH children toggle-блока напрямую (поддерживается API)
+                patch_url = f"{_BASE_URL}/blocks/{target_block_id}/children"
             else:
-                # H2 не найден — добавляем в конец страницы с заголовком
-                result_blocks = [_h2_block(section_title)] + result_blocks
-                patch_payload = {"children": result_blocks}
-
-            # Шаг 4: PATCH блоков в чанках по _CHUNK_SIZE
-            for i in range(0, len(result_blocks), _CHUNK_SIZE):
-                chunk_payload = {"children": result_blocks[i:i + _CHUNK_SIZE]}
-                if i == 0 and h2_block_id:
-                    chunk_payload["after"] = h2_block_id
+                # Шаг 3b: toggle не найден — добавляем toggle + контент в конец страницы
+                logger.warning(f"[notion] toggle '{section_title}' не найден, добавляем в конец")
+                toggle_block = _h2_block(section_title)
+                # Сначала создаём toggle
                 async with session.patch(
                     f"{_BASE_URL}/blocks/{page_id}/children",
                     headers=headers,
-                    json=chunk_payload,
+                    json={"children": [toggle_block]},
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status == 200:
+                        resp_data = await resp.json()
+                        new_blocks = resp_data.get("results", [])
+                        if new_blocks:
+                            target_block_id = new_blocks[0]["id"]
+                            patch_url = f"{_BASE_URL}/blocks/{target_block_id}/children"
+                        else:
+                            patch_url = f"{_BASE_URL}/blocks/{page_id}/children"
+                    else:
+                        patch_url = f"{_BASE_URL}/blocks/{page_id}/children"
+
+            # Шаг 4: добавляем контент чанками
+            for i in range(0, len(result_blocks), _CHUNK_SIZE):
+                chunk = result_blocks[i:i + _CHUNK_SIZE]
+                async with session.patch(
+                    patch_url,
+                    headers=headers,
+                    json={"children": chunk},
                     timeout=aiohttp.ClientTimeout(total=30),
                 ) as resp:
                     if resp.status != 200:
@@ -682,7 +710,10 @@ async def append_agent_result(
                 if i + _CHUNK_SIZE < len(result_blocks):
                     await asyncio.sleep(0.3)
 
-            logger.debug(f"[notion] append_agent_result ✅ agent={agent_key} page={page_id[:8]}…")
+            logger.debug(
+                f"[notion] append_agent_result ✅ agent={agent_key} "
+                f"target={target_block_id or page_id}… blocks={len(result_blocks)}"
+            )
 
     except Exception as e:
         logger.error(f"[notion] append_agent_result exception: {e}")
