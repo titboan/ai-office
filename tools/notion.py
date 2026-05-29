@@ -409,7 +409,7 @@ async def save_content(
 
     props: dict[str, Any] = {
         "Name": {"title":     _text_blocks(title[:200], max_total=200)},
-        "Text": {"rich_text": _text_blocks(text)},
+        "Text": {"rich_text": _content_to_paragraph_blocks(text)},
         "Type": {"select":    {"name": content_type}},
         "Date": {"date":      {"start": _today()}},
     }
