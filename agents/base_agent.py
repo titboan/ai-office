@@ -493,8 +493,14 @@ class BaseAgent(ABC):
                                 topic=config.NTFY_TOPIC,
                                 priority="high",
                             )
+                            if sent:
+                                logger.info(f"reminder_sent | ntfy | task_id={reminder.id}")
+                            else:
+                                logger.warning(f"ntfy_failed | topic={config.NTFY_TOPIC!r} | task_id={reminder.id}")
+                        else:
+                            logger.warning(f"ntfy_topic_not_set | fallback to telegram | task_id={reminder.id}")
+
                         if not sent and reminder.chat_id:
-                            # fallback: Telegram если ntfy не настроен или упал
                             await self._notify_user(
                                 reminder.chat_id,
                                 f"⏰ Напоминание: {reminder.payload}",
