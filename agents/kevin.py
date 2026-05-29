@@ -1,67 +1,97 @@
 from __future__ import annotations
 
 import json
-import re
 
 from loguru import logger
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
-from tools import create_repo, create_file, create_branch, create_pull_request, list_repos, enable_pages
+from tools import create_repo, create_file, create_branch, create_pull_request, enable_pages
 from .base_agent import BaseAgent
 
 
 KEVIN_SYSTEM = """Ты — Кевин, разработчик ИИ-офиса с доступом к GitHub.
 
 Пишешь код (Python, JS, TS, HTML/CSS), создаёшь репо, коммитишь в ветку feature/..., открываешь PR.
-Для веб-проектов (лендинг, сайт) — деплоишь на GitHub Pages и присылаешь живую ссылку.
+Для веб-проектов (лендинг, сайт) — деплоишь на GitHub Pages.
 Код пиши полностью, не сокращай. HTML файл всегда называй index.html.
 
-При создании проекта — СТРОГО верни JSON блок:
-##GITHUB_ACTION##
-{
-  "action": "create_project",
-  "repo": "название-репо-латиницей",
-  "description": "описание проекта",
-  "branch": "feature/название",
-  "pages": true,
-  "files": [
-    {"path": "index.html", "content": "...полный код..."},
-    {"path": "style.css", "content": "..."},
-    {"path": "README.md", "content": "..."}
-  ],
-  "pr_title": "Заголовок PR",
-  "pr_body": "Описание что сделано, какой стек, как запустить"
-}
-##END##
+Для работы с GitHub используй доступные инструменты.
+Можешь вызывать несколько инструментов последовательно в одном ответе.
 
-Для лендингов, сайтов и веб-приложений — "pages": true.
-Для ботов, API, скриптов — "pages": false.
-
-Отвечай по-русски. Код пиши полностью, не сокращай."""
+Отвечай по-русски."""
 
 
-def _parse_github_action(text: str) -> dict | None:
-    """Извлечь JSON блок действия из ответа Клода."""
-    m = re.search(
-        r"##GITHUB_ACTION##\s*(\{.*?\})\s*##END##",
-        text,
-        re.DOTALL,
-    )
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(1))
-    except Exception:
-        return None
-
-
-def _strip_github_block(text: str) -> str:
-    """Убрать блок ##GITHUB_ACTION## из текста."""
-    return re.sub(
-        r"##GITHUB_ACTION##.*?##END##", "", text, flags=re.DOTALL
-    ).strip()
+GITHUB_TOOLS = [
+    {
+        "name": "create_repo",
+        "description": "Создать новый GitHub репозиторий",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name":        {"type": "string",  "description": "Название репозитория (латиница, дефисы)"},
+                "description": {"type": "string",  "description": "Описание"},
+                "private":     {"type": "boolean", "description": "Приватный?"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "create_file",
+        "description": "Создать или обновить файл в репозитории",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo":    {"type": "string", "description": "Название репозитория"},
+                "path":    {"type": "string", "description": "Путь к файлу (напр. index.html)"},
+                "content": {"type": "string", "description": "Полное содержимое файла"},
+                "message": {"type": "string", "description": "Commit message"},
+                "branch":  {"type": "string", "description": "Ветка (по умолчанию main)", "default": "main"},
+            },
+            "required": ["repo", "path", "content", "message"],
+        },
+    },
+    {
+        "name": "create_branch",
+        "description": "Создать новую ветку в репозитории",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo":        {"type": "string", "description": "Название репозитория"},
+                "branch":      {"type": "string", "description": "Имя новой ветки"},
+                "from_branch": {"type": "string", "description": "Базовая ветка", "default": "main"},
+            },
+            "required": ["repo", "branch"],
+        },
+    },
+    {
+        "name": "create_pr",
+        "description": "Открыть Pull Request",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo":  {"type": "string", "description": "Название репозитория"},
+                "title": {"type": "string", "description": "Заголовок PR"},
+                "body":  {"type": "string", "description": "Описание что сделано"},
+                "head":  {"type": "string", "description": "Ветка-источник"},
+                "base":  {"type": "string", "description": "Целевая ветка", "default": "main"},
+            },
+            "required": ["repo", "title", "head"],
+        },
+    },
+    {
+        "name": "enable_pages",
+        "description": "Включить GitHub Pages для репозитория (деплой из ветки gh-pages)",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "Название репозитория"},
+            },
+            "required": ["repo"],
+        },
+    },
+]
 
 
 class KevinAgent(BaseAgent):
@@ -74,97 +104,92 @@ class KevinAgent(BaseAgent):
     def __init__(self) -> None:
         super().__init__(config.KEVIN_BOT_TOKEN)
 
+    async def _call_github_tool(self, tool_name: str, params: dict) -> str:
+        """Вызвать нужную функцию GitHub API по имени инструмента."""
+        if tool_name == "create_repo":
+            data = await create_repo(**params)
+            if data:
+                return f"Репозиторий создан: {data['html_url']}"
+            return "Репозиторий уже существует или ошибка создания"
+
+        elif tool_name == "create_file":
+            data = await create_file(**params)
+            if data:
+                return f"Файл {params.get('path')!r} сохранён"
+            return f"Ошибка создания файла {params.get('path')!r}"
+
+        elif tool_name == "create_branch":
+            ok = await create_branch(**params)
+            return f"Ветка {params.get('branch')!r} создана" if ok else f"Ошибка создания ветки"
+
+        elif tool_name == "create_pr":
+            data = await create_pull_request(**params)
+            if data:
+                return f"PR открыт: {data['html_url']}"
+            return "Ошибка создания PR"
+
+        elif tool_name == "enable_pages":
+            url = await enable_pages(**params)
+            if url:
+                return f"GitHub Pages включён: {url}"
+            return "Pages включён (ссылка появится через 1-2 минуты)"
+
+        else:
+            raise ValueError(f"Неизвестный инструмент: {tool_name}")
+
+    async def _execute_response(self, response) -> str:
+        """Обработать ответ Claude — выполнить tool_use вызовы и собрать результат."""
+        text_response = ""
+        results: list[str] = []
+
+        for block in response.content:
+            if block.type == "text":
+                text_response = block.text
+
+            elif block.type == "tool_use":
+                tool_name  = block.name
+                tool_input = block.input
+                logger.info(
+                    f"kevin_tool | tool={tool_name} | "
+                    f"input={json.dumps(tool_input, ensure_ascii=False)[:200]}"
+                )
+                try:
+                    result = await self._call_github_tool(tool_name, tool_input)
+                    results.append(f"✅ {tool_name}: {result}")
+                except Exception as e:
+                    results.append(f"❌ {tool_name}: {e}")
+                    logger.error(f"kevin_tool_error | tool={tool_name} | error={e}")
+
+        if results:
+            sep = "\n\n" if text_response else ""
+            return text_response + sep + "\n".join(results)
+        return text_response
+
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
-        """Написать код и создать PR на GitHub."""
+        """Написать код и выполнить GitHub операции через tool_use."""
         logger.info(f"[Кевин] Задача от {from_agent}: {task!r}")
 
-        answer = await self.think(
+        prompt = (
             f"Задача на разработку от {from_agent}: {task}\n\n"
             f"GitHub username: {config.GITHUB_USERNAME}\n"
-            f"Создай полноценный проект и верни ##GITHUB_ACTION## блок.",
-            chat_id=0,
-            is_task=True,
+            f"Создай полноценный проект: репо, ветку feature/..., закоммить файлы, открой PR."
         )
 
-        action = _parse_github_action(answer)
-        clean_answer = _strip_github_block(answer)
-
-        if not action:
-            logger.warning("[Кевин] GitHub action блок не найден — отвечаю текстом")
-            await self.post_to_group(f"💻 Код готов: {clean_answer[:200]}…")
-            return clean_answer
-
-        result_lines = [clean_answer] if clean_answer else []
-        repo_name = action.get("repo", "kevin-project")
-        branch = action.get("branch", "feature/new")
-
-        # 1. Создаём репо
-        repo_data = await create_repo(
-            name=repo_name,
-            description=action.get("description", ""),
-            private=False,
-        )
-        if repo_data:
-            result_lines.append(f"📁 Репозиторий создан: {repo_data['html_url']}")
-        else:
-            result_lines.append(f"📁 Репозиторий `{repo_name}` уже существует")
-
-        # 2. Создаём ветку
-        branch_ok = await create_branch(repo_name, branch)
-        if branch_ok:
-            result_lines.append(f"🌿 Ветка создана: `{branch}`")
-
-        # 3. Коммитим файлы
-        files = action.get("files", [])
-        committed = 0
-        for f in files:
-            file_result = await create_file(
-                repo=repo_name,
-                path=f["path"],
-                content=f["content"],
-                message=f"feat: add {f['path']}",
-                branch=branch,
+        try:
+            response = await self.claude.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=4096,
+                system=KEVIN_SYSTEM,
+                messages=[{"role": "user", "content": prompt}],
+                tools=GITHUB_TOOLS,
             )
-            if file_result:
-                committed += 1
-        result_lines.append(f"📝 Файлов закоммичено: {committed}/{len(files)}")
+        except Exception as e:
+            logger.error(f"[Кевин] Claude API error: {e}")
+            return f"⚠️ Ошибка вызова Claude: {e}"
 
-        # 4. Создаём PR
-        pr_data = await create_pull_request(
-            repo=repo_name,
-            title=action.get("pr_title", f"feat: {task[:60]}"),
-            body=action.get("pr_body", "Создано агентом Кевин"),
-            head=branch,
-        )
-        if pr_data:
-            result_lines.append(f"🔀 Pull Request открыт: {pr_data['html_url']}")
-
-        # 5. Включаем GitHub Pages если нужно
-        pages_url = None
-        if action.get("pages"):
-            gh_pages_ok = await create_branch(repo_name, "gh-pages")
-            if gh_pages_ok:
-                for f in files:
-                    await create_file(
-                        repo=repo_name,
-                        path=f["path"],
-                        content=f["content"],
-                        message=f"deploy: {f['path']}",
-                        branch="gh-pages",
-                    )
-            pages_url = await enable_pages(repo_name)
-            if pages_url:
-                result_lines.append(
-                    f"🌐 Сайт задеплоен: {pages_url}\n"
-                    f"_(может занять 1-2 минуты для первого деплоя)_"
-                )
-
-        result = "\n".join(result_lines)
-        await self.post_to_group(
-            f"💻 Проект готов: {repo_name}"
-            + (f" | 🌐 {pages_url}" if pages_url else "")
-        )
-        return result
+        result = await self._execute_response(response)
+        await self.post_to_group(f"💻 Кевин выполнил задачу: {task[:80]}")
+        return result or "Задача выполнена."
 
     async def cmd_code(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
