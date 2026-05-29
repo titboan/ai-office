@@ -274,19 +274,23 @@ class MartaAgent(BaseAgent):
         """Обработчик кнопок chain_confirm / chain_cancel."""
         query = update.callback_query
         await query.answer()
-        chat_id = update.effective_chat.id
+        chat_id = query.message.chat_id
 
         if query.data == "chain_confirm":
             plan, user_text = await self._load_pending_chain(chat_id)
             await self._delete_pending_chain(chat_id)
             if plan:
                 await self._start_chain(plan, user_text, chat_id)
+                await query.edit_message_text(
+                    f"🚀 Цепочка запущена!\n{' → '.join(_AGENT_NAMES.get(s['agent'], s['agent']) for s in plan.get('steps', []))}"
+                )
             else:
-                await query.edit_message_text("⚠️ План устарел, повтори запрос.")
+                await query.edit_message_text("⏰ План устарел, повтори запрос.")
+
         elif query.data == "chain_cancel":
-            _, user_text = await self._load_pending_chain(chat_id)
+            plan, user_text = await self._load_pending_chain(chat_id)
             await self._delete_pending_chain(chat_id)
-            await query.edit_message_text("Хорошо, отвечу как обычно.")
+            await query.edit_message_text("Хорошо, отвечу сам!")
             if user_text:
                 from telegram import ReplyKeyboardMarkup, KeyboardButton
                 _kb = ReplyKeyboardMarkup(
@@ -294,9 +298,13 @@ class MartaAgent(BaseAgent):
                      [KeyboardButton("❌ Отмена задачи")]],
                     resize_keyboard=True,
                 )
+
                 async def reply(text, parse_mode=None):
-                    await context.bot.send_message(chat_id=chat_id, text=text,
-                                                   parse_mode=parse_mode, reply_markup=_kb)
+                    await context.bot.send_message(
+                        chat_id=chat_id, text=text,
+                        parse_mode=parse_mode, reply_markup=_kb,
+                    )
+
                 await self._process_text(user_text, chat_id, reply, skip_chain=True)
 
     # ------------------------------------------------------------------ #
@@ -378,26 +386,29 @@ class MartaAgent(BaseAgent):
             return
 
         # ── Проверяем нужна ли цепочка агентов ───────────────────────────────
-        if not skip_chain and self.app:
+        if not skip_chain:
             plan = await self._plan_chain(user_text, chat_id)
-            if plan and plan.get("is_chain") and len(plan.get("steps", [])) >= 2:
+            if plan and plan.get("is_chain"):
                 steps_preview = " → ".join(
-                    _AGENT_NAMES.get(s["agent"], s["agent"]) for s in plan["steps"]
+                    _AGENT_NAMES.get(s["agent"], s["agent"])
+                    for s in plan.get("steps", [])
                 )
                 await self._save_pending_chain(chat_id, plan, user_text)
-                await self.app.bot.send_message(
-                    chat_id=chat_id,
-                    text=(
-                        f"Похоже, это задача для команды.\n\n"
-                        f"Предлагаю запустить цепочку:\n{steps_preview}\n\n"
-                        f"Запустить?"
-                    ),
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("🚀 Запустить", callback_data="chain_confirm"),
-                        InlineKeyboardButton("💬 Просто ответь", callback_data="chain_cancel"),
-                    ]]),
-                )
-                return
+                bot = self.app.bot if self.app else None
+                if bot:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            f"Похоже, это задача для команды.\n\n"
+                            f"Предлагаю запустить цепочку:\n{steps_preview}\n\n"
+                            f"Запустить?"
+                        ),
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🚀 Запустить", callback_data="chain_confirm"),
+                            InlineKeyboardButton("💬 Просто ответь", callback_data="chain_cancel"),
+                        ]]),
+                    )
+                    return  # НЕ делегируем дальше — ждём ответа пользователя
 
         marta_response = await self.think(user_text, chat_id)
         delegation = self._parse_delegation(marta_response)
