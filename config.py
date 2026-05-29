@@ -52,6 +52,10 @@ class Config:
     NOTION_RESEARCH_DB: str = os.getenv("NOTION_RESEARCH_DB", "")
     NOTION_CONTENT_DB: str = os.getenv("NOTION_CONTENT_DB", "")
 
+    # GitHub (Кевин)
+    GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
+    GITHUB_USERNAME: str = os.getenv("GITHUB_USERNAME", "")
+
     # Лимиты
     MAX_TOKENS: int = 2048
     TEMPERATURE: float = 0.7

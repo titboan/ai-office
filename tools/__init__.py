@@ -6,6 +6,13 @@ from .notion import (
     save_idea,
     create_project,
 )
+from .github import (
+    create_repo,
+    create_file,
+    create_branch,
+    create_pull_request,
+    list_repos,
+)
 
 __all__ = [
     "search_web",
@@ -14,4 +21,9 @@ __all__ = [
     "create_task",
     "save_idea",
     "create_project",
+    "create_repo",
+    "create_file",
+    "create_branch",
+    "create_pull_request",
+    "list_repos",
 ]
