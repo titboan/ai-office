@@ -423,6 +423,15 @@ class BaseAgent(ABC):
                 iteration += 1
                 if iteration % 30 == 0:
                     await cleanup_timed_out_tasks()
+                    from task_queue import get_due_reminders
+                    reminders = await get_due_reminders()
+                    for reminder in reminders:
+                        if reminder.chat_id:
+                            await self._notify_user(
+                                reminder.chat_id,
+                                f"⏰ Напоминание: {reminder.payload}",
+                            )
+                            await mark_completed(reminder.id, "reminder_sent")
                 task = await get_next_task(self.agent_key or self.name.lower())
                 if task is None:
                     await asyncio.sleep(2)
@@ -439,6 +448,7 @@ class BaseAgent(ABC):
                     )
                 short = (task.payload[:80] + "…") if len(task.payload) > 80 else task.payload
                 await self.post_to_group(f"🔵 Выполняю (corr={task.correlation_id[:8]}): {short}")
+                self._current_chat_id = task.chat_id
                 try:
                     result = await asyncio.wait_for(
                         self.handle_task(task.payload, from_agent=task.from_agent),

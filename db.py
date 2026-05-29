@@ -67,6 +67,9 @@ async def _create_schema() -> None:
             ALTER TABLE tasks ADD COLUMN IF NOT EXISTS priority INT NOT NULL DEFAULT 0;
         """)
         await conn.execute("""
+            ALTER TABLE tasks ADD COLUMN IF NOT EXISTS remind_at TIMESTAMPTZ;
+        """)
+        await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_tasks_agent_status
                 ON tasks (assigned_agent, status, created_at);
         """)

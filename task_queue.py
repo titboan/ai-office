@@ -25,6 +25,7 @@ class Task:
         self.max_retries     = row["max_retries"]
         self.timeout_seconds = row["timeout_seconds"]
         self.created_at      = row["created_at"]
+        self.remind_at       = row.get("remind_at")
 
     def __repr__(self):
         return f"Task(id={self.id}, agent={self.assigned_agent!r}, status={self.status!r}, corr={self.correlation_id[:8]}…)"
@@ -92,6 +93,7 @@ async def get_next_task(agent_name: str) -> Task | None:
                     SELECT id FROM tasks
                     WHERE assigned_agent = $1
                       AND status = 'queued'
+                      AND task_type != 'reminder'
                     ORDER BY priority DESC, created_at ASC
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED
@@ -184,6 +186,64 @@ async def get_active_tasks() -> list[dict]:
     except Exception as e:
         logger.error(f"[task_queue] get_active_tasks error: {e}")
         return []
+
+
+async def get_due_reminders() -> list[Task]:
+    """Получить задачи-напоминания у которых наступило время."""
+    try:
+        pool = await get_pool()
+    except RuntimeError:
+        return []
+    sql = """
+        UPDATE tasks
+        SET status     = 'acknowledged',
+            started_at = NOW()
+        WHERE id IN (
+            SELECT id FROM tasks
+            WHERE task_type = 'reminder'
+              AND status    = 'queued'
+              AND remind_at <= NOW()
+            ORDER BY remind_at ASC
+            LIMIT 10
+            FOR UPDATE SKIP LOCKED
+        )
+        RETURNING *
+    """
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(sql)
+            return [Task(dict(r)) for r in rows]
+    except Exception as e:
+        logger.error(f"[task_queue] get_due_reminders error: {e}")
+        return []
+
+
+async def create_reminder(
+    chat_id: int,
+    text: str,
+    remind_at,  # datetime объект
+    from_agent: str = "alex",
+) -> tuple[int, str] | tuple[None, None]:
+    """Создать напоминание с временем срабатывания."""
+    task_id, corr_id = await create_task(
+        assigned_agent="marta",
+        payload=text,
+        from_agent=from_agent,
+        chat_id=chat_id,
+        task_type="reminder",
+        priority=10,
+    )
+    if task_id and remind_at is not None:
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE tasks SET remind_at = $2 WHERE id = $1",
+                    task_id, remind_at,
+                )
+        except Exception as e:
+            logger.error(f"[task_queue] create_reminder set remind_at error: {e}")
+    return task_id, corr_id
 
 
 async def _set_status(task_id: int, status: str) -> None:
