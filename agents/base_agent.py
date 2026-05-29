@@ -49,7 +49,30 @@ HISTORY_DEPTH_MAX    = 10    # абсолютный максимум
 
 MAX_PAYLOAD_CHARS        = 4_000   # обрезка входящего payload
 MAX_HISTORY_MSG_CHARS    = 1_000   # обрезка одного сообщения в истории
-MAX_SUBTASK_CONTEXT_CHARS = 2_000  # макс символов из result предыдущего агента (Phase 5)
+MAX_SUBTASK_CONTEXT_CHARS = 2_000  # макс символов из result предыдущего агента
+
+# Имена агентов для уведомлений в цепочках
+_AGENT_NAMES: dict[str, str] = {
+    "kasper": "🔍 Каспер",
+    "kevin":  "👨‍💻 Кевин",
+    "peter":  "📊 Питер",
+    "elina":  "✍️ Элина",
+    "alex":   "🗓️ Алекс",
+    "marta":  "👩‍💼 Марта",
+}
+
+
+def _build_context(prev_results: list[dict]) -> str:
+    """Собрать контекст из результатов предыдущих агентов цепочки."""
+    parts = []
+    for r in prev_results:
+        agent = r.get("assigned_agent", "?")
+        result = r.get("result") or ""
+        if len(result) > MAX_SUBTASK_CONTEXT_CHARS:
+            result = result[:MAX_SUBTASK_CONTEXT_CHARS] + "\n[обрезано]"
+        label = _AGENT_NAMES.get(agent, agent)
+        parts.append(f"=== {label} ===\n{result}")
+    return "\n\n".join(parts)
 
 
 class BaseAgent(ABC):
@@ -490,19 +513,26 @@ class BaseAgent(ABC):
                         timeout=float(task.timeout_seconds),
                     )
                     await mark_completed(task.id, result)
-                    if task.chat_id:
-                        await self._notify_user(
-                            task.chat_id,
-                            f"🟢 *{self.emoji} {self.name}* выполнил задачу:\n\n{result}"
-                        )
-                    await self.post_to_group(f"✅ Задача #{task.id} завершена")
+                    if task.chain_id:
+                        await self._advance_chain(task)
+                    else:
+                        if task.chat_id:
+                            await self._notify_user(
+                                task.chat_id,
+                                f"🟢 *{self.emoji} {self.name}* выполнил задачу:\n\n{result}"
+                            )
+                        await self.post_to_group(f"✅ Задача #{task.id} завершена")
                 except asyncio.TimeoutError:
                     await mark_failed(task.id, f"Таймаут {task.timeout_seconds}с", retry=False)
-                    if task.chat_id:
+                    if task.chain_id:
+                        await self._handle_chain_failure(task)
+                    elif task.chat_id:
                         await self._notify_user(task.chat_id, f"⏱️ *{self.name}*: задача превысила лимит времени.")
                 except Exception as e:
                     await mark_failed(task.id, f"{type(e).__name__}: {e}", retry=True)
-                    if task.chat_id and task.retry_count + 1 >= task.max_retries:
+                    if task.chain_id and task.retry_count + 1 >= task.max_retries:
+                        await self._handle_chain_failure(task)
+                    elif task.chat_id and task.retry_count + 1 >= task.max_retries:
                         await self._notify_user(task.chat_id, f"🔴 *{self.name}*: задача не выполнена.\n`{e}`")
             except asyncio.CancelledError:
                 break
@@ -539,6 +569,118 @@ class BaseAgent(ABC):
                         )
         except Exception as e:
             logger.warning(f"[{self.name}] _notify_user ошибка (chat={chat_id}): {e}")
+
+    # ------------------------------------------------------------------ #
+    #  Chain — продвижение цепочки агентов                                #
+    # ------------------------------------------------------------------ #
+
+    async def _advance_chain(self, completed_task) -> None:
+        """После завершения задачи — запустить следующий шаг цепочки."""
+        from task_queue import enqueue_chain_task, get_chain_results, get_chain_plan
+
+        chain_id    = completed_task.chain_id
+        chain_index = completed_task.chain_index
+        chain_total = completed_task.chain_total
+        chat_id     = completed_task.chat_id
+
+        plan = await get_chain_plan(None, chain_id)
+        if not plan:
+            logger.error(f"chain_advance | chain_id={chain_id} | plan not found")
+            return
+
+        next_index = chain_index + 1
+
+        if next_index >= chain_total:
+            if chat_id:
+                await self._notify_user(chat_id, "✅ Все агенты завершили работу над задачей!")
+            logger.info(f"chain_done | chain_id={chain_id[:8]} | total={chain_total}")
+            return
+
+        next_step  = plan["steps"][next_index]
+        next_agent = next_step["agent"]
+
+        # Защита от циклов
+        if next_agent == self.agent_key:
+            logger.error(f"chain_loop | chain_id={chain_id} | agent={self.agent_key}")
+            if chat_id:
+                await self._notify_user(chat_id, f"⚠️ Ошибка цепочки: цикл на агенте {self.agent_key}")
+            return
+
+        # Собираем контекст
+        prev_results = await get_chain_results(None, chain_id)
+        context_str  = _build_context(prev_results)
+        full_payload = (
+            f"{next_step['task']}\n\nКонтекст от предыдущих агентов:\n{context_str}"
+            if context_str else next_step["task"]
+        )
+
+        # Уведомляем пользователя о прогрессе
+        if chat_id:
+            me   = _AGENT_NAMES.get(self.agent_key, self.name)
+            them = _AGENT_NAMES.get(next_agent, next_agent)
+            await self._notify_user(
+                chat_id,
+                f"✅ {me} завершил [{chain_index+1}/{chain_total}]\n➡️ Передаю {them}…",
+            )
+
+        task_id = await enqueue_chain_task(
+            pool=None,
+            agent_key=next_agent,
+            payload=full_payload,
+            chat_id=chat_id,
+            chain_id=chain_id,
+            chain_index=next_index,
+            chain_total=chain_total,
+            notion_page_id=completed_task.notion_page_id,
+            parent_task_id=completed_task.id,
+            from_agent=self.agent_key,
+            correlation_id=completed_task.correlation_id,
+            priority=getattr(completed_task, "priority", 0),
+        )
+        logger.info(
+            f"chain_advance | chain_id={chain_id[:8]} | "
+            f"from={self.agent_key} | next={next_agent} | [{next_index}/{chain_total-1}] | task_id={task_id}"
+        )
+
+    async def _handle_chain_failure(self, failed_task) -> None:
+        """Обработать провал задачи в цепочке."""
+        from task_queue import get_chain_plan
+
+        chain_id    = failed_task.chain_id
+        chain_index = failed_task.chain_index
+        chain_total = failed_task.chain_total
+        chat_id     = failed_task.chat_id
+
+        plan = await get_chain_plan(None, chain_id)
+        if not plan:
+            return
+
+        step     = plan["steps"][chain_index]
+        required = step.get("required", True)
+        me       = _AGENT_NAMES.get(self.agent_key, self.name)
+        err_msg  = getattr(failed_task, "error_message", None) or "неизвестно"
+
+        logger.error(
+            f"chain_failed | chain_id={chain_id[:8]} | "
+            f"agent={self.agent_key} | required={required}"
+        )
+
+        if required:
+            if chat_id:
+                await self._notify_user(
+                    chat_id,
+                    f"❌ Цепочка остановлена: {me} не смог выполнить задачу.\n"
+                    f"Шаг {chain_index+1}/{chain_total}.\nОшибка: {err_msg}",
+                )
+        else:
+            if chat_id:
+                await self._notify_user(
+                    chat_id,
+                    f"⚠️ {me} не смог выполнить шаг {chain_index+1} (необязательный).\n"
+                    f"Продолжаю цепочку…",
+                )
+            failed_task.result = "[шаг пропущен из-за ошибки]"
+            await self._advance_chain(failed_task)
 
     # ------------------------------------------------------------------ #
     #  Запуск                                                             #

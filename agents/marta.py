@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import json
 import re
 import traceback
+import uuid
 
+import anthropic
 from loguru import logger
-from telegram import Update
-from telegram.ext import CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import CommandHandler, CallbackQueryHandler, ContextTypes
 
 from config import config
-from task_queue import create_task as enqueue_task, get_active_tasks
+from task_queue import create_task as enqueue_task, get_active_tasks, enqueue_chain_task
 from tools import create_project
-from .base_agent import BaseAgent
+from .base_agent import BaseAgent, _AGENT_NAMES
 
 def _detect_priority(text: str) -> int:
     """Определить приоритет задачи из текста запроса.
@@ -150,6 +153,153 @@ class MartaAgent(BaseAgent):
         return _DELEGATE_RE.sub("", text).strip()
 
     # ------------------------------------------------------------------ #
+    #  Chain — планирование, запуск, pending state                        #
+    # ------------------------------------------------------------------ #
+
+    _CHAIN_PLANNER_SYSTEM = (
+        "Ты планировщик задач. Определи нужна ли цепочка агентов.\n"
+        "Доступные агенты: kasper (исследование), kevin (разработка), "
+        "peter (аналитика — только если нужны данные/цифры), "
+        "elina (тексты/контент), alex (планирование/задачи).\n"
+        "Отвечай ТОЛЬКО валидным JSON без markdown."
+    )
+
+    async def _plan_chain(self, user_request: str, chat_id: int) -> dict | None:
+        """Вызвать Claude чтобы решить: одиночная задача или цепочка."""
+        prompt = (
+            f"Запрос: {user_request}\n\n"
+            "Если нужна цепочка (2+ агентов) — верни JSON:\n"
+            '{"is_chain": true, "needs_project_page": false, "steps": ['
+            '{"agent": "kasper", "task": "...", "required": true}, ...]}\n'
+            "Если достаточно одного агента — верни:\n"
+            '{"is_chain": false, "agent": "agent_key", "task": "..."}'
+        )
+        try:
+            response = await self.claude.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=600,
+                system=self._CHAIN_PLANNER_SYSTEM,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = response.content[0].text.strip()
+            plan = json.loads(raw)
+            if plan.get("is_chain"):
+                logger.info(
+                    f"chain_plan | steps={len(plan.get('steps', []))} | request={user_request[:60]!r}"
+                )
+            return plan
+        except Exception as e:
+            logger.warning(f"[Марта] _plan_chain error: {e}")
+            return None
+
+    async def _create_project_stub(self, user_request: str) -> str | None:
+        """Заглушка создания Notion-страницы проекта (Phase 2)."""
+        return None
+
+    async def _start_chain(self, plan: dict, user_request: str, chat_id: int) -> None:
+        """Запустить цепочку: enqueue первой задачи + уведомить пользователя."""
+        steps    = plan.get("steps", [])
+        chain_id = str(uuid.uuid4())
+
+        notion_page_id = None
+        if plan.get("needs_project_page"):
+            notion_page_id = await self._create_project_stub(user_request)
+
+        first = steps[0]
+        corr_id = str(uuid.uuid4())
+        task_id = await enqueue_chain_task(
+            pool=None,
+            agent_key=first["agent"],
+            payload=first["task"],
+            chat_id=chat_id,
+            chain_id=chain_id,
+            chain_index=0,
+            chain_total=len(steps),
+            chain_plan=plan,
+            notion_page_id=notion_page_id,
+            from_agent="marta",
+            correlation_id=corr_id,
+            priority=_detect_priority(user_request),
+        )
+
+        steps_preview = " → ".join(_AGENT_NAMES.get(s["agent"], s["agent"]) for s in steps)
+        if task_id and self.app:
+            await self.app.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"🔗 Запускаю цепочку из {len(steps)} шагов:\n"
+                    f"{steps_preview}\n\n"
+                    f"Буду сообщать о каждом шаге. `chain_id: {chain_id[:8]}`"
+                ),
+                parse_mode="Markdown",
+            )
+        logger.info(
+            f"chain_start | chain_id={chain_id[:8]} | steps={len(steps)} | task_id={task_id} | corr={corr_id[:8]}"
+        )
+
+    def _pending_chain_key(self, chat_id: int) -> str:
+        return f"pending_chain:{chat_id}"
+
+    async def _save_pending_chain(self, chat_id: int, plan: dict, user_text: str) -> None:
+        redis = await self._get_redis()
+        payload = json.dumps({"plan": plan, "user_text": user_text}, ensure_ascii=False)
+        if redis:
+            await redis.set(self._pending_chain_key(chat_id), payload, ex=300)
+        else:
+            self._history_fallback[-(chat_id)] = [{"role": "pending_chain", "content": payload}]
+
+    async def _load_pending_chain(self, chat_id: int) -> tuple[dict | None, str]:
+        redis = await self._get_redis()
+        raw = None
+        if redis:
+            raw = await redis.get(self._pending_chain_key(chat_id))
+        else:
+            fb = self._history_fallback.get(-(chat_id), [])
+            raw = fb[0]["content"] if fb else None
+        if not raw:
+            return None, ""
+        data = json.loads(raw)
+        return data.get("plan"), data.get("user_text", "")
+
+    async def _delete_pending_chain(self, chat_id: int) -> None:
+        redis = await self._get_redis()
+        if redis:
+            await redis.delete(self._pending_chain_key(chat_id))
+        else:
+            self._history_fallback.pop(-(chat_id), None)
+
+    async def _handle_chain_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Обработчик кнопок chain_confirm / chain_cancel."""
+        query = update.callback_query
+        await query.answer()
+        chat_id = update.effective_chat.id
+
+        if query.data == "chain_confirm":
+            plan, user_text = await self._load_pending_chain(chat_id)
+            await self._delete_pending_chain(chat_id)
+            if plan:
+                await self._start_chain(plan, user_text, chat_id)
+            else:
+                await query.edit_message_text("⚠️ План устарел, повтори запрос.")
+        elif query.data == "chain_cancel":
+            _, user_text = await self._load_pending_chain(chat_id)
+            await self._delete_pending_chain(chat_id)
+            await query.edit_message_text("Хорошо, отвечу как обычно.")
+            if user_text:
+                from telegram import ReplyKeyboardMarkup, KeyboardButton
+                _kb = ReplyKeyboardMarkup(
+                    [[KeyboardButton("📋 Статус"), KeyboardButton("📜 История")],
+                     [KeyboardButton("❌ Отмена задачи")]],
+                    resize_keyboard=True,
+                )
+                async def reply(text, parse_mode=None):
+                    await context.bot.send_message(chat_id=chat_id, text=text,
+                                                   parse_mode=parse_mode, reply_markup=_kb)
+                await self._process_text(user_text, chat_id, reply, skip_chain=True)
+
+    # ------------------------------------------------------------------ #
     #  Общая логика обработки текста                                       #
     # ------------------------------------------------------------------ #
 
@@ -176,6 +326,7 @@ class MartaAgent(BaseAgent):
         user_text: str,
         chat_id: int,
         reply_func,  # callable: async def reply(text, parse_mode=None)
+        skip_chain: bool = False,
     ) -> None:
         """Общая логика обработки текста — используется из handle_message и handle_voice."""
 
@@ -225,6 +376,28 @@ class MartaAgent(BaseAgent):
                 parse_mode="Markdown",
             )
             return
+
+        # ── Проверяем нужна ли цепочка агентов ───────────────────────────────
+        if not skip_chain and self.app:
+            plan = await self._plan_chain(user_text, chat_id)
+            if plan and plan.get("is_chain") and len(plan.get("steps", [])) >= 2:
+                steps_preview = " → ".join(
+                    _AGENT_NAMES.get(s["agent"], s["agent"]) for s in plan["steps"]
+                )
+                await self._save_pending_chain(chat_id, plan, user_text)
+                await self.app.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"Похоже, это задача для команды.\n\n"
+                        f"Предлагаю запустить цепочку:\n{steps_preview}\n\n"
+                        f"Запустить?"
+                    ),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🚀 Запустить", callback_data="chain_confirm"),
+                        InlineKeyboardButton("💬 Просто ответь", callback_data="chain_cancel"),
+                    ]]),
+                )
+                return
 
         marta_response = await self.think(user_text, chat_id)
         delegation = self._parse_delegation(marta_response)
@@ -551,3 +724,7 @@ class MartaAgent(BaseAgent):
         self.app.add_handler(CommandHandler("status", self.cmd_status))
         self.app.add_handler(CommandHandler("cancel", self.cmd_cancel))
         self.app.add_handler(CommandHandler("history", self.cmd_history))
+        self.app.add_handler(CallbackQueryHandler(
+            self._handle_chain_callback,
+            pattern="^chain_(confirm|cancel)$",
+        ))

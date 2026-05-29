@@ -70,6 +70,21 @@ async def _create_schema() -> None:
             ALTER TABLE tasks ADD COLUMN IF NOT EXISTS remind_at TIMESTAMPTZ;
         """)
         await conn.execute("""
+            ALTER TABLE tasks ADD COLUMN IF NOT EXISTS chain_id TEXT;
+        """)
+        await conn.execute("""
+            ALTER TABLE tasks ADD COLUMN IF NOT EXISTS chain_index INT DEFAULT 0;
+        """)
+        await conn.execute("""
+            ALTER TABLE tasks ADD COLUMN IF NOT EXISTS chain_total INT DEFAULT 1;
+        """)
+        await conn.execute("""
+            ALTER TABLE tasks ADD COLUMN IF NOT EXISTS chain_plan JSONB;
+        """)
+        await conn.execute("""
+            ALTER TABLE tasks ADD COLUMN IF NOT EXISTS notion_page_id TEXT;
+        """)
+        await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_tasks_agent_status
                 ON tasks (assigned_agent, status, created_at);
         """)

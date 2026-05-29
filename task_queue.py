@@ -26,6 +26,11 @@ class Task:
         self.timeout_seconds = row["timeout_seconds"]
         self.created_at      = row["created_at"]
         self.remind_at       = row.get("remind_at")
+        self.chain_id        = row.get("chain_id")
+        self.chain_index     = row.get("chain_index", 0)
+        self.chain_total     = row.get("chain_total", 1)
+        self.chain_plan      = row.get("chain_plan")
+        self.notion_page_id  = row.get("notion_page_id")
 
     def __repr__(self):
         return f"Task(id={self.id}, agent={self.assigned_agent!r}, status={self.status!r}, corr={self.correlation_id[:8]}…)"
@@ -186,6 +191,118 @@ async def get_active_tasks() -> list[dict]:
     except Exception as e:
         logger.error(f"[task_queue] get_active_tasks error: {e}")
         return []
+
+
+async def enqueue_chain_task(
+    pool,  # принимается для совместимости, не используется напрямую
+    agent_key: str,
+    payload: str,
+    chat_id: int | None,
+    chain_id: str,
+    chain_index: int,
+    chain_total: int,
+    chain_plan: dict | None = None,
+    notion_page_id: str | None = None,
+    parent_task_id: int | None = None,
+    from_agent: str = "marta",
+    correlation_id: str | None = None,
+    priority: int = 0,
+) -> int | None:
+    """Создать задачу с chain_* полями. Возвращает task_id или None."""
+    import json as _json
+    try:
+        db_pool = await get_pool()
+    except RuntimeError:
+        return None
+    corr_id = correlation_id or str(uuid.uuid4())
+    chain_plan_json = _json.dumps(chain_plan, ensure_ascii=False) if chain_plan else None
+    try:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                INSERT INTO tasks (
+                    assigned_agent, task_type, payload,
+                    from_agent, chat_id,
+                    correlation_id, parent_task_id,
+                    priority,
+                    chain_id, chain_index, chain_total, chain_plan, notion_page_id
+                )
+                VALUES ($1,'general',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)
+                RETURNING id
+            """, agent_key, payload,
+                from_agent, chat_id,
+                corr_id, parent_task_id,
+                priority,
+                chain_id, chain_index, chain_total, chain_plan_json, notion_page_id)
+            task_id = row["id"]
+            logger.info(
+                f"[task_queue] chain_enqueue | chain_id={chain_id[:8]} | "
+                f"idx={chain_index}/{chain_total-1} | agent={agent_key!r} | task_id={task_id}"
+            )
+            return task_id
+    except Exception as e:
+        logger.error(f"[task_queue] enqueue_chain_task error: {e}")
+        return None
+
+
+async def get_chain_results(pool, chain_id: str) -> list[dict]:
+    """Completed задачи цепочки, отсортированные по chain_index."""
+    try:
+        db_pool = await get_pool()
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT assigned_agent, chain_index, result, finished_at
+                FROM tasks
+                WHERE chain_id = $1 AND status = 'completed'
+                ORDER BY chain_index ASC
+            """, chain_id)
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"[task_queue] get_chain_results error: {e}")
+        return []
+
+
+async def get_chain_status(pool, chain_id: str) -> dict:
+    """Статистика по статусам задач цепочки."""
+    try:
+        db_pool = await get_pool()
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT status, count(*)::int AS cnt
+                FROM tasks WHERE chain_id = $1
+                GROUP BY status
+            """, chain_id)
+            counts: dict = {"total": 0, "completed": 0, "failed": 0, "running": 0, "queued": 0}
+            for r in rows:
+                s = r["status"]
+                counts[s] = r["cnt"]
+                counts["total"] += r["cnt"]
+            return counts
+    except Exception as e:
+        logger.error(f"[task_queue] get_chain_status error: {e}")
+        return {}
+
+
+async def get_chain_plan(pool, chain_id: str) -> dict | None:
+    """Получить план цепочки из первой задачи (chain_index=0)."""
+    import json as _json
+    try:
+        db_pool = await get_pool()
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT chain_plan FROM tasks
+                WHERE chain_id = $1 AND chain_index = 0
+                LIMIT 1
+            """, chain_id)
+            if row and row["chain_plan"]:
+                plan = row["chain_plan"]
+                # asyncpg возвращает JSONB как str или dict
+                if isinstance(plan, str):
+                    return _json.loads(plan)
+                return dict(plan)
+            return None
+    except Exception as e:
+        logger.error(f"[task_queue] get_chain_plan error: {e}")
+        return None
 
 
 async def get_due_reminders() -> list[Task]:
