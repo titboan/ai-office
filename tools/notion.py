@@ -70,13 +70,34 @@ def page_url(page_id: str) -> str:
     return f"https://www.notion.so/{page_id.replace('-', '')}"
 
 
-def _content_to_paragraph_blocks(text: str) -> list[dict]:
-    """Разбить произвольный текст на paragraph-блоки Notion (по 1990 символов каждый).
+def _utf16_len(s: str) -> int:
+    """Длина строки в UTF-16 code units (как считает JavaScript и Notion API)."""
+    return sum(2 if ord(c) > 0xFFFF else 1 for c in s)
 
-    Каждый блок имеет вид:
-        {"object": "block", "type": "paragraph",
-         "paragraph": {"rich_text": [{"type": "text", "text": {"content": "..."}}]}}
-    Таким образом контент не ограничен 9900 символами свойства rich_text.
+
+def _utf16_split(text: str, max_units: int = _BLOCK_SIZE) -> list[str]:
+    """Разбить текст на чанки где каждый ≤ max_units UTF-16 code units."""
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for char in text:
+        char_units = 2 if ord(char) > 0xFFFF else 1
+        if current_len + char_units > max_units:
+            chunks.append("".join(current))
+            current = [char]
+            current_len = char_units
+        else:
+            current.append(char)
+            current_len += char_units
+    if current:
+        chunks.append("".join(current))
+    return chunks or [""]
+
+
+def _content_to_paragraph_blocks(text: str) -> list[dict]:
+    """Разбить текст на paragraph-блоки Notion (≤1990 UTF-16 code units каждый).
+
+    Notion API считает длину строк в UTF-16 (как JS): emoji > U+FFFF занимают 2 единицы.
     """
     text = (text or "").strip()
     if not text:
@@ -87,9 +108,9 @@ def _content_to_paragraph_blocks(text: str) -> list[dict]:
     return [
         {
             "object": "block", "type": "paragraph",
-            "paragraph": {"rich_text": [{"type": "text", "text": {"content": text[i : i + _BLOCK_SIZE]}}]},
+            "paragraph": {"rich_text": [{"type": "text", "text": {"content": chunk}}]},
         }
-        for i in range(0, len(text), _BLOCK_SIZE)
+        for chunk in _utf16_split(text)
     ]
 
 
