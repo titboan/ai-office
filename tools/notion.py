@@ -651,11 +651,6 @@ async def append_agent_result(
         logger.warning(f"[notion] append_agent_result: нет секции для agent={agent_key!r}")
         return
 
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type":  "application/json",
-        "Notion-Version": _API_VERSION,
-    }
     result_blocks = _content_to_paragraph_blocks(result)
 
     try:
@@ -663,7 +658,7 @@ async def append_agent_result(
             # Шаг 1: GET children страницы — ищем toggle heading_2
             async with session.get(
                 f"{_BASE_URL}/blocks/{page_id}/children",
-                headers=headers,
+                headers=_headers(),
                 params={"page_size": 100},
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
@@ -700,7 +695,7 @@ async def append_agent_result(
                 # Сначала создаём toggle
                 async with session.patch(
                     f"{_BASE_URL}/blocks/{page_id}/children",
-                    headers=headers,
+                    headers=_headers(),
                     json={"children": [toggle_block]},
                     timeout=aiohttp.ClientTimeout(total=15),
                 ) as resp:
@@ -720,7 +715,7 @@ async def append_agent_result(
                 chunk = result_blocks[i:i + _CHUNK_SIZE]
                 async with session.patch(
                     patch_url,
-                    headers=headers,
+                    headers=_headers(),
                     json={"children": chunk},
                     timeout=aiohttp.ClientTimeout(total=30),
                 ) as resp:
@@ -753,17 +748,11 @@ async def update_project_status(
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     text = f"{icon} Обновлено: {now_str} | Статус: {status}"
 
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type":  "application/json",
-        "Notion-Version": _API_VERSION,
-    }
-
     try:
         async with aiohttp.ClientSession() as session:
             async with session.patch(
                 f"{_BASE_URL}/blocks/{page_id}/children",
-                headers=headers,
+                headers=_headers(),
                 json={"children": [_para_block(text)]},
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
@@ -774,3 +763,79 @@ async def update_project_status(
         logger.debug(f"[notion] update_project_status ✅ status={status!r} page={page_id[:8]}…")
     except Exception as e:
         logger.error(f"[notion] update_project_status exception: {e}")
+
+
+async def get_project_context(page_id: str, max_chars: int = 2000) -> str:
+    """Читает содержимое страницы проекта из Notion (с пагинацией)."""
+    tok = _tok()
+    if not tok or not page_id:
+        return ""
+
+    _TEXT_TYPES = {
+        "paragraph", "heading_1", "heading_2", "heading_3",
+        "bulleted_list_item", "numbered_list_item",
+        "toggle", "callout", "quote",
+    }
+
+    def _extract(block: dict) -> str:
+        btype = block.get("type", "")
+        if btype not in _TEXT_TYPES:
+            return ""
+        rich_text = block.get(btype, {}).get("rich_text", [])
+        text = "".join(
+            t.get("plain_text", "") or t.get("text", {}).get("content", "")
+            for t in rich_text
+        ).strip()
+        if not text:
+            return ""
+        if btype == "heading_2":
+            return f"## {text}"
+        if btype == "heading_3":
+            return f"### {text}"
+        if btype in ("bulleted_list_item", "numbered_list_item"):
+            return f"- {text}"
+        return text
+
+    lines: list[str] = []
+    cursor: str | None = None
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            while True:
+                params: dict[str, str] = {"page_size": "100"}
+                if cursor:
+                    params["start_cursor"] = cursor
+
+                async with session.get(
+                    f"{_BASE_URL}/blocks/{page_id}/children",
+                    headers=_headers(),
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status != 200:
+                        raw = await resp.text()
+                        logger.error(
+                            f"[notion] get_project_context HTTP {resp.status} "
+                            f"page={page_id[:8]}…: {raw[:200]}"
+                        )
+                        return ""
+                    data = await resp.json()
+
+                for block in data.get("results", []):
+                    line = _extract(block)
+                    if line:
+                        lines.append(line)
+
+                if data.get("has_more"):
+                    cursor = data.get("next_cursor")
+                else:
+                    break
+
+    except Exception as e:
+        logger.error(f"[notion] get_project_context exception: {type(e).__name__}: {e}")
+        return ""
+
+    text = "\n".join(lines)
+    if len(text) > max_chars:
+        text = text[:max_chars] + "... [контекст обрезан]"
+    return text

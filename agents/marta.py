@@ -11,8 +11,10 @@ from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import CommandHandler, CallbackQueryHandler, ContextTypes
 
 from config import config
+from db import save_project, find_project, list_projects
 from task_queue import create_task as enqueue_task, get_active_tasks, enqueue_chain_task
 from tools import create_project, create_project_page
+from tools.notion import get_project_context
 from .base_agent import BaseAgent, _AGENT_NAMES
 
 def _detect_priority(text: str) -> int:
@@ -49,6 +51,11 @@ _DELEGATE_RE = re.compile(
 _PROJECT_TRIGGER_RE = re.compile(
     r"(создай|создать|новый|запусти|запустить|открой|открыть|начни|начать|стартуй|стартовать)"
     r"\s+проект",
+    re.IGNORECASE,
+)
+
+_CONTINUE_PROJECT_RE = re.compile(
+    r"(?:продолжи\s+проект|continue\s+project|проект\s*:)\s*([^,\n]+)",
     re.IGNORECASE,
 )
 
@@ -196,12 +203,12 @@ class MartaAgent(BaseAgent):
             logger.warning(f"[Марта] _plan_chain error: {e}")
             return None
 
-    async def _create_project_page(self, user_request: str, plan: dict) -> str | None:
-        """Создать страницу проекта в Notion. Возвращает page_id или None."""
+    async def _create_project_page(self, user_request: str, plan: dict) -> tuple[str | None, str]:
+        """Создать страницу проекта в Notion. Возвращает (page_id, title)."""
         parent_id = config.NOTION_PARENT_PAGE_ID
         if not parent_id:
             logger.warning("[Марта] NOTION_PARENT_PAGE_ID не задан — Notion страница не создаётся")
-            return None
+            return None, ""
         try:
             # Генерируем короткое название проекта через Claude
             import anthropic as _anthropic
@@ -222,7 +229,7 @@ class MartaAgent(BaseAgent):
         )
         if page_id:
             logger.info(f"[Марта] Notion проект создан: page_id={page_id[:8]}… title={title!r}")
-        return page_id
+        return page_id, title
 
     async def _start_chain(self, plan: dict, user_request: str, chat_id: int) -> None:
         """Запустить цепочку: enqueue первой задачи + уведомить пользователя."""
@@ -231,7 +238,14 @@ class MartaAgent(BaseAgent):
 
         notion_page_id = None
         if plan.get("needs_project_page"):
-            notion_page_id = await self._create_project_page(user_request, plan)
+            notion_page_id, project_name = await self._create_project_page(user_request, plan)
+            if notion_page_id:
+                await save_project(
+                    chat_id=chat_id,
+                    name=project_name,
+                    notion_page_id=notion_page_id,
+                    chain_id=chain_id,
+                )
 
         first = steps[0]
         corr_id = str(uuid.uuid4())
@@ -412,6 +426,30 @@ class MartaAgent(BaseAgent):
                 parse_mode="Markdown",
             )
             return
+
+        # ── Детект команды "продолжи проект" ─────────────────────────────────
+        cm = _CONTINUE_PROJECT_RE.search(user_text)
+        if cm:
+            proj_name = cm.group(1).strip()
+            project = await find_project(chat_id, proj_name)
+            if project is None:
+                projects = await list_projects(chat_id)
+                if projects:
+                    proj_list = "\n".join(f"• {p['name']}" for p in projects)
+                else:
+                    proj_list = "(нет сохранённых проектов)"
+                await reply_func(f"Проект '{proj_name}' не найден. Доступные проекты:\n{proj_list}")
+                return
+            ctx = ""
+            if project.get("notion_page_id"):
+                ctx = await get_project_context(project["notion_page_id"])
+            if ctx:
+                user_text = (
+                    f"[КОНТЕКСТ ПРОЕКТА: {project['name']}]\n"
+                    f"{ctx}\n"
+                    f"[КОНЕЦ КОНТЕКСТА]\n\n"
+                    f"Исходный запрос пользователя: {user_text}"
+                )
 
         # ── Проверяем нужна ли цепочка агентов ───────────────────────────────
         if not skip_chain:

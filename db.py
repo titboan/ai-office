@@ -88,7 +88,79 @@ async def _create_schema() -> None:
             CREATE INDEX IF NOT EXISTS idx_tasks_agent_status
                 ON tasks (assigned_agent, status, created_at);
         """)
-        logger.info("[db] Схема tasks готова ✓")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS projects (
+                id              BIGSERIAL PRIMARY KEY,
+                chat_id         BIGINT NOT NULL,
+                name            TEXT NOT NULL,
+                name_lower      TEXT GENERATED ALWAYS AS (lower(name)) STORED,
+                notion_page_id  TEXT,
+                chain_id        TEXT,
+                created_at      TIMESTAMPTZ DEFAULT NOW(),
+                updated_at      TIMESTAMPTZ DEFAULT NOW()
+            );
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_chat_name
+                ON projects(chat_id, name_lower);
+        """)
+        logger.info("[db] Схема tasks + projects готова ✓")
+
+async def save_project(
+    chat_id: int,
+    name: str,
+    notion_page_id: str,
+    chain_id: str | None = None,
+) -> None:
+    """Сохраняет или обновляет проект. Upsert по chat_id + name_lower."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO projects (chat_id, name, notion_page_id, chain_id)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (chat_id, name_lower) DO UPDATE
+                SET notion_page_id = EXCLUDED.notion_page_id,
+                    chain_id       = EXCLUDED.chain_id,
+                    updated_at     = NOW()
+            """,
+            chat_id, name, notion_page_id, chain_id,
+        )
+
+
+async def find_project(chat_id: int, name_query: str) -> dict | None:
+    """Ищет проект по chat_id и части названия (ILIKE).
+    Возвращает dict с полями id, name, notion_page_id, chain_id или None."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, name, notion_page_id, chain_id
+            FROM projects
+            WHERE chat_id = $1 AND name_lower ILIKE $2
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            chat_id, f"%{name_query.lower()}%",
+        )
+        return dict(row) if row else None
+
+
+async def list_projects(chat_id: int) -> list[dict]:
+    """Возвращает все проекты пользователя, отсортированные по updated_at DESC."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, name, notion_page_id, chain_id
+            FROM projects
+            WHERE chat_id = $1
+            ORDER BY updated_at DESC
+            """,
+            chat_id,
+        )
+        return [dict(r) for r in rows]
+
 
 async def close_db() -> None:
     global _pool
