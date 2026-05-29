@@ -189,6 +189,36 @@ async def create_pull_request(
         return None
 
 
+async def enable_pages(repo: str) -> str | None:
+    """Включить GitHub Pages для репозитория (деплой из ветки gh-pages)."""
+    if not config.GITHUB_TOKEN:
+        return None
+    payload = {
+        "source": {
+            "branch": "gh-pages",
+            "path": "/",
+        }
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{_BASE_URL}/repos/{config.GITHUB_USERNAME}/{repo}/pages",
+                headers=_headers(),
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                data = await resp.json()
+                if resp.status in (200, 201):
+                    url = data.get("html_url", "")
+                    logger.info(f"[github] Pages включён: {url}")
+                    return url
+                logger.warning(f"[github] enable_pages {resp.status}: {data.get('message')}")
+                return None
+    except Exception as e:
+        logger.error(f"[github] enable_pages exception: {e}")
+        return None
+
+
 async def list_repos() -> list[dict]:
     """Получить список репозиториев пользователя."""
     if not config.GITHUB_TOKEN:

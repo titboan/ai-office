@@ -8,14 +8,15 @@ from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
-from tools import create_repo, create_file, create_branch, create_pull_request, list_repos
+from tools import create_repo, create_file, create_branch, create_pull_request, list_repos, enable_pages
 from .base_agent import BaseAgent
 
 
 KEVIN_SYSTEM = """Ты — Кевин, разработчик ИИ-офиса с доступом к GitHub.
 
 Пишешь код (Python, JS, TS, HTML/CSS), создаёшь репо, коммитишь в ветку feature/..., открываешь PR.
-Код пиши полностью, не сокращай.
+Для веб-проектов (лендинг, сайт) — деплоишь на GitHub Pages и присылаешь живую ссылку.
+Код пиши полностью, не сокращай. HTML файл всегда называй index.html.
 
 При создании проекта — СТРОГО верни JSON блок:
 ##GITHUB_ACTION##
@@ -24,6 +25,7 @@ KEVIN_SYSTEM = """Ты — Кевин, разработчик ИИ-офиса с
   "repo": "название-репо-латиницей",
   "description": "описание проекта",
   "branch": "feature/название",
+  "pages": true,
   "files": [
     {"path": "index.html", "content": "...полный код..."},
     {"path": "style.css", "content": "..."},
@@ -33,6 +35,9 @@ KEVIN_SYSTEM = """Ты — Кевин, разработчик ИИ-офиса с
   "pr_body": "Описание что сделано, какой стек, как запустить"
 }
 ##END##
+
+Для лендингов, сайтов и веб-приложений — "pages": true.
+Для ботов, API, скриптов — "pages": false.
 
 Отвечай по-русски. Код пиши полностью, не сокращай."""
 
@@ -134,8 +139,31 @@ class KevinAgent(BaseAgent):
         if pr_data:
             result_lines.append(f"🔀 Pull Request открыт: {pr_data['html_url']}")
 
+        # 5. Включаем GitHub Pages если нужно
+        pages_url = None
+        if action.get("pages"):
+            gh_pages_ok = await create_branch(repo_name, "gh-pages")
+            if gh_pages_ok:
+                for f in files:
+                    await create_file(
+                        repo=repo_name,
+                        path=f["path"],
+                        content=f["content"],
+                        message=f"deploy: {f['path']}",
+                        branch="gh-pages",
+                    )
+            pages_url = await enable_pages(repo_name)
+            if pages_url:
+                result_lines.append(
+                    f"🌐 Сайт задеплоен: {pages_url}\n"
+                    f"_(может занять 1-2 минуты для первого деплоя)_"
+                )
+
         result = "\n".join(result_lines)
-        await self.post_to_group(f"💻 Проект готов: {repo_name}")
+        await self.post_to_group(
+            f"💻 Проект готов: {repo_name}"
+            + (f" | 🌐 {pages_url}" if pages_url else "")
+        )
         return result
 
     async def cmd_code(

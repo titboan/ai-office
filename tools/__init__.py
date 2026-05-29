@@ -12,6 +12,7 @@ from .github import (
     create_branch,
     create_pull_request,
     list_repos,
+    enable_pages,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "create_branch",
     "create_pull_request",
     "list_repos",
+    "enable_pages",
 ]
