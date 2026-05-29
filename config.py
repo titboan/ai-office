@@ -46,6 +46,7 @@ class Config:
 
     # Notion Integration
     NOTION_TOKEN: str = os.getenv("NOTION_TOKEN", "")
+    NOTION_PARENT_PAGE_ID: str = os.getenv("NOTION_PARENT_PAGE_ID", "")
     NOTION_PROJECTS_DB: str = os.getenv("NOTION_PROJECTS_DB", "")
     NOTION_TASKS_DB: str = os.getenv("NOTION_TASKS_DB", "")
     NOTION_IDEAS_DB: str = os.getenv("NOTION_IDEAS_DB", "")

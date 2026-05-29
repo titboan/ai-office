@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 import aiohttp
@@ -506,3 +506,219 @@ async def create_project(
 
     logger.warning("[notion] create_project: _create_page вернул None")
     return None
+
+
+# ── Project pages (chain Notion integration) ──────────────────────────────────
+
+_SECTION_MAP: dict[str, str] = {
+    "kasper": "🔍 Исследование",
+    "kevin":  "🏗️ Архитектура",
+    "peter":  "📊 Аналитика",
+    "elina":  "✍️ Описание продукта",
+    "alex":   "✅ План задач",
+}
+
+
+def _h2_block(text: str) -> dict:
+    return {
+        "object": "block", "type": "heading_2",
+        "heading_2": {"rich_text": [{"type": "text", "text": {"content": text}}]},
+    }
+
+
+def _divider_block() -> dict:
+    return {"object": "block", "type": "divider", "divider": {}}
+
+
+def _para_block(text: str) -> dict:
+    return {
+        "object": "block", "type": "paragraph",
+        "paragraph": {"rich_text": [{"type": "text", "text": {"content": text[:_BLOCK_SIZE]}}]},
+    }
+
+
+def _callout_block(text: str, icon: str = "💡") -> dict:
+    return {
+        "object": "block", "type": "callout",
+        "callout": {
+            "rich_text": [{"type": "text", "text": {"content": text[:_BLOCK_SIZE]}}],
+            "icon": {"type": "emoji", "emoji": icon},
+        },
+    }
+
+
+async def create_project_page(
+    parent_page_id: str,
+    title: str,
+    description: str = "",
+) -> str | None:
+    """Создать страницу проекта в Notion под parent_page_id.
+
+    Возвращает page_id новой страницы или None при ошибке.
+    """
+    tok = _tok()
+    if not tok or not parent_page_id:
+        logger.warning("[notion] create_project_page: токен или parent_page_id не задан")
+        return None
+
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    blocks = [
+        {   # H1 — название
+            "object": "block", "type": "heading_1",
+            "heading_1": {"rich_text": [{"type": "text", "text": {"content": title[:_BLOCK_SIZE]}}]},
+        },
+    ]
+    if description:
+        blocks.append(_callout_block(description))
+    blocks += [
+        _divider_block(),
+        _h2_block("🔍 Исследование"),
+        _h2_block("🏗️ Архитектура"),
+        _h2_block("📊 Аналитика"),
+        _h2_block("✍️ Описание продукта"),
+        _h2_block("✅ План задач"),
+        _divider_block(),
+        _para_block(f"⏳ Создано: {now_str} | Статус: в работе"),
+    ]
+
+    payload = {
+        "parent":     {"page_id": parent_page_id},
+        "properties": {"title": {"title": [{"type": "text", "text": {"content": title[:200]}}]}},
+        "children":   blocks,
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{_BASE_URL}/pages",
+                headers=_headers(),
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    pid = data["id"]
+                    logger.info(f"[notion] create_project_page ✅ page_id={pid[:8]}… title={title[:40]!r}")
+                    return pid
+                raw = await resp.text()
+                logger.error(f"[notion] create_project_page HTTP {resp.status}: {raw[:300]}")
+                return None
+    except Exception as e:
+        logger.error(f"[notion] create_project_page exception: {e}")
+        return None
+
+
+async def append_agent_result(
+    token: str,
+    page_id: str,
+    agent_key: str,
+    result: str,
+) -> None:
+    """Добавить результат агента под соответствующий H2 раздел страницы."""
+    if not token or not page_id:
+        return
+
+    section_title = _SECTION_MAP.get(agent_key)
+    if not section_title:
+        logger.warning(f"[notion] append_agent_result: нет секции для agent={agent_key!r}")
+        return
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type":  "application/json",
+        "Notion-Version": _API_VERSION,
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Шаг 1: получаем все блоки страницы
+            async with session.get(
+                f"{_BASE_URL}/blocks/{page_id}/children",
+                headers=headers,
+                params={"page_size": 100},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    logger.error(f"[notion] GET blocks HTTP {resp.status}")
+                    return
+                data = await resp.json()
+
+            # Шаг 2: ищем H2 с нужным текстом
+            h2_block_id: str | None = None
+            for block in data.get("results", []):
+                if block.get("type") == "heading_2":
+                    texts = block.get("heading_2", {}).get("rich_text", [])
+                    plain = "".join(t.get("plain_text", "") or t.get("text", {}).get("content", "") for t in texts)
+                    if section_title in plain:
+                        h2_block_id = block["id"]
+                        break
+
+            # Шаг 3: создаём параграфы с результатом
+            result_blocks = _content_to_paragraph_blocks(result)
+
+            if h2_block_id:
+                # Вставляем после H2 блока
+                patch_payload: dict = {"children": result_blocks, "after": h2_block_id}
+            else:
+                # H2 не найден — добавляем в конец страницы с заголовком
+                result_blocks = [_h2_block(section_title)] + result_blocks
+                patch_payload = {"children": result_blocks}
+
+            # Шаг 4: PATCH блоков в чанках по _CHUNK_SIZE
+            for i in range(0, len(result_blocks), _CHUNK_SIZE):
+                chunk_payload = {"children": result_blocks[i:i + _CHUNK_SIZE]}
+                if i == 0 and h2_block_id:
+                    chunk_payload["after"] = h2_block_id
+                async with session.patch(
+                    f"{_BASE_URL}/blocks/{page_id}/children",
+                    headers=headers,
+                    json=chunk_payload,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status != 200:
+                        raw = await resp.text()
+                        logger.error(f"[notion] PATCH blocks HTTP {resp.status}: {raw[:200]}")
+                        return
+                if i + _CHUNK_SIZE < len(result_blocks):
+                    await asyncio.sleep(0.3)
+
+            logger.debug(f"[notion] append_agent_result ✅ agent={agent_key} page={page_id[:8]}…")
+
+    except Exception as e:
+        logger.error(f"[notion] append_agent_result exception: {e}")
+
+
+async def update_project_status(
+    token: str,
+    page_id: str,
+    status: str,
+) -> None:
+    """Добавить строку статуса в конец страницы проекта."""
+    if not token or not page_id:
+        return
+
+    icon = {"завершён": "✅", "ошибка": "❌"}.get(status, "⏳")
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    text = f"{icon} Обновлено: {now_str} | Статус: {status}"
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type":  "application/json",
+        "Notion-Version": _API_VERSION,
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.patch(
+                f"{_BASE_URL}/blocks/{page_id}/children",
+                headers=headers,
+                json={"children": [_para_block(text)]},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    raw = await resp.text()
+                    logger.error(f"[notion] update_project_status HTTP {resp.status}: {raw[:200]}")
+                    return
+        logger.debug(f"[notion] update_project_status ✅ status={status!r} page={page_id[:8]}…")
+    except Exception as e:
+        logger.error(f"[notion] update_project_status exception: {e}")

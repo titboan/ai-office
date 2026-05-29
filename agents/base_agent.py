@@ -577,6 +577,7 @@ class BaseAgent(ABC):
     async def _advance_chain(self, completed_task) -> None:
         """После завершения задачи — запустить следующий шаг цепочки."""
         from task_queue import enqueue_chain_task, get_chain_results, get_chain_plan
+        from tools.notion import append_agent_result, update_project_status
 
         chain_id    = completed_task.chain_id
         chain_index = completed_task.chain_index
@@ -598,8 +599,33 @@ class BaseAgent(ABC):
 
         if next_index >= chain_total:
             logger.info(f"chain_done | chain_id={chain_id[:8]} | total={chain_total}")
+            notion_page_id = getattr(completed_task, "notion_page_id", None)
+
+            # Пишем результат последнего агента в Notion
+            last_result = getattr(completed_task, "result", None)
+            if notion_page_id and last_result:
+                try:
+                    await append_agent_result(
+                        token=config.NOTION_TOKEN,
+                        page_id=notion_page_id,
+                        agent_key=self.agent_key,
+                        result=last_result,
+                    )
+                except Exception as e:
+                    logger.warning(f"notion_append_failed | agent={self.agent_key} | error={e}")
+
+            # Обновляем статус страницы
+            if notion_page_id:
+                try:
+                    await update_project_status(
+                        token=config.NOTION_TOKEN,
+                        page_id=notion_page_id,
+                        status="завершён",
+                    )
+                except Exception as e:
+                    logger.warning(f"notion_status_update_failed | error={e}")
+
             if chat_id:
-                notion_page_id = getattr(completed_task, "notion_page_id", None)
                 if notion_page_id:
                     notion_url = f"https://notion.so/{notion_page_id.replace('-', '')}"
                     final_msg = (
@@ -607,16 +633,7 @@ class BaseAgent(ABC):
                         f"📋 Проект готов в Notion:\n{notion_url}"
                     )
                 else:
-                    prev_results = await get_chain_results(None, chain_id)
-                    parts = []
-                    for r in prev_results:
-                        agent = r.get("assigned_agent", "?")
-                        res   = r.get("result") or ""
-                        label = _AGENT_NAMES.get(agent, agent)
-                        short = res[:300] + ("…" if len(res) > 300 else "")
-                        parts.append(f"*{label}:*\n{short}")
-                    summary = "\n\n".join(parts) if parts else "Результаты агентов сохранены."
-                    final_msg = f"✅ Команда завершила работу!\n\n{summary}"
+                    final_msg = "✅ Команда завершила работу!"
                 await self._notify_user(chat_id, final_msg)
             return
 
@@ -647,6 +664,21 @@ class BaseAgent(ABC):
                 f"✅ {me} завершил [{chain_index+1}/{chain_total}]\n➡️ Передаю {them}…",
             )
 
+        # Пишем результат текущего агента в Notion
+        notion_page_id = getattr(completed_task, "notion_page_id", None)
+        current_result = getattr(completed_task, "result", None)
+        if notion_page_id and current_result:
+            try:
+                await append_agent_result(
+                    token=config.NOTION_TOKEN,
+                    page_id=notion_page_id,
+                    agent_key=self.agent_key,
+                    result=current_result,
+                )
+                logger.debug(f"notion_append | agent={self.agent_key} | page={notion_page_id[:8]}…")
+            except Exception as e:
+                logger.warning(f"notion_append_failed | agent={self.agent_key} | error={e}")
+
         task_id = await enqueue_chain_task(
             pool=None,
             agent_key=next_agent,
@@ -655,7 +687,7 @@ class BaseAgent(ABC):
             chain_id=chain_id,
             chain_index=next_index,
             chain_total=chain_total,
-            notion_page_id=completed_task.notion_page_id,
+            notion_page_id=notion_page_id,
             parent_task_id=completed_task.id,
             from_agent=self.agent_key,
             correlation_id=completed_task.correlation_id,
@@ -669,6 +701,7 @@ class BaseAgent(ABC):
     async def _handle_chain_failure(self, failed_task) -> None:
         """Обработать провал задачи в цепочке."""
         from task_queue import get_chain_plan
+        from tools.notion import update_project_status
 
         chain_id    = failed_task.chain_id
         chain_index = failed_task.chain_index
@@ -690,6 +723,16 @@ class BaseAgent(ABC):
         )
 
         if required:
+            notion_page_id = getattr(failed_task, "notion_page_id", None)
+            if notion_page_id:
+                try:
+                    await update_project_status(
+                        token=config.NOTION_TOKEN,
+                        page_id=notion_page_id,
+                        status="ошибка",
+                    )
+                except Exception as e:
+                    logger.warning(f"notion_status_update_failed | error={e}")
             if chat_id:
                 await self._notify_user(
                     chat_id,

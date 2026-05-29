@@ -12,7 +12,7 @@ from telegram.ext import CommandHandler, CallbackQueryHandler, ContextTypes
 
 from config import config
 from task_queue import create_task as enqueue_task, get_active_tasks, enqueue_chain_task
-from tools import create_project
+from tools import create_project, create_project_page
 from .base_agent import BaseAgent, _AGENT_NAMES
 
 def _detect_priority(text: str) -> int:
@@ -192,9 +192,33 @@ class MartaAgent(BaseAgent):
             logger.warning(f"[Марта] _plan_chain error: {e}")
             return None
 
-    async def _create_project_stub(self, user_request: str) -> str | None:
-        """Заглушка создания Notion-страницы проекта (Phase 2)."""
-        return None
+    async def _create_project_page(self, user_request: str, plan: dict) -> str | None:
+        """Создать страницу проекта в Notion. Возвращает page_id или None."""
+        parent_id = config.NOTION_PARENT_PAGE_ID
+        if not parent_id:
+            logger.warning("[Марта] NOTION_PARENT_PAGE_ID не задан — Notion страница не создаётся")
+            return None
+        try:
+            # Генерируем короткое название проекта через Claude
+            import anthropic as _anthropic
+            resp = await self.claude.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=30,
+                system="Придумай короткое название проекта (3-5 слов). Только название, без кавычек и пояснений.",
+                messages=[{"role": "user", "content": user_request}],
+            )
+            title = resp.content[0].text.strip()
+        except Exception:
+            title = user_request[:60]
+
+        page_id = await create_project_page(
+            parent_page_id=parent_id,
+            title=title,
+            description=user_request[:500],
+        )
+        if page_id:
+            logger.info(f"[Марта] Notion проект создан: page_id={page_id[:8]}… title={title!r}")
+        return page_id
 
     async def _start_chain(self, plan: dict, user_request: str, chat_id: int) -> None:
         """Запустить цепочку: enqueue первой задачи + уведомить пользователя."""
@@ -203,7 +227,7 @@ class MartaAgent(BaseAgent):
 
         notion_page_id = None
         if plan.get("needs_project_page"):
-            notion_page_id = await self._create_project_stub(user_request)
+            notion_page_id = await self._create_project_page(user_request, plan)
 
         first = steps[0]
         corr_id = str(uuid.uuid4())

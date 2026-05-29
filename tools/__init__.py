@@ -5,6 +5,9 @@ from .notion import (
     create_task,
     save_idea,
     create_project,
+    create_project_page,
+    append_agent_result,
+    update_project_status,
 )
 from .github import (
     create_repo,
@@ -22,6 +25,9 @@ __all__ = [
     "create_task",
     "save_idea",
     "create_project",
+    "create_project_page",
+    "append_agent_result",
+    "update_project_status",
     "create_repo",
     "create_file",
     "create_branch",
