@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from loguru import logger
 from telegram import Update
@@ -42,7 +43,8 @@ _PRIORITY_RE   = re.compile(r"\b(высок|срочн|критич)\w*", re.IGN
 
 def _parse_remind_at(text: str) -> datetime | None:
     """Попытаться найти время напоминания в тексте."""
-    now = datetime.now(timezone.utc)
+    MSK = ZoneInfo("Europe/Moscow")
+    now = datetime.now(MSK)
     t = text.lower()
 
     if "через час" in t:
