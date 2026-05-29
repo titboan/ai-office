@@ -482,14 +482,24 @@ class BaseAgent(ABC):
                 if iteration % 30 == 0:
                     await cleanup_timed_out_tasks()
                     from task_queue import get_due_reminders
+                    from tools.ntfy import send_push
                     reminders = await get_due_reminders()
                     for reminder in reminders:
-                        if reminder.chat_id:
+                        sent = False
+                        if config.NTFY_TOPIC:
+                            sent = await send_push(
+                                title="⏰ Напоминание",
+                                message=reminder.payload,
+                                topic=config.NTFY_TOPIC,
+                                priority="high",
+                            )
+                        if not sent and reminder.chat_id:
+                            # fallback: Telegram если ntfy не настроен или упал
                             await self._notify_user(
                                 reminder.chat_id,
                                 f"⏰ Напоминание: {reminder.payload}",
                             )
-                            await mark_completed(reminder.id, "reminder_sent")
+                        await mark_completed(reminder.id, "reminder_sent")
                 task = await get_next_task(self.agent_key or self.name.lower())
                 if task is None:
                     await asyncio.sleep(2)

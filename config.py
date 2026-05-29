@@ -53,6 +53,9 @@ class Config:
     NOTION_RESEARCH_DB: str = os.getenv("NOTION_RESEARCH_DB", "")
     NOTION_CONTENT_DB: str = os.getenv("NOTION_CONTENT_DB", "")
 
+    # Push-уведомления (ntfy.sh)
+    NTFY_TOPIC: str = os.getenv("NTFY_TOPIC", "")  # напр. "my-office-alerts-abc123"
+
     # GitHub (Кевин)
     GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
     GITHUB_USERNAME: str = os.getenv("GITHUB_USERNAME", "")
