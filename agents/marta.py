@@ -185,7 +185,6 @@ class MartaAgent(BaseAgent):
                 [KeyboardButton("❌ Отмена задачи")],
             ],
             resize_keyboard=True,
-            persistent=True,
         )
         await update.message.reply_text(
             f"{self.emoji} Привет! Я *{self.name}* — {self.role}.\n"
