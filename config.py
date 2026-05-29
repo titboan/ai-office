@@ -54,7 +54,7 @@ class Config:
     NOTION_CONTENT_DB: str = os.getenv("NOTION_CONTENT_DB", "")
 
     # Push-уведомления (ntfy.sh)
-    NTFY_TOPIC: str = os.getenv("NTFY_TOPIC", "")  # напр. "my-office-alerts-abc123"
+    NTFY_TOPIC: str = os.getenv("NTFY_TOPIC", "").strip()  # напр. "ai-office-tba"
 
     # GitHub (Кевин)
     GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")

@@ -11,6 +11,7 @@ from telegram.ext import CommandHandler, ContextTypes
 from config import config
 from tools import create_task
 from task_queue import create_reminder
+from tools.ntfy import send_push
 from .base_agent import BaseAgent
 
 
@@ -193,6 +194,33 @@ class AlexAgent(BaseAgent):
             for chunk in [result[i : i + 4000] for i in range(0, len(result), 4000)]:
                 await update.message.reply_text(chunk)
 
+    async def cmd_testpush(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """/testpush — проверить отправку push через ntfy.sh."""
+        if not config.NTFY_TOPIC:
+            await update.message.reply_text("❌ NTFY_TOPIC не задан в Railway Variables.")
+            return
+
+        success = await send_push(
+            title="Test push",
+            message="Тестовое уведомление от Алекса",
+            topic=config.NTFY_TOPIC,
+            priority="high",
+        )
+
+        if success:
+            await update.message.reply_text(
+                f"✅ Пуш отправлен на топик: `{config.NTFY_TOPIC}`",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ Ошибка отправки. Проверь Railway logs → `ntfy_response`.",
+                parse_mode="Markdown",
+            )
+
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("plan", self.cmd_plan))
         self.app.add_handler(CommandHandler("roadmap", self.cmd_roadmap))
+        self.app.add_handler(CommandHandler("testpush", self.cmd_testpush))
