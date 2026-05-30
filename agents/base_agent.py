@@ -571,19 +571,17 @@ class BaseAgent(ABC):
         try:
             if self.app:
                 for chunk in chunks:
-                    await self.app.bot.send_message(
-                        chat_id=chat_id,
-                        text=chunk,
-                        parse_mode="Markdown",
-                    )
+                    try:
+                        await self.app.bot.send_message(chat_id=chat_id, text=chunk, parse_mode="Markdown")
+                    except Exception:
+                        await self.app.bot.send_message(chat_id=chat_id, text=chunk)
             else:
                 async with Bot(token=self.bot_token) as bot:
                     for chunk in chunks:
-                        await bot.send_message(
-                            chat_id=chat_id,
-                            text=chunk,
-                            parse_mode="Markdown",
-                        )
+                        try:
+                            await bot.send_message(chat_id=chat_id, text=chunk, parse_mode="Markdown")
+                        except Exception:
+                            await bot.send_message(chat_id=chat_id, text=chunk)
         except Exception as e:
             logger.warning(f"[{self.name}] _notify_user ошибка (chat={chat_id}): {e}")
 
