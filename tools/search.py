@@ -7,6 +7,8 @@ tools/search.py — веб-поиск через Tavily API.
 
 from __future__ import annotations
 
+import asyncio
+
 from loguru import logger
 from tavily import AsyncTavilyClient
 
@@ -35,12 +37,18 @@ async def search_web(query: str) -> str:
 
     try:
         client = AsyncTavilyClient(api_key=config.TAVILY_API_KEY)
-        response = await client.search(
-            query=query,
-            max_results=_MAX_RESULTS,
-            search_depth="advanced",   # глубокий поиск — лучше для исследований
-            include_answer=True,       # краткий итоговый ответ от Tavily
-        )
+        try:
+            response = await asyncio.wait_for(
+                client.search(
+                    query=query,
+                    max_results=_MAX_RESULTS,
+                    search_depth="advanced",
+                    include_answer=True,
+                ),
+                timeout=30.0,
+            )
+        except asyncio.TimeoutError:
+            raise Exception("Tavily timeout")
 
         parts: list[str] = []
 
