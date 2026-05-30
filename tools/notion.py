@@ -246,7 +246,7 @@ def _markdown_to_blocks(text: str) -> list[dict]:
                             "object": "block", "type": "table_row",
                             "table_row": {
                                 "cells": [
-                                    [{"type": "text", "text": {"content": cell}}]
+                                    _inline_rich_text(cell)
                                     for cell in row
                                 ]
                             },
