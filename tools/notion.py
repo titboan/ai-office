@@ -113,6 +113,183 @@ def _rich_text_with_links(chunk: str) -> list[dict]:
     return parts or [{"type": "text", "text": {"content": chunk}}]
 
 
+_INLINE_RE    = re.compile(r"\*\*(.+?)\*\*|https?://[^\s]+")
+_TABLE_SEP_RE = re.compile(r"^\|[\s\-:|]+\|$")
+_NUMBERED_RE  = re.compile(r"^(\d+)\.\s+(.+)$")
+
+
+def _inline_rich_text(text: str) -> list[dict]:
+    """Парсит inline markdown: **bold** и URL → rich_text объекты."""
+    parts: list[dict] = []
+    pos = 0
+    for m in _INLINE_RE.finditer(text):
+        if m.start() > pos:
+            plain = text[pos:m.start()]
+            if plain:
+                parts.append({"type": "text", "text": {"content": plain}})
+        if m.group().startswith("**"):
+            parts.append({
+                "type": "text",
+                "text": {"content": m.group(1)},
+                "annotations": {"bold": True},
+            })
+        else:
+            url = m.group()
+            parts.append({"type": "text", "text": {"content": url, "link": {"url": url}}})
+        pos = m.end()
+    if pos < len(text):
+        tail = text[pos:]
+        if tail:
+            parts.append({"type": "text", "text": {"content": tail}})
+    return parts or [{"type": "text", "text": {"content": text}}]
+
+
+def _markdown_to_blocks(text: str) -> list[dict]:
+    """Конвертирует markdown текст в нативные блоки Notion.
+
+    ## → heading_2, ### → heading_3, **bold** → bold rich_text,
+    - / * → bulleted_list_item, 1. → numbered_list_item,
+    | table | → table, > → quote, --- → divider, text → paragraph.
+    """
+    blocks: list[dict] = []
+    lines = (text or "").splitlines()
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        # Divider
+        if line.strip() == "---":
+            blocks.append({"object": "block", "type": "divider", "divider": {}})
+            i += 1
+            continue
+
+        # Heading 3 (проверяем до heading_2)
+        if line.startswith("### "):
+            blocks.append({
+                "object": "block", "type": "heading_3",
+                "heading_3": {"rich_text": _inline_rich_text(line[4:].strip())},
+            })
+            i += 1
+            continue
+
+        # Heading 2
+        if line.startswith("## "):
+            blocks.append({
+                "object": "block", "type": "heading_2",
+                "heading_2": {"rich_text": _inline_rich_text(line[3:].strip())},
+            })
+            i += 1
+            continue
+
+        # Heading 1
+        if line.startswith("# "):
+            blocks.append({
+                "object": "block", "type": "heading_1",
+                "heading_1": {"rich_text": _inline_rich_text(line[2:].strip())},
+            })
+            i += 1
+            continue
+
+        # Quote
+        if line.startswith("> "):
+            blocks.append({
+                "object": "block", "type": "quote",
+                "quote": {"rich_text": _inline_rich_text(line[2:].strip())},
+            })
+            i += 1
+            continue
+
+        # Bulleted list
+        if line.startswith("- ") or line.startswith("* "):
+            blocks.append({
+                "object": "block", "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": _inline_rich_text(line[2:].strip())},
+            })
+            i += 1
+            continue
+
+        # Numbered list
+        nm = _NUMBERED_RE.match(line)
+        if nm:
+            blocks.append({
+                "object": "block", "type": "numbered_list_item",
+                "numbered_list_item": {"rich_text": _inline_rich_text(nm.group(2).strip())},
+            })
+            i += 1
+            continue
+
+        # Table — собираем все строки подряд
+        if line.startswith("|"):
+            table_rows: list[list[str]] = []
+            col_count = 0
+            while i < len(lines) and lines[i].startswith("|"):
+                row_line = lines[i]
+                i += 1
+                if _TABLE_SEP_RE.match(row_line.strip()):
+                    continue  # разделитель | --- | --- | — пропускаем
+                cells = [c.strip() for c in row_line.strip("|").split("|")]
+                table_rows.append(cells)
+                col_count = max(col_count, len(cells))
+
+            if table_rows and col_count > 0:
+                padded = [row + [""] * (col_count - len(row)) for row in table_rows]
+                blocks.append({
+                    "object": "block", "type": "table",
+                    "table": {
+                        "table_width": col_count,
+                        "has_column_header": True,
+                        "has_row_header": False,
+                    },
+                    "children": [
+                        {
+                            "object": "block", "type": "table_row",
+                            "table_row": {
+                                "cells": [
+                                    [{"type": "text", "text": {"content": cell}}]
+                                    for cell in row
+                                ]
+                            },
+                        }
+                        for row in padded
+                    ],
+                })
+            continue
+
+        # Пустая строка
+        if not line.strip():
+            i += 1
+            continue
+
+        # Параграф — склеиваем смежные обычные строки
+        para_lines: list[str] = []
+        while i < len(lines):
+            l = lines[i]
+            if (
+                l.startswith("# ") or l.startswith("## ") or l.startswith("### ")
+                or l.startswith("- ") or l.startswith("* ")
+                or l.startswith("> ") or l.strip() == "---"
+                or l.startswith("|") or _NUMBERED_RE.match(l)
+                or not l.strip()
+            ):
+                break
+            para_lines.append(l)
+            i += 1
+
+        if para_lines:
+            content = " ".join(para_lines)
+            for chunk in _utf16_split(content):
+                blocks.append({
+                    "object": "block", "type": "paragraph",
+                    "paragraph": {"rich_text": _inline_rich_text(chunk)},
+                })
+
+    return blocks or [{
+        "object": "block", "type": "paragraph",
+        "paragraph": {"rich_text": [{"type": "text", "text": {"content": ""}}]},
+    }]
+
+
 def _content_to_paragraph_blocks(text: str) -> list[dict]:
     """Разбить текст на paragraph-блоки Notion (≤1990 UTF-16 code units каждый).
 
@@ -674,7 +851,7 @@ async def append_agent_result(
         logger.warning(f"[notion] append_agent_result: нет секции для agent={agent_key!r}")
         return
 
-    result_blocks = _content_to_paragraph_blocks(result)
+    result_blocks = _markdown_to_blocks(result)
 
     try:
         async with aiohttp.ClientSession() as session:
