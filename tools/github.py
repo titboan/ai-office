@@ -46,6 +46,17 @@ async def create_repo(name: str, description: str = "", private: bool = False) -
                 if resp.status == 201:
                     logger.info(f"[github] Репо создан: {data['html_url']}")
                     return data
+                if resp.status == 422:
+                    logger.info(f"[github] repo already exists, using existing: {name}")
+                    async with session.get(
+                        f"{_BASE_URL}/repos/{config.GITHUB_USERNAME}/{name}",
+                        headers=_headers(),
+                        timeout=aiohttp.ClientTimeout(total=15),
+                    ) as get_resp:
+                        if get_resp.status == 200:
+                            existing = await get_resp.json()
+                            logger.info(f"[github] Существующее репо: {existing['html_url']}")
+                            return existing
                 logger.error(f"[github] create_repo error {resp.status}: {data.get('message')}")
                 return None
     except Exception as e:
