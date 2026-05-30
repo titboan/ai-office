@@ -51,6 +51,10 @@ MAX_PAYLOAD_CHARS        = 4_000   # обрезка входящего payload
 MAX_HISTORY_MSG_CHARS    = 1_000   # обрезка одного сообщения в истории
 MAX_SUBTASK_CONTEXT_CHARS = 2_000  # макс символов из result предыдущего агента
 
+HISTORY_MAX_MESSAGES = 15          # порог для автосжатия истории
+HISTORY_KEEP_RECENT  = 5           # сколько свежих сообщений оставить
+SUMMARY_TTL          = 60 * 60 * 24 * 30  # 30 дней
+
 # Имена агентов для уведомлений в цепочках
 _AGENT_NAMES: dict[str, str] = {
     "kasper": "🔍 Каспер",
@@ -134,6 +138,26 @@ class BaseAgent(ABC):
                 await self._redis.aclose()
             self._redis = None
 
+    async def _redis_get(self, key: str) -> str | None:
+        redis = await self._get_redis()
+        if redis is None:
+            return self._history_fallback.get(key)
+        try:
+            return await redis.get(key)
+        except Exception as e:
+            logger.warning(f"[{self.name}] Redis get error ({key}): {e}")
+            return None
+
+    async def _redis_set(self, key: str, value: str, ttl: int | None = None) -> None:
+        redis = await self._get_redis()
+        if redis is None:
+            self._history_fallback[key] = value
+            return
+        try:
+            await redis.set(key, value, ex=ttl)
+        except Exception as e:
+            logger.warning(f"[{self.name}] Redis set error ({key}): {e}")
+
     # ------------------------------------------------------------------ #
     #  История диалога — чтение / запись                                  #
     # ------------------------------------------------------------------ #
@@ -194,6 +218,61 @@ class BaseAgent(ABC):
             await redis.delete(self._history_key(chat_id))
 
     # ------------------------------------------------------------------ #
+    #  Автосжатие истории                                                  #
+    # ------------------------------------------------------------------ #
+
+    async def _compress_history_if_needed(self, chat_id: int) -> None:
+        """Сжимает историю если накопилось HISTORY_MAX_MESSAGES сообщений.
+        Саммари хранится в Redis по ключу summary:{agent_key}:{chat_id}."""
+        history = await self._load_history(chat_id)
+        if len(history) < HISTORY_MAX_MESSAGES:
+            return
+
+        old_messages    = history[:-HISTORY_KEEP_RECENT]
+        recent_messages = history[-HISTORY_KEEP_RECENT:]
+
+        formatted = "\n".join(
+            f"{m['role'].upper()}: {m['content'][:500]}"
+            for m in old_messages
+        )
+
+        try:
+            response = await self.claude.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=300,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Сделай краткую выжимку диалога (3-5 пунктов).\n"
+                        "Сохрани: ключевые решения, важные факты, незакрытые задачи.\n"
+                        "Выброси: светские беседы, уточнения, повторы.\n"
+                        "Только самое важное, кратко.\n\n"
+                        f"Диалог:\n{formatted}"
+                    ),
+                }],
+            )
+            new_summary = response.content[0].text
+        except Exception as e:
+            logger.warning(f"[{self.name}] Сжатие истории — ошибка Claude: {e}")
+            return
+
+        summary_key = f"summary:{self.agent_key}:{chat_id}"
+        existing = await self._redis_get(summary_key)
+        if existing:
+            new_summary = existing + "\n\n[Продолжение]\n" + new_summary
+
+        await self._redis_set(summary_key, new_summary, ttl=SUMMARY_TTL)
+        await self._save_history(chat_id, recent_messages)
+
+        logger.info(
+            f"history_compressed | agent={self.agent_key} | chat_id={chat_id} | "
+            f"old={len(old_messages)} | kept={len(recent_messages)}"
+        )
+
+    async def _get_summary(self, chat_id: int) -> str | None:
+        return await self._redis_get(f"summary:{self.agent_key}:{chat_id}")
+
+    # ------------------------------------------------------------------ #
     #  Claude                                                              #
     # ------------------------------------------------------------------ #
 
@@ -210,6 +289,7 @@ class BaseAgent(ABC):
         if is_task:
             history: list[dict] = []
         else:
+            await self._compress_history_if_needed(chat_id)
             history = await self._load_history(chat_id)
             history = history[-HISTORY_DEPTH_DIALOG:]
             # Обрезаем длинные сообщения в истории
@@ -219,6 +299,12 @@ class BaseAgent(ABC):
                 else msg
                 for msg in history
             ]
+            summary = await self._get_summary(chat_id)
+            if summary:
+                history = [
+                    {"role": "user",      "content": f"[Контекст прошлых сессий]\n{summary}"},
+                    {"role": "assistant", "content": "Понял, учту контекст."},
+                ] + history
 
         history.append({"role": "user", "content": user_message})
 
