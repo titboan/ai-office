@@ -24,6 +24,19 @@ KEVIN_SYSTEM = """Ты — Кевин, разработчик ИИ-офиса с
 4. create_pull_request — открыть PR из feature-ветки в main
 5. enable_pages — включить GitHub Pages (только для сайтов и лендингов)
 
+ВАЖНО — порядок вызова инструментов:
+Шаг 1: create_repo — создать репозиторий
+Шаг 2: create_branch — создать ветку feature/...
+Шаг 3: create_file — закоммитить файлы (можно несколько вызовов подряд)
+Шаг 4: create_pull_request — открыть Pull Request
+Шаг 5: enable_pages — задеплоить на GitHub Pages
+
+Никогда не останавливайся после create_branch.
+После создания ветки ВСЕГДА следует create_file с содержимым файлов.
+Генерируй файлы компактно — без лишних комментариев и отступов,
+чтобы уложиться в лимит токенов.
+Все 5 шагов должны быть выполнены за одну сессию.
+
 ВАЖНО: ошибка 422 от create_repo означает что репо уже существует.
 Это НЕ ошибка — продолжай работу используя это репо.
 Никогда не останавливайся после 422. Выполни шаги 2-5.
@@ -188,7 +201,7 @@ class KevinAgent(BaseAgent):
             for iteration in range(1, 11):
                 response = await self.claude.messages.create(
                     model=config.CLAUDE_MODEL,
-                    max_tokens=4096,
+                    max_tokens=8192,
                     system=KEVIN_SYSTEM,
                     messages=messages,
                     tools=GITHUB_TOOLS,
