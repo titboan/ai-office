@@ -668,7 +668,16 @@ class BaseAgent(ABC):
 
         # Собираем контекст
         prev_results = await get_chain_results(None, chain_id)
-        context_str  = _build_context(prev_results)
+        if next_agent == "kevin":
+            # Кевину не нужны длинные исследования — только суть
+            context_parts = []
+            for r in prev_results:
+                agent  = r.get("assigned_agent", "?")
+                result = (r.get("result") or "")[:500]
+                context_parts.append(f"[{agent}]: {result}")
+            context_str = "\n\n".join(context_parts)
+        else:
+            context_str = _build_context(prev_results)
         full_payload = (
             f"{next_step['task']}\n\nКонтекст от предыдущих агентов:\n{context_str}"
             if context_str else next_step["task"]
