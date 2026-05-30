@@ -148,59 +148,82 @@ class KevinAgent(BaseAgent):
         else:
             raise ValueError(f"Неизвестный инструмент: {tool_name}")
 
-    async def _execute_response(self, response) -> str:
-        """Обработать ответ Claude — выполнить tool_use вызовы и собрать результат."""
-        text_response = ""
-        results: list[str] = []
-
+    async def _execute_response(self, response) -> tuple[list[dict], str]:
+        """Выполнить tool_use блоки из ответа. Возвращает (tool_results, text)."""
+        tool_results: list[dict] = []
+        text = ""
         for block in response.content:
             if block.type == "text":
-                text_response = block.text
-
+                text = block.text
             elif block.type == "tool_use":
-                tool_name  = block.name
-                tool_input = block.input
-                logger.info(
-                    f"kevin_tool | tool={tool_name} | "
-                    f"input={json.dumps(tool_input, ensure_ascii=False)[:200]}"
-                )
                 try:
-                    result = await self._call_github_tool(tool_name, tool_input)
-                    results.append(f"✅ {tool_name}: {result}")
+                    result = await self._call_github_tool(block.name, block.input)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result,
+                    })
                 except Exception as e:
-                    results.append(f"❌ {tool_name}: {e}")
-                    logger.error(f"kevin_tool_error | tool={tool_name} | error={e}")
-
-        if results:
-            sep = "\n\n" if text_response else ""
-            return text_response + sep + "\n".join(results)
-        return text_response
+                    logger.error(f"kevin_tool_error | tool={block.name} | error={e}")
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": f"Ошибка: {e}",
+                        "is_error": True,
+                    })
+        return tool_results, text
 
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
-        """Написать код и выполнить GitHub операции через tool_use."""
+        """Написать код и выполнить GitHub операции через agentic tool_use loop."""
         logger.info(f"[Кевин] Задача от {from_agent}: {task!r}")
 
-        prompt = (
+        messages: list[dict] = [{"role": "user", "content": (
             f"Задача на разработку от {from_agent}: {task}\n\n"
             f"GitHub username: {config.GITHUB_USERNAME}\n"
             f"Создай полноценный проект: репо, ветку feature/..., закоммить файлы, открой PR."
-        )
+        )}]
+        final_text = ""
 
         try:
-            response = await self.claude.messages.create(
-                model=config.CLAUDE_MODEL,
-                max_tokens=4096,
-                system=KEVIN_SYSTEM,
-                messages=[{"role": "user", "content": prompt}],
-                tools=GITHUB_TOOLS,
-            )
+            for iteration in range(1, 11):
+                response = await self.claude.messages.create(
+                    model=config.CLAUDE_MODEL,
+                    max_tokens=4096,
+                    system=KEVIN_SYSTEM,
+                    messages=messages,
+                    tools=GITHUB_TOOLS,
+                )
+
+                if response.stop_reason == "end_turn":
+                    for block in response.content:
+                        if block.type == "text":
+                            final_text = block.text
+                    break
+
+                if response.stop_reason == "tool_use":
+                    for block in response.content:
+                        if block.type == "tool_use":
+                            logger.info(
+                                f"tool_loop | iteration={iteration} | tool={block.name} | "
+                                f"input={json.dumps(block.input, ensure_ascii=False)[:200]}"
+                            )
+
+                    tool_results, text = await self._execute_response(response)
+                    if text:
+                        final_text = text
+
+                    messages.append({"role": "assistant", "content": response.content})
+                    messages.append({"role": "user", "content": tool_results})
+                else:
+                    logger.warning(f"[Кевин] stop_reason={response.stop_reason!r} — выход из цикла")
+                    break
+
         except Exception as e:
             logger.error(f"[Кевин] Claude API error: {e}")
             return f"⚠️ Ошибка вызова Claude: {e}"
 
-        result = await self._execute_response(response)
         await self.post_to_group(f"💻 Кевин выполнил задачу: {task[:80]}")
-        return result or "Задача выполнена."
+        return final_text or "Задача выполнена."
 
     async def cmd_code(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
