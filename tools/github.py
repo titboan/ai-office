@@ -200,31 +200,131 @@ async def create_pull_request(
         return None
 
 
-async def enable_pages(repo: str) -> str | None:
-    """Включить GitHub Pages для репозитория (деплой из ветки gh-pages)."""
+async def enable_pages(repo: str, source_branch: str = "") -> str | None:
+    """Включить GitHub Pages из ветки gh-pages.
+
+    1. Создаёт ветку gh-pages от main.
+    2. Копирует index.html из source_branch (или автоматически ищет feature/*).
+    3. Включает Pages из gh-pages.
+    4. При 422 (уже включён) — возвращает существующий URL.
+    """
     if not config.GITHUB_TOKEN:
         return None
-    payload = {
-        "source": {
-            "branch": "gh-pages",
-            "path": "/",
-        }
-    }
+
+    username = config.GITHUB_USERNAME
+    fallback_url = f"https://{username}.github.io/{repo}/"
+
     try:
         async with aiohttp.ClientSession() as session:
+
+            # Шаг 1: SHA последнего коммита main
+            main_sha = await _get_branch_sha(repo, "main")
+            if not main_sha:
+                logger.error(f"[github] enable_pages: не удалось получить SHA main")
+                return None
+
+            # Шаг 2: Создать ветку gh-pages от main (422 = уже существует — ок)
             async with session.post(
-                f"{_BASE_URL}/repos/{config.GITHUB_USERNAME}/{repo}/pages",
+                f"{_BASE_URL}/repos/{username}/{repo}/git/refs",
                 headers=_headers(),
-                json=payload,
+                json={"ref": "refs/heads/gh-pages", "sha": main_sha},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status not in (200, 201, 422):
+                    raw = await resp.text()
+                    logger.warning(f"[github] enable_pages: create gh-pages {resp.status}: {raw[:200]}")
+
+            # Шаг 3: Найти source_branch если не указан (ищем feature/*)
+            if not source_branch:
+                async with session.get(
+                    f"{_BASE_URL}/repos/{username}/{repo}/branches",
+                    headers=_headers(),
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        branches = await resp.json()
+                        for b in branches:
+                            if b["name"].startswith("feature/"):
+                                source_branch = b["name"]
+                                break
+                if not source_branch:
+                    source_branch = "main"
+                logger.info(f"[github] enable_pages: source_branch={source_branch!r}")
+
+            # Шаг 3b: Скопировать index.html из source_branch в gh-pages
+            async with session.get(
+                f"{_BASE_URL}/repos/{username}/{repo}/contents/index.html",
+                headers=_headers(),
+                params={"ref": source_branch},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status == 200:
+                    file_data  = await resp.json()
+                    b64content = file_data.get("content", "")
+
+                    # SHA существующего index.html в gh-pages (для обновления)
+                    existing_sha = None
+                    async with session.get(
+                        f"{_BASE_URL}/repos/{username}/{repo}/contents/index.html",
+                        headers=_headers(),
+                        params={"ref": "gh-pages"},
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as get_resp:
+                        if get_resp.status == 200:
+                            existing_sha = (await get_resp.json()).get("sha")
+
+                    put_payload: dict = {
+                        "message": "deploy: copy index.html to gh-pages",
+                        "content": b64content,
+                        "branch": "gh-pages",
+                    }
+                    if existing_sha:
+                        put_payload["sha"] = existing_sha
+
+                    async with session.put(
+                        f"{_BASE_URL}/repos/{username}/{repo}/contents/index.html",
+                        headers=_headers(),
+                        json=put_payload,
+                        timeout=aiohttp.ClientTimeout(total=15),
+                    ) as put_resp:
+                        if put_resp.status not in (200, 201):
+                            raw = await put_resp.text()
+                            logger.warning(f"[github] enable_pages: copy index.html {put_resp.status}: {raw[:200]}")
+                        else:
+                            logger.info(f"[github] enable_pages: index.html скопирован в gh-pages")
+                else:
+                    logger.warning(f"[github] enable_pages: index.html не найден в {source_branch}")
+
+            # Шаг 4: Включить Pages из gh-pages
+            async with session.post(
+                f"{_BASE_URL}/repos/{username}/{repo}/pages",
+                headers=_headers(),
+                json={"source": {"branch": "gh-pages", "path": "/"}},
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
-                data = await resp.json()
                 if resp.status in (200, 201):
-                    url = data.get("html_url", "")
+                    data = await resp.json()
+                    url = data.get("html_url", fallback_url)
                     logger.info(f"[github] Pages включён: {url}")
                     return url
-                logger.warning(f"[github] enable_pages {resp.status}: {data.get('message')}")
-                return None
+
+                if resp.status == 422:
+                    # Pages уже включён — получить существующий URL
+                    async with session.get(
+                        f"{_BASE_URL}/repos/{username}/{repo}/pages",
+                        headers=_headers(),
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as get_resp:
+                        if get_resp.status == 200:
+                            url = (await get_resp.json()).get("html_url", fallback_url)
+                            logger.info(f"[github] Pages уже включён: {url}")
+                            return url
+                    return fallback_url
+
+                raw = await resp.text()
+                logger.warning(f"[github] enable_pages {resp.status}: {raw[:200]}")
+                return fallback_url
+
     except Exception as e:
         logger.error(f"[github] enable_pages exception: {e}")
         return None
