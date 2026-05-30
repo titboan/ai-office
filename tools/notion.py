@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -94,10 +95,29 @@ def _utf16_split(text: str, max_units: int = _BLOCK_SIZE) -> list[str]:
     return chunks or [""]
 
 
+_URL_RE = re.compile(r"https?://[^\s]+")
+
+
+def _rich_text_with_links(chunk: str) -> list[dict]:
+    """Разбить чанк текста на rich_text объекты, превращая URL в кликабельные ссылки."""
+    parts: list[dict] = []
+    pos = 0
+    for m in _URL_RE.finditer(chunk):
+        if m.start() > pos:
+            parts.append({"type": "text", "text": {"content": chunk[pos:m.start()]}})
+        url = m.group()
+        parts.append({"type": "text", "text": {"content": url, "link": {"url": url}}})
+        pos = m.end()
+    if pos < len(chunk):
+        parts.append({"type": "text", "text": {"content": chunk[pos:]}})
+    return parts or [{"type": "text", "text": {"content": chunk}}]
+
+
 def _content_to_paragraph_blocks(text: str) -> list[dict]:
     """Разбить текст на paragraph-блоки Notion (≤1990 UTF-16 code units каждый).
 
     Notion API считает длину строк в UTF-16 (как JS): emoji > U+FFFF занимают 2 единицы.
+    URL автоматически превращаются в кликабельные ссылки.
     """
     text = (text or "").strip()
     if not text:
@@ -108,7 +128,7 @@ def _content_to_paragraph_blocks(text: str) -> list[dict]:
     return [
         {
             "object": "block", "type": "paragraph",
-            "paragraph": {"rich_text": [{"type": "text", "text": {"content": chunk}}]},
+            "paragraph": {"rich_text": _rich_text_with_links(chunk)},
         }
         for chunk in _utf16_split(text)
     ]
