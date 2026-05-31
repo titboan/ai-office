@@ -77,6 +77,16 @@ def _extract_project_name(text: str) -> str:
     return text.strip()[:80].rstrip(".!?,;")
 
 
+def _detect_image_type(data: bytes) -> str:
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return "image/webp"
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        return "image/png"
+    if data[:3] == b'\xff\xd8\xff':
+        return "image/jpeg"
+    return "image/jpeg"  # fallback
+
+
 MARTA_SYSTEM = """Ты — Марта, координатор ИИ-офиса.
 
 Команда:
@@ -690,6 +700,7 @@ class MartaAgent(BaseAgent):
 
             tg_file = await context.bot.get_file(update.message.photo[-1].file_id)
             photo_bytes = await tg_file.download_as_bytearray()
+            media_type = _detect_image_type(bytes(photo_bytes))
             photo_b64 = base64.b64encode(photo_bytes).decode("utf-8")
 
             vision_response = await self.claude.messages.create(
@@ -702,7 +713,7 @@ class MartaAgent(BaseAgent):
                             "type": "image",
                             "source": {
                                 "type": "base64",
-                                "media_type": "image/jpeg",
+                                "media_type": media_type,
                                 "data": photo_b64,
                             },
                         },
