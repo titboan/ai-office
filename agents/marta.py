@@ -322,17 +322,6 @@ class MartaAgent(BaseAgent):
             priority=_detect_priority(user_request),
         )
 
-        steps_preview = " → ".join(_AGENT_NAMES.get(s["agent"], s["agent"]) for s in steps)
-        if task_id and self.app:
-            await self.app.bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"🔗 Запускаю цепочку из {len(steps)} шагов:\n"
-                    f"{steps_preview}\n\n"
-                    f"Буду сообщать о каждом шаге."
-                ),
-                parse_mode="Markdown",
-            )
         logger.info(
             f"chain_start | chain_id={chain_id[:8]} | steps={len(steps)} | task_id={task_id} | corr={corr_id[:8]}"
         )
@@ -541,11 +530,6 @@ class MartaAgent(BaseAgent):
                     chat_id=chat_id,
                     priority=prio,
                 )
-                await reply_func(
-                    f"🟡 {agent.emoji} *{agent.name}* принял задачу{prio_label}.\n"
-                    f"Результат придёт когда будет готов.",
-                    parse_mode="Markdown",
-                )
                 return
 
         marta_response = await self.think(user_text, chat_id)
@@ -596,13 +580,6 @@ class MartaAgent(BaseAgent):
         )
 
         if task_id:
-            prio = _detect_priority(user_text)
-            prio_label = {20: " 🔴 СРОЧНО", 10: " 🟠 ВАЖНО", 0: ""}.get(prio, "")
-            await reply_func(
-                f"🟡 {agent.emoji} *{agent.name}* принял задачу{prio_label}.\n"
-                f"Результат придёт когда будет готов.",
-                parse_mode="Markdown",
-            )
             await self.post_to_group(f"🟡 Задача #{task_id} → {agent.name}: {short_task}")
             logger.info(f"[Марта] Задача #{task_id} → {agent.name} (priority={prio})")
         else:
