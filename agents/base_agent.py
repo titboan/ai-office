@@ -726,14 +726,55 @@ class BaseAgent(ABC):
                     logger.warning(f"notion_status_update_failed | error={e}")
 
             if chat_id:
-                if notion_page_id:
-                    notion_url = f"https://notion.so/{notion_page_id.replace('-', '')}"
-                    final_msg = (
-                        f"✅ Команда завершила работу!\n\n"
-                        f"📋 Проект готов в Notion:\n{notion_url}"
-                    )
-                else:
-                    final_msg = "✅ Команда завершила работу!"
+                import re as _re
+
+                # Получаем результаты всех агентов цепочки
+                chain_results = await get_chain_results(None, chain_id)
+
+                # Извлекаем GitHub Pages URL и repo URL из результатов
+                github_pages_url = None
+                github_repo_url = None
+                for r in chain_results:
+                    r_result = getattr(r, "result", None) or ""
+                    pages_match = _re.search(r'https://[\w\-]+\.github\.io/[\w\-/]+', r_result)
+                    repo_match  = _re.search(r'https://github\.com/[\w\-]+/[\w\-]+', r_result)
+                    if pages_match:
+                        github_pages_url = pages_match.group(0)
+                    if repo_match:
+                        github_repo_url = repo_match.group(0)
+
+                # Формируем список шагов с эмодзи
+                _AGENT_EMOJI = {
+                    "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
+                    "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
+                    "dan": "🎨", "tina": "📋", "digest": "📰",
+                }
+                steps_summary = ""
+                if plan and plan.get("steps"):
+                    for step in plan["steps"]:
+                        agent_k   = step.get("agent", "")
+                        task_text = step.get("task", "")
+                        emoji     = _AGENT_EMOJI.get(agent_k, "🤖")
+                        short_task = task_text[:60].strip()
+                        if len(task_text) > 60:
+                            short_task += "..."
+                        steps_summary += f"{emoji} {short_task}\n"
+
+                notion_url = (
+                    f"https://notion.so/{notion_page_id.replace('-', '')}"
+                    if notion_page_id else None
+                )
+
+                final_msg = "🎉 *Команда завершила работу!*\n\n"
+                if steps_summary:
+                    final_msg += steps_summary + "\n"
+                if github_pages_url:
+                    final_msg += f"🌐 [Открыть сайт]({github_pages_url})\n"
+                elif github_repo_url:
+                    final_msg += f"📦 [Репозиторий]({github_repo_url})\n"
+                if notion_url:
+                    final_msg += f"📋 [Открыть в Notion]({notion_url})"
+
                 await self._notify_user(chat_id, final_msg)
             return
 
