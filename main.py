@@ -20,6 +20,8 @@ from contextlib import suppress
 from loguru import logger
 
 from config import config
+from tools.notion import update_status_page
+from task_queue import get_active_tasks, get_recent_tasks
 from agents import (
     MartaAgent,
     KevinAgent,
@@ -98,12 +100,32 @@ async def run_all_async() -> None:
         # Ctrl+C поднимет KeyboardInterrupt → asyncio.run() прервёт корутину.
         logger.info("Windows: signal handlers не поддерживаются, используй Ctrl+C")
 
+    async def _status_page_loop():
+        redis = getattr(started[0], "_redis", None) if started else None
+        while True:
+            try:
+                active = await get_active_tasks()
+                recent = await get_recent_tasks(limit=20)
+                await update_status_page(redis, active, recent)
+            except Exception as e:
+                logger.warning(f"[status_loop] error: {e}")
+            await asyncio.sleep(60)
+
+    status_task = asyncio.create_task(_status_page_loop())
+    logger.info("[main] Фоновая задача обновления статуса запущена")
+
     try:
         await stop_event.wait()
     except asyncio.CancelledError:
         pass
 
     # Graceful shutdown
+    status_task.cancel()
+    try:
+        await status_task
+    except asyncio.CancelledError:
+        pass
+
     logger.info("Получен сигнал остановки — завершаем агентов...")
     for agent in reversed(started):
         await agent.stop_async()

@@ -1035,6 +1035,167 @@ async def get_project_context(page_id: str, max_chars: int = 2000) -> str:
         logger.error(f"[notion] get_project_context exception: {type(e).__name__}: {e}")
         return ""
 
+
+async def get_or_create_status_page(redis_client) -> str:
+    """Получает ID страницы статуса из Redis или создаёт новую."""
+    page_id = None
+    try:
+        if redis_client:
+            val = await redis_client.get("notion_status_page_id")
+            if val:
+                page_id = val.decode() if isinstance(val, bytes) else val
+    except Exception:
+        pass
+
+    if page_id:
+        return page_id
+
+    parent_id = config.NOTION_PARENT_PAGE_ID
+    if not parent_id:
+        raise ValueError("NOTION_PARENT_PAGE_ID не задан")
+
+    url = f"{_BASE_URL}/pages"
+    body = {
+        "parent": {"page_id": parent_id},
+        "icon": {"type": "emoji", "emoji": "📊"},
+        "properties": {
+            "title": {
+                "title": [{"type": "text", "text": {"content": "Статус офиса"}}]
+            }
+        },
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=_headers(), json=body, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            data = await resp.json()
+            page_id = data["id"]
+
+    try:
+        if redis_client:
+            await redis_client.set("notion_status_page_id", page_id)
+    except Exception:
+        pass
+
+    logger.info(f"[notion] Создана страница статуса: {page_id}")
+    return page_id
+
+
+async def update_status_page(redis_client, active_tasks: list, recent_tasks: list) -> None:
+    """Перезаписывает страницу статуса актуальными данными."""
+    try:
+        from datetime import datetime, timezone as _tz
+        from zoneinfo import ZoneInfo
+
+        page_id = await get_or_create_status_page(redis_client)
+        now = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%d.%m %H:%M")
+
+        _AGENT_EMOJI = {
+            "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
+            "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
+            "dan": "🎨", "tina": "📋", "digest": "📰",
+        }
+        _ALL_AGENTS = ["marta", "kasper", "kevin", "peter", "elina", "alex"]
+
+        busy_agents = {
+            t["assigned_agent"] for t in active_tasks
+            if t.get("status") in ("running", "acknowledged")
+        }
+        completed_today = len(recent_tasks)
+        errors_today = len([t for t in recent_tasks if t.get("status") == "failed"])
+
+        blocks = []
+
+        blocks.append({
+            "object": "block", "type": "paragraph",
+            "paragraph": {"rich_text": [
+                {"type": "text", "text": {"content": f"Обновлено: {now} МСК · авто каждую минуту"},
+                 "annotations": {"color": "gray"}},
+            ]},
+        })
+
+        blocks.append({
+            "object": "block", "type": "heading_2",
+            "heading_2": {"rich_text": [{"type": "text", "text": {"content": "Метрики"}}]},
+        })
+        metrics_text = (
+            f"Агентов: {len(_ALL_AGENTS)}  |  "
+            f"В работе: {len(busy_agents)}  |  "
+            f"Выполнено: {completed_today}  |  "
+            f"Ошибок: {errors_today}"
+        )
+        blocks.append({
+            "object": "block", "type": "paragraph",
+            "paragraph": {"rich_text": [{"type": "text", "text": {"content": metrics_text}}]},
+        })
+
+        blocks.append({
+            "object": "block", "type": "heading_2",
+            "heading_2": {"rich_text": [{"type": "text", "text": {"content": "Агенты"}}]},
+        })
+
+        for agent_key in _ALL_AGENTS:
+            emoji = _AGENT_EMOJI.get(agent_key, "🤖")
+            if agent_key in busy_agents:
+                task = next((t for t in active_tasks if t["assigned_agent"] == agent_key), None)
+                payload = task["payload"] if task else ""
+                short_task = (payload[:60] + "...") if len(payload) > 60 else payload
+                if task:
+                    created_at = task["created_at"]
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=_tz.utc)
+                    wait = datetime.now(_tz.utc) - created_at
+                    wait_str = (
+                        f"{int(wait.total_seconds() // 60)} мин"
+                        if wait.total_seconds() >= 60
+                        else f"{int(wait.total_seconds())} сек"
+                    )
+                    line = f"⚙️ {emoji} {agent_key}  —  {short_task}  ({wait_str})"
+                else:
+                    line = f"⚙️ {emoji} {agent_key}  —  в работе"
+            else:
+                line = f"✅ {emoji} {agent_key}  —  свободен"
+
+            blocks.append({
+                "object": "block", "type": "paragraph",
+                "paragraph": {"rich_text": [{"type": "text", "text": {"content": line}}]},
+            })
+
+        blocks.append({
+            "object": "block", "type": "heading_2",
+            "heading_2": {"rich_text": [{"type": "text", "text": {"content": "Последние выполненные"}}]},
+        })
+
+        for task in recent_tasks[:5]:
+            emoji = _AGENT_EMOJI.get(task["assigned_agent"], "🤖")
+            payload = task["payload"]
+            short = (payload[:60] + "...") if len(payload) > 60 else payload
+            finished_at = task.get("finished_at")
+            finished = (
+                finished_at.astimezone(ZoneInfo("Europe/Moscow")).strftime("%H:%M")
+                if finished_at else ""
+            )
+            line = f"✅ {emoji} {task['assigned_agent']}  —  {short}  [{finished}]"
+            blocks.append({
+                "object": "block", "type": "paragraph",
+                "paragraph": {"rich_text": [{"type": "text", "text": {"content": line}}]},
+            })
+
+        list_url = f"{_BASE_URL}/blocks/{page_id}/children"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(list_url, headers=_headers(), timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                existing = await resp.json()
+
+            for block in existing.get("results", []):
+                del_url = f"{_BASE_URL}/blocks/{block['id']}"
+                await session.delete(del_url, headers=_headers(), timeout=aiohttp.ClientTimeout(total=10))
+
+            append_url = f"{_BASE_URL}/blocks/{page_id}/children"
+            await session.patch(append_url, headers=_headers(), json={"children": blocks}, timeout=aiohttp.ClientTimeout(total=20))
+
+        logger.debug(f"[notion] Страница статуса обновлена: {now}")
+
+    except Exception as e:
+        logger.warning(f"[notion] update_status_page error: {e}")
+
     text = "\n".join(lines)
     if len(text) > max_chars:
         text = text[:max_chars] + "... [контекст обрезан]"
