@@ -317,7 +317,7 @@ class MartaAgent(BaseAgent):
                 text=(
                     f"🔗 Запускаю цепочку из {len(steps)} шагов:\n"
                     f"{steps_preview}\n\n"
-                    f"Буду сообщать о каждом шаге. `chain_id: {chain_id[:8]}`"
+                    f"Буду сообщать о каждом шаге."
                 ),
                 parse_mode="Markdown",
             )
@@ -567,8 +567,7 @@ class MartaAgent(BaseAgent):
             prio_label = {20: " 🔴 СРОЧНО", 10: " 🟠 ВАЖНО", 0: ""}.get(prio, "")
             await reply_func(
                 f"🟡 {agent.emoji} *{agent.name}* принял задачу{prio_label}.\n"
-                f"Результат придёт когда будет готов.\n"
-                f"`task_id: {task_id} | corr: {corr_id[:8]}`",
+                f"Результат придёт когда будет готов.",
                 parse_mode="Markdown",
             )
             await self.post_to_group(f"🟡 Задача #{task_id} → {agent.name}: {short_task}")
