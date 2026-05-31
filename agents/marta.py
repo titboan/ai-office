@@ -4,6 +4,8 @@ import json
 import re
 import traceback
 import uuid
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import anthropic
 from loguru import logger
@@ -876,36 +878,65 @@ class MartaAgent(BaseAgent):
     async def cmd_status(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """/status — показать активные задачи в очереди."""
+        """/status — показать состояние офиса."""
+        from task_queue import get_recent_tasks
+
+        _AGENT_EMOJI = {
+            "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
+            "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
+            "dan": "🎨", "tina": "📋", "digest": "📰",
+        }
+        _STATUS_EMOJI = {
+            "queued": "🕐", "acknowledged": "👀",
+            "running": "⚙️", "failed": "🔴", "timeout": "⏱️",
+        }
+
+        now_msk = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%d.%m %H:%M")
+        lines = [f"📋 *Статус офиса* — {now_msk} МСК\n"]
+
         tasks = await get_active_tasks()
-
         if not tasks:
-            await update.message.reply_text("✅ Очередь пуста — нет активных задач.")
-            return
+            lines.append("✅ Все агенты свободны")
+        else:
+            for t in tasks:
+                agent_emoji  = _AGENT_EMOJI.get(t["assigned_agent"], "🤖")
+                status_emoji = _STATUS_EMOJI.get(t["status"], "❓")
+                short_task   = t["payload"][:60].strip()
+                if len(t["payload"]) > 60:
+                    short_task += "..."
+                created_at = t["created_at"]
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                wait = datetime.now(timezone.utc) - created_at
+                wait_str = (
+                    f"{int(wait.total_seconds() // 60)} мин"
+                    if wait.total_seconds() >= 60
+                    else f"{int(wait.total_seconds())} сек"
+                )
+                lines.append(
+                    f"{status_emoji} {agent_emoji} *{t['assigned_agent']}* — {short_task}\n"
+                    f"⏳ В работе: {wait_str}\n"
+                )
 
-        lines = ["📋 *Активные задачи:*\n"]
-        for t in tasks:
-            status_emoji = {
-                "queued":       "🟡",
-                "acknowledged": "🔵",
-                "running":      "🔵",
-            }.get(t["status"], "⚪")
+        recent = await get_recent_tasks(5)
+        if recent:
+            lines.append("\n📜 *Последние выполненные:*")
+            for t in recent:
+                agent_emoji = _AGENT_EMOJI.get(t["assigned_agent"], "🤖")
+                short_task  = t["payload"][:60].strip()
+                if len(t["payload"]) > 60:
+                    short_task += "..."
+                lines.append(f"✅ {agent_emoji} {t['assigned_agent']} — {short_task}")
 
-            created = t["created_at"].strftime("%H:%M:%S")
-            short_payload = (t["payload"][:50] + "…") if len(t["payload"]) > 50 else t["payload"]
-            prio = t.get("priority", 0)
-            prio_label = {20: " 🔴", 10: " 🟠", 0: ""}.get(prio, "")
-
-            lines.append(
-                f"{status_emoji}{prio_label} *{t['assigned_agent']}* | "
-                f"id={t['id']} | {t['status']}\n"
-                f"    `{short_payload}`\n"
-                f"    corr={t['correlation_id'][:8]} | {created}"
-            )
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("📜 История", callback_data="status:history"),
+            InlineKeyboardButton("❌ Отмена задачи", callback_data="status:cancel"),
+        ]])
 
         await update.message.reply_text(
             "\n".join(lines),
             parse_mode="Markdown",
+            reply_markup=keyboard,
         )
 
     async def cmd_history(
