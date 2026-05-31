@@ -222,7 +222,7 @@ class KevinAgent(BaseAgent):
             for iteration in range(1, 11):
                 response = await self.claude.messages.create(
                     model=config.CLAUDE_MODEL,
-                    max_tokens=8192,
+                    max_tokens=16000,
                     system=KEVIN_SYSTEM,
                     messages=messages,
                     tools=GITHUB_TOOLS,
