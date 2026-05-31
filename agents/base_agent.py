@@ -601,11 +601,6 @@ class BaseAgent(ABC):
                     f"[{self.name}] corr={task.correlation_id[:8]} | "
                     f"task_id={task.id} | payload={task.payload[:60]!r}"
                 )
-                if task.chat_id:
-                    await self._notify_user(
-                        task.chat_id,
-                        f"🔵 *{self.emoji} {self.name}* выполняет задачу…\n`corr: {task.correlation_id[:8]}`"
-                    )
                 short = (task.payload[:80] + "…") if len(task.payload) > 80 else task.payload
                 await self.post_to_group(f"🔵 Выполняю (corr={task.correlation_id[:8]}): {short}")
                 self._current_chat_id = task.chat_id
@@ -622,7 +617,7 @@ class BaseAgent(ABC):
                         if task.chat_id:
                             await self._notify_user(
                                 task.chat_id,
-                                f"🟢 *{self.emoji} {self.name}* выполнил задачу:\n\n{result}"
+                                f"✅ {self.emoji} *{self.name}* выполнил задачу."
                             )
                         await self.post_to_group(f"✅ Задача #{task.id} завершена")
                 except asyncio.TimeoutError:
