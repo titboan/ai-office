@@ -1037,19 +1037,24 @@ async def get_project_context(page_id: str, max_chars: int = 2000) -> str:
 
 
 async def get_or_create_status_page(redis_client) -> str:
-    """Получает ID страницы статуса из Redis или создаёт новую."""
-    page_id = None
+    """Получает ID страницы статуса из env, Redis или создаёт новую."""
+    import os
+
+    # Сначала проверяем env переменную (самый надёжный способ)
+    env_page_id = os.getenv("NOTION_STATUS_PAGE_ID")
+    if env_page_id:
+        return env_page_id
+
+    # Потом Redis
     try:
         if redis_client:
             val = await redis_client.get("notion_status_page_id")
             if val:
-                page_id = val.decode() if isinstance(val, bytes) else val
+                return val.decode() if isinstance(val, bytes) else val
     except Exception:
         pass
 
-    if page_id:
-        return page_id
-
+    # Создаём новую страницу только если нигде нет
     parent_id = config.NOTION_PARENT_PAGE_ID
     if not parent_id:
         raise ValueError("NOTION_PARENT_PAGE_ID не задан")
