@@ -234,7 +234,7 @@ class MartaAgent(BaseAgent):
         try:
             response = await self.claude.messages.create(
                 model=config.CLAUDE_MODEL,
-                max_tokens=600,
+                max_tokens=2000,
                 system=self._CHAIN_PLANNER_SYSTEM,
                 messages=[{"role": "user", "content": prompt}],
             )
