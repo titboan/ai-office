@@ -1093,6 +1093,11 @@ async def update_status_page(redis_client, active_tasks: list, recent_tasks: lis
             "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
             "dan": "🎨", "tina": "📋", "digest": "📰",
         }
+        _AGENT_NAMES = {
+            "kasper": "Каспер", "kevin": "Кевин", "peter": "Питер",
+            "elina": "Элина", "alex": "Алекс", "marta": "Марта",
+            "dan": "Дэн", "tina": "Тина", "digest": "Дайджест",
+        }
         _ALL_AGENTS = ["marta", "kasper", "kevin", "peter", "elina", "alex"]
 
         busy_agents = {
@@ -1148,11 +1153,11 @@ async def update_status_page(redis_client, active_tasks: list, recent_tasks: lis
                         if wait.total_seconds() >= 60
                         else f"{int(wait.total_seconds())} сек"
                     )
-                    line = f"⚙️ {emoji} {agent_key}  —  {short_task}  ({wait_str})"
+                    line = f"⚙️ {emoji} {_AGENT_NAMES.get(agent_key, agent_key)}  —  {short_task}  ({wait_str})"
                 else:
-                    line = f"⚙️ {emoji} {agent_key}  —  в работе"
+                    line = f"⚙️ {emoji} {_AGENT_NAMES.get(agent_key, agent_key)}  —  в работе"
             else:
-                line = f"✅ {emoji} {agent_key}  —  свободен"
+                line = f"✅ {emoji} {_AGENT_NAMES.get(agent_key, agent_key)}  —  свободен"
 
             blocks.append({
                 "object": "block", "type": "paragraph",
@@ -1173,7 +1178,7 @@ async def update_status_page(redis_client, active_tasks: list, recent_tasks: lis
                 finished_at.astimezone(ZoneInfo("Europe/Moscow")).strftime("%H:%M")
                 if finished_at else ""
             )
-            line = f"✅ {emoji} {task['assigned_agent']}  —  {short}  [{finished}]"
+            line = f"✅ {emoji} {_AGENT_NAMES.get(task['assigned_agent'], task['assigned_agent'])}  —  {short}  [{finished}]"
             blocks.append({
                 "object": "block", "type": "paragraph",
                 "paragraph": {"rich_text": [{"type": "text", "text": {"content": line}}]},
