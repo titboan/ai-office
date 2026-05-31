@@ -239,14 +239,16 @@ class MartaAgent(BaseAgent):
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = response.content[0].text.strip()
+            logger.debug(f"[Марта] _plan_chain raw response: {raw[:300]}")
             plan = json.loads(raw)
+            logger.debug(f"[Марта] _plan_chain result: {raw[:500]}")
             if plan.get("is_chain"):
                 logger.info(
                     f"chain_plan | steps={len(plan.get('steps', []))} | request={user_request[:60]!r}"
                 )
             return plan
         except Exception as e:
-            logger.warning(f"[Марта] _plan_chain error: {e}")
+            logger.warning(f"[Марта] _plan_chain error: {e} | raw: {raw[:200] if 'raw' in locals() else 'no response'}")
             return None
 
     async def _create_project_page(self, user_request: str, plan: dict) -> tuple[str | None, str]:
