@@ -11,7 +11,7 @@ from typing import Any, Optional
 import anthropic
 import redis.asyncio as aioredis
 from loguru import logger
-from telegram import Bot, Update
+from telegram import Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -645,7 +645,7 @@ class BaseAgent(ABC):
                 await asyncio.sleep(5)
         logger.info(f"[{self.name}] Worker loop остановлен")
 
-    async def _notify_user(self, chat_id: int, text: str) -> None:
+    async def _notify_user(self, chat_id: int, text: str, reply_markup=None) -> None:
         """Отправить сообщение пользователю через бота этого агента.
 
         Разбивает длинные сообщения на части (лимит Telegram 4096 символов).
@@ -657,18 +657,20 @@ class BaseAgent(ABC):
 
         try:
             if self.app:
-                for chunk in chunks:
+                for i, chunk in enumerate(chunks):
+                    markup = reply_markup if i == len(chunks) - 1 else None
                     try:
-                        await self.app.bot.send_message(chat_id=chat_id, text=chunk, parse_mode="Markdown")
+                        await self.app.bot.send_message(chat_id=chat_id, text=chunk, parse_mode="Markdown", reply_markup=markup)
                     except Exception:
-                        await self.app.bot.send_message(chat_id=chat_id, text=chunk)
+                        await self.app.bot.send_message(chat_id=chat_id, text=chunk, reply_markup=markup)
             else:
                 async with Bot(token=self.bot_token) as bot:
-                    for chunk in chunks:
+                    for i, chunk in enumerate(chunks):
+                        markup = reply_markup if i == len(chunks) - 1 else None
                         try:
-                            await bot.send_message(chat_id=chat_id, text=chunk, parse_mode="Markdown")
+                            await bot.send_message(chat_id=chat_id, text=chunk, parse_mode="Markdown", reply_markup=markup)
                         except Exception:
-                            await bot.send_message(chat_id=chat_id, text=chunk)
+                            await bot.send_message(chat_id=chat_id, text=chunk, reply_markup=markup)
         except Exception as e:
             logger.warning(f"[{self.name}] _notify_user ошибка (chat={chat_id}): {e}")
 
@@ -781,7 +783,14 @@ class BaseAgent(ABC):
                 if notion_url:
                     final_msg += f"📋 [Открыть в Notion]({notion_url})"
 
-                await self._notify_user(chat_id, final_msg)
+                buttons = []
+                if github_pages_url:
+                    buttons.append(InlineKeyboardButton("🌐 Открыть сайт", url=github_pages_url))
+                if notion_url:
+                    buttons.append(InlineKeyboardButton("📋 Notion", url=notion_url))
+                keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
+
+                await self._notify_user(chat_id, final_msg, reply_markup=keyboard)
             return
 
         next_step  = plan["steps"][next_index]
