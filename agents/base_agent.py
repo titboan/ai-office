@@ -625,13 +625,19 @@ class BaseAgent(ABC):
                     if task.chain_id:
                         await self._handle_chain_failure(task)
                     elif task.chat_id:
-                        await self._notify_user(task.chat_id, f"⏱️ {self.emoji} *{self.name}*: задача превысила лимит времени.")
+                        await self._notify_user(task.chat_id, f"⏱️ {self.emoji} *{self.name}*: задача превысила лимит времени.\n\nПопробуй разбить задачу на части.")
                 except Exception as e:
                     await mark_failed(task.id, f"{type(e).__name__}: {e}", retry=True)
                     if task.chain_id and task.retry_count + 1 >= task.max_retries:
                         await self._handle_chain_failure(task)
                     elif task.chat_id and task.retry_count + 1 >= task.max_retries:
-                        await self._notify_user(task.chat_id, f"🔴 {self.emoji} *{self.name}*: задача не выполнена.\n`{e}`")
+                        error_short = str(e)[:150].strip()
+                        await self._notify_user(
+                            task.chat_id,
+                            f"🔴 {self.emoji} *{self.name}* не смог выполнить задачу.\n\n"
+                            f"*Причина:* `{error_short}`\n\n"
+                            f"Попробуй переформулировать задачу или обратись к Марте."
+                        )
             except asyncio.CancelledError:
                 break
             except Exception as e:
