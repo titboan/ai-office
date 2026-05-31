@@ -8,7 +8,7 @@ import uuid
 import anthropic
 from loguru import logger
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
-from telegram.ext import CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 from config import config
 from db import save_project, find_project, list_projects
@@ -667,6 +667,81 @@ class MartaAgent(BaseAgent):
             logger.error(f"[Марта] handle_voice ошибка: {e}")
             await update.message.reply_text(f"⚠️ Ошибка распознавания голоса: {e}")
 
+    async def handle_photo(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Фото + подпись: анализ через Claude Vision → _process_text()."""
+        if not update.message or not update.message.photo:
+            return
+
+        import base64
+
+        chat_id = update.effective_chat.id
+        user_name = (
+            update.effective_user.username
+            or update.effective_user.first_name
+            or "unknown"
+        )
+        caption = update.message.caption or ""
+        logger.info(f"[Марта] Фото от @{user_name} (chat={chat_id}), caption={caption!r}")
+
+        try:
+            await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+
+            tg_file = await context.bot.get_file(update.message.photo[-1].file_id)
+            photo_bytes = await tg_file.download_as_bytearray()
+            photo_b64 = base64.b64encode(photo_bytes).decode("utf-8")
+
+            vision_response = await self.claude.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=1000,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": photo_b64,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": (
+                                "Детально опиши что изображено: структуру, блоки, цвета, "
+                                "текст, компоновку, стиль. Описание будет использовано как "
+                                "референс для команды агентов. Пиши на русском языке."
+                            ),
+                        },
+                    ],
+                }],
+            )
+            image_description = vision_response.content[0].text
+
+            if caption:
+                combined_text = (
+                    f"[Референс изображения]\n{image_description}\n\n"
+                    f"[Задача пользователя]\n{caption}"
+                )
+            else:
+                combined_text = (
+                    f"[Референс изображения]\n{image_description}\n\n"
+                    f"Пользователь прислал изображение без подписи. "
+                    f"Уточни что нужно сделать с этим референсом."
+                )
+
+            _kb = self._main_keyboard()
+
+            async def reply(text, parse_mode=None):
+                await update.message.reply_text(text, parse_mode=parse_mode, reply_markup=_kb)
+
+            await self._process_text(combined_text, chat_id, reply)
+
+        except Exception as e:
+            logger.error(f"[Марта] handle_photo ошибка: {e}")
+            await update.message.reply_text(f"⚠️ Ошибка обработки фото: {e}")
+
     # ------------------------------------------------------------------ #
     #  handle_task — для вызова Марты из других агентов                   #
     # ------------------------------------------------------------------ #
@@ -849,3 +924,4 @@ class MartaAgent(BaseAgent):
             self._handle_chain_callback,
             pattern="^chain_(confirm|cancel)$",
         ))
+        self.app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
