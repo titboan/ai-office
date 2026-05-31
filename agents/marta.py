@@ -216,6 +216,13 @@ class MartaAgent(BaseAgent):
         "ПРАВИЛА ДЛЯ needs_project_page:\n"
         "  true  — проект: сайт, бот, исследование рынка, продукт, приложение, контент-пакет\n"
         "  false — разовый вопрос, справка, простая задача\n\n"
+        "ПРАВИЛА ВЫБОРА АГЕНТА ДЛЯ is_chain:false:\n"
+        "  - сайт, лендинг, репозиторий, код, бот, деплой → agent: 'kevin'\n"
+        "  - тексты, посты, контент → agent: 'elina'\n"
+        "  - исследование, поиск данных → agent: 'kasper'\n"
+        "  - бизнес-анализ, рынок → agent: 'peter'\n"
+        "  - планирование, roadmap → agent: 'alex'\n"
+        "ВАЖНО: для сайта/лендинга/кода НИКОГДА не указывай elina или других — только kevin.\n\n"
         "Отвечай ТОЛЬКО валидным JSON без markdown."
     )
 
@@ -519,6 +526,27 @@ class MartaAgent(BaseAgent):
                         ]]),
                     )
                     return  # НЕ делегируем дальше — ждём ответа пользователя
+
+        if plan and not plan.get("is_chain") and plan.get("agent"):
+            agent_key = plan.get("agent")
+            task_text = plan.get("task") or user_text
+            agent = self._get_agent(agent_key)
+            if agent:
+                prio = _detect_priority(user_text)
+                prio_label = {20: " 🔴 СРОЧНО", 10: " 🟠 ВАЖНО", 0: ""}.get(prio, "")
+                task_id, corr_id = await enqueue_task(
+                    assigned_agent=agent_key,
+                    payload=task_text,
+                    from_agent="marta",
+                    chat_id=chat_id,
+                    priority=prio,
+                )
+                await reply_func(
+                    f"🟡 {agent.emoji} *{agent.name}* принял задачу{prio_label}.\n"
+                    f"Результат придёт когда будет готов.",
+                    parse_mode="Markdown",
+                )
+                return
 
         marta_response = await self.think(user_text, chat_id)
         delegation = self._parse_delegation(marta_response)
