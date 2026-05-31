@@ -754,11 +754,19 @@ class MartaAgent(BaseAgent):
                     f"Цвета, тематику и контент бери из задачи пользователя, НЕ из референса."
                 )
             else:
-                combined_text = (
-                    f"[Референс изображения]\n{image_description}\n\n"
-                    f"Пользователь прислал изображение без подписи. "
-                    f"Уточни что нужно сделать с этим референсом."
-                )
+                await self._redis_set(f"pending_image:{chat_id}", image_description, ttl=600)
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("🌐 Сделать лендинг", callback_data=f"img_action:landing:{chat_id}"),
+                        InlineKeyboardButton("🔍 Исследовать нишу", callback_data=f"img_action:research:{chat_id}"),
+                    ],
+                    [
+                        InlineKeyboardButton("📝 Написать текст", callback_data=f"img_action:copy:{chat_id}"),
+                        InlineKeyboardButton("💬 Описать своими словами", callback_data=f"img_action:custom:{chat_id}"),
+                    ],
+                ])
+                await update.message.reply_text("🖼️ Отличный референс! Что с ним делаем?", reply_markup=keyboard)
+                return
 
             _kb = self._main_keyboard()
 
@@ -770,6 +778,53 @@ class MartaAgent(BaseAgent):
         except Exception as e:
             logger.error(f"[Марта] handle_photo ошибка: {e}")
             await update.message.reply_text(f"⚠️ Ошибка обработки фото: {e}")
+
+    async def _handle_image_action(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Обрабатывает выбор действия для загруженного изображения."""
+        query = update.callback_query
+        await query.answer()
+
+        parts = query.data.split(":")  # "img_action:landing:chat_id"
+        action = parts[1]
+        chat_id = int(parts[2])
+
+        image_description = await self._redis_get(f"pending_image:{chat_id}")
+        if not image_description:
+            await query.edit_message_text("⚠️ Референс устарел, отправь изображение ещё раз.")
+            return
+
+        action_map = {
+            "landing":  "Создай лендинг на основе этого референса",
+            "research": "Исследуй нишу и рынок для продукта из этого референса",
+            "copy":     "Напиши тексты для сайта на основе этого референса",
+        }
+
+        if action == "custom":
+            await query.edit_message_text("✏️ Напиши что нужно сделать с этим референсом:")
+            await self._redis_set(f"awaiting_image_task:{chat_id}", "1", ttl=600)
+            return
+
+        task_text = action_map.get(action, "Обработай этот референс")
+        combined_text = (
+            f"[Структура и компоновка по референсу — строго соблюдать layout]\n"
+            f"{image_description}\n\n"
+            f"[Задача пользователя — цвета, тематика, контент]\n"
+            f"{task_text}\n\n"
+            f"[Инструкция]\n"
+            f"Реализуй задачу точно повторяя структуру и компоновку референса. "
+            f"Цвета, тематику и контент бери из задачи пользователя, НЕ из референса."
+        )
+
+        await query.edit_message_text("⚙️ Принято! Делегирую команде...")
+
+        _kb = self._main_keyboard()
+
+        async def reply(text, parse_mode=None):
+            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, reply_markup=_kb)
+
+        await self._process_text(combined_text, chat_id, reply)
 
     # ------------------------------------------------------------------ #
     #  handle_task — для вызова Марты из других агентов                   #
@@ -954,3 +1009,4 @@ class MartaAgent(BaseAgent):
             pattern="^chain_(confirm|cancel)$",
         ))
         self.app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
+        self.app.add_handler(CallbackQueryHandler(self._handle_image_action, pattern="^img_action:"))
