@@ -23,6 +23,7 @@ class Config:
     PETER_BOT_TOKEN: str = os.getenv("PETER_BOT_TOKEN", "")
     ELINA_BOT_TOKEN: str = os.getenv("ELINA_BOT_TOKEN", "")
     ALEX_BOT_TOKEN: str = os.getenv("ALEX_BOT_TOKEN", "")
+    DEN_BOT_TOKEN: str = os.getenv("DEN_BOT_TOKEN", "")
 
     # Общая группа офиса
     OFFICE_GROUP_ID: int = int(os.getenv("OFFICE_GROUP_ID", "0"))

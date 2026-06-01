@@ -29,6 +29,7 @@ from agents import (
     PeterAgent,
     ElinaAgent,
     AlexAgent,
+    DanAgent,
 )
 
 # Реестр: ключ → (класс агента, webhook-суффикс)
@@ -39,6 +40,7 @@ AGENTS: dict[str, tuple] = {
     "peter":  (PeterAgent,  "peter"),
     "elina":  (ElinaAgent,  "elina"),
     "alex":   (AlexAgent,   "alex"),
+    "dan":    (DanAgent,    "dan"),
 }
 
 

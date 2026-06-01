@@ -330,6 +330,26 @@ async def enable_pages(repo: str, source_branch: str = "") -> str | None:
         return None
 
 
+async def list_files(repo: str, path: str = "") -> list:
+    """Список файлов в папке репозитория."""
+    if not config.GITHUB_TOKEN:
+        return []
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{_BASE_URL}/repos/{config.GITHUB_USERNAME}/{repo}/contents/{path}",
+                headers=_headers(),
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return [f["name"] for f in data if f["type"] == "file"]
+                return []
+    except Exception as e:
+        logger.error(f"[github] list_files exception: {e}")
+        return []
+
+
 async def list_repos() -> list[dict]:
     """Получить список репозиториев пользователя."""
     if not config.GITHUB_TOKEN:
