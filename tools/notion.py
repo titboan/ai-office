@@ -732,11 +732,14 @@ async def create_project(
 # ── Project pages (chain Notion integration) ──────────────────────────────────
 
 _SECTION_MAP: dict[str, str] = {
-    "kasper": "🔍 Исследование",
-    "kevin":  "🏗️ Архитектура",
-    "peter":  "📊 Аналитика",
-    "elina":  "✍️ Описание продукта",
-    "alex":   "✅ План задач",
+    "kasper":  "🔍 Исследование",
+    "kevin":   "🏗️ Архитектура",
+    "peter":   "📊 Аналитика",
+    "elina":   "✍️ Описание продукта",
+    "alex":    "✅ План задач",
+    "dan":     "🎨 Дизайн",
+    "tina":    "📋 Тендер",
+    "digest":  "📰 Дайджест",
 }
 
 
