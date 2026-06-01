@@ -1172,8 +1172,3 @@ async def update_status_page(redis_client, active_tasks: list, recent_tasks: lis
 
     except Exception as e:
         logger.warning(f"[notion] update_status_page error: {e}")
-
-    text = "\n".join(lines)
-    if len(text) > max_chars:
-        text = text[:max_chars] + "... [контекст обрезан]"
-    return text
