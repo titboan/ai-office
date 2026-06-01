@@ -1036,61 +1036,28 @@ async def get_project_context(page_id: str, max_chars: int = 2000) -> str:
         return ""
 
 
-async def get_or_create_status_page(redis_client) -> str:
-    """Получает ID страницы статуса из env, Redis или создаёт новую."""
+async def get_or_create_status_page(redis_client=None) -> str:
     import os
-
-    # Сначала проверяем env переменную (самый надёжный способ)
     env_page_id = os.getenv("NOTION_STATUS_PAGE_ID")
     if env_page_id:
         return env_page_id
-
-    # Потом Redis
-    try:
-        if redis_client:
-            val = await redis_client.get("notion_status_page_id")
-            if val:
-                return val.decode() if isinstance(val, bytes) else val
-    except Exception:
-        pass
-
-    # Создаём новую страницу только если нигде нет
-    parent_id = config.NOTION_PARENT_PAGE_ID
-    if not parent_id:
-        raise ValueError("NOTION_PARENT_PAGE_ID не задан")
-
-    url = f"{_BASE_URL}/pages"
-    body = {
-        "parent": {"page_id": parent_id},
-        "icon": {"type": "emoji", "emoji": "📊"},
-        "properties": {
-            "title": {
-                "title": [{"type": "text", "text": {"content": "Статус офиса"}}]
-            }
-        },
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=_headers(), json=body, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-            data = await resp.json()
-            page_id = data["id"]
-
-    try:
-        if redis_client:
-            await redis_client.set("notion_status_page_id", page_id)
-    except Exception:
-        pass
-
-    logger.info(f"[notion] Создана страница статуса: {page_id}")
-    return page_id
+    raise ValueError(
+        "NOTION_STATUS_PAGE_ID не задан в env. "
+        "Создай страницу вручную и добавь её ID в переменные окружения Railway."
+    )
 
 
 async def update_status_page(redis_client, active_tasks: list, recent_tasks: list) -> None:
     """Перезаписывает страницу статуса актуальными данными."""
     try:
+        import os
         from datetime import datetime, timezone as _tz
         from zoneinfo import ZoneInfo
 
-        page_id = await get_or_create_status_page(redis_client)
+        page_id = os.getenv("NOTION_STATUS_PAGE_ID")
+        if not page_id:
+            logger.warning("[notion] NOTION_STATUS_PAGE_ID не задан — пропускаю обновление статуса")
+            return
         now = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%d.%m %H:%M")
 
         _AGENT_EMOJI = {
