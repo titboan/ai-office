@@ -227,7 +227,7 @@ async def enqueue_chain_task(
                     priority, timeout_seconds,
                     chain_id, chain_index, chain_total, chain_plan, notion_page_id
                 )
-                VALUES ($1,'general',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)
+                VALUES ($1,'general',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13)
                 RETURNING id
             """, agent_key, payload,
                 from_agent, chat_id,
