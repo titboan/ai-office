@@ -383,8 +383,25 @@ class MartaAgent(BaseAgent):
             if plan:
                 await self._start_chain(plan, user_text, chat_id)
                 self._resume_notion_page_id = None
+                _ce = {
+                    "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
+                    "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
+                    "dan": "🎨", "tina": "📋", "digest": "📰",
+                }
+                _cn = {
+                    "kasper": "Каспер", "kevin": "Кевин", "peter": "Питер",
+                    "elina": "Элина", "alex": "Алекс", "marta": "Марта",
+                    "dan": "Дэн", "tina": "Тина", "digest": "Дайджест",
+                }
+                chain_line = " → ".join(
+                    f"{_ce.get(s['agent'], '🤖')} {_cn.get(s['agent'], s['agent'])}"
+                    for s in plan.get("steps", [])
+                )
                 await query.edit_message_text(
-                    f"🚀 Цепочка запущена!\n{' → '.join(_AGENT_NAMES.get(s['agent'], s['agent']) for s in plan.get('steps', []))}"
+                    f"✅ *Принято в работу!*\n\n"
+                    f"🔗 {chain_line}\n\n"
+                    f"Буду сообщать о каждом шаге.",
+                    parse_mode="Markdown",
                 )
             else:
                 await query.edit_message_text("⏰ План устарел, повтори запрос.")
