@@ -506,20 +506,37 @@ class MartaAgent(BaseAgent):
         if not skip_chain:
             plan = await self._plan_chain(user_text, chat_id)
             if plan and plan.get("is_chain"):
-                steps_preview = " → ".join(
-                    _AGENT_NAMES.get(s["agent"], s["agent"])
-                    for s in plan.get("steps", [])
-                )
+                _CHAIN_AGENT_EMOJI = {
+                    "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
+                    "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
+                    "dan": "🎨", "tina": "📋", "digest": "📰",
+                }
+                _CHAIN_AGENT_NAMES = {
+                    "kasper": "Каспер", "kevin": "Кевин", "peter": "Питер",
+                    "elina": "Элина", "alex": "Алекс", "marta": "Марта",
+                    "dan": "Дэн", "tina": "Тина", "digest": "Дайджест",
+                }
+                steps = plan.get("steps", [])
+                steps_lines = ""
+                for i, step in enumerate(steps, 1):
+                    a_key   = step.get("agent", "")
+                    emoji   = _CHAIN_AGENT_EMOJI.get(a_key, "🤖")
+                    name    = _CHAIN_AGENT_NAMES.get(a_key, a_key)
+                    task_str = step.get("task", "")
+                    task_short = task_str[:55] + ("..." if len(task_str) > 55 else "")
+                    steps_lines += f"{i}. {emoji} *{name}* — {task_short}\n"
+
                 await self._save_pending_chain(chat_id, plan, user_text)
                 bot = self.app.bot if self.app else None
                 if bot:
                     await bot.send_message(
                         chat_id=chat_id,
                         text=(
-                            f"Похоже, это задача для команды.\n\n"
-                            f"Предлагаю запустить цепочку:\n{steps_preview}\n\n"
-                            f"Запустить?"
+                            f"🗂️ *Задача для команды*\n\n"
+                            f"{steps_lines}\n"
+                            f"Запустить цепочку?"
                         ),
+                        parse_mode="Markdown",
                         reply_markup=InlineKeyboardMarkup([[
                             InlineKeyboardButton("🚀 Запустить", callback_data="chain_confirm"),
                             InlineKeyboardButton("💬 Просто ответь", callback_data="chain_cancel"),
