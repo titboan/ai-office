@@ -93,7 +93,7 @@ class DanAgent(BaseAgent):
         url = f"https://image.pollinations.ai/prompt/{prompt}?width={width}&height={height}&nologo=true&model=flux"
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
                 image_bytes = await resp.read()
 
         image_b64 = base64.b64encode(image_bytes).decode()

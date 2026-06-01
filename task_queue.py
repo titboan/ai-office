@@ -207,6 +207,7 @@ async def enqueue_chain_task(
     from_agent: str = "marta",
     correlation_id: str | None = None,
     priority: int = 0,
+    timeout_seconds: int = 300,
 ) -> int | None:
     """Создать задачу с chain_* полями. Возвращает task_id или None."""
     import json as _json
@@ -223,15 +224,15 @@ async def enqueue_chain_task(
                     assigned_agent, task_type, payload,
                     from_agent, chat_id,
                     correlation_id, parent_task_id,
-                    priority,
+                    priority, timeout_seconds,
                     chain_id, chain_index, chain_total, chain_plan, notion_page_id
                 )
-                VALUES ($1,'general',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)
+                VALUES ($1,'general',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)
                 RETURNING id
             """, agent_key, payload,
                 from_agent, chat_id,
                 corr_id, parent_task_id,
-                priority,
+                priority, timeout_seconds,
                 chain_id, chain_index, chain_total, chain_plan_json, notion_page_id)
             task_id = row["id"]
             logger.info(

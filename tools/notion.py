@@ -1070,7 +1070,7 @@ async def update_status_page(redis_client, active_tasks: list, recent_tasks: lis
             "elina": "Элина", "alex": "Алекс", "marta": "Марта",
             "dan": "Дэн", "tina": "Тина", "digest": "Дайджест",
         }
-        _ALL_AGENTS = ["marta", "kasper", "kevin", "peter", "elina", "alex"]
+        _ALL_AGENTS = ["marta", "kasper", "kevin", "peter", "elina", "alex", "dan"]
 
         busy_agents = {
             t["assigned_agent"] for t in active_tasks

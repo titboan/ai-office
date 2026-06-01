@@ -331,6 +331,7 @@ class MartaAgent(BaseAgent):
             from_agent="marta",
             correlation_id=corr_id,
             priority=_detect_priority(user_request),
+            timeout_seconds=600 if first["agent"] == "dan" else 300,
         )
 
         logger.info(
@@ -557,6 +558,7 @@ class MartaAgent(BaseAgent):
                     from_agent="marta",
                     chat_id=chat_id,
                     priority=prio,
+                    timeout_seconds=600 if agent_key == "dan" else 300,
                 )
                 return
 
@@ -605,6 +607,7 @@ class MartaAgent(BaseAgent):
             from_agent="marta",
             chat_id=chat_id,
             priority=_detect_priority(user_text),
+            timeout_seconds=600 if agent_key == "dan" else 300,
         )
 
         if task_id:

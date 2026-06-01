@@ -857,6 +857,7 @@ class BaseAgent(ABC):
             from_agent=self.agent_key,
             correlation_id=completed_task.correlation_id,
             priority=getattr(completed_task, "priority", 0),
+            timeout_seconds=600 if next_agent == "dan" else 300,
         )
         logger.info(
             f"chain_advance | chain_id={chain_id[:8]} | "
