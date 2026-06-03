@@ -116,15 +116,19 @@ class DanAgent(BaseAgent):
                 image_bytes = await resp.read()
 
         image_b64 = base64.b64encode(image_bytes).decode()
+
+        # Убираем возможный префикс assets/images/ из filename
+        clean_filename = filename.replace("assets/images/", "").replace("assets\\images\\", "")
+
         result = await create_file(
             repo=repo,
-            path=f"assets/images/{filename}",
+            path=f"assets/images/{clean_filename}",
             content=image_b64,
-            message=f"Add {filename} via Dan",
+            message=f"Add {clean_filename} via Dan",
         )
 
         html_url = (result or {}).get("content", {}).get("html_url", "")
-        return f"Изображение сохранено: assets/images/{filename} | URL: {html_url}"
+        return f"Изображение сохранено: assets/images/{clean_filename} | URL: {html_url}"
 
     async def _create_design_system(self, params: dict) -> str:
         from tools.notion import save_research
