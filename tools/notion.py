@@ -240,19 +240,19 @@ def _markdown_to_blocks(text: str) -> list[dict]:
                         "table_width": col_count,
                         "has_column_header": True,
                         "has_row_header": False,
+                        "children": [
+                            {
+                                "object": "block", "type": "table_row",
+                                "table_row": {
+                                    "cells": [
+                                        _inline_rich_text(cell)
+                                        for cell in row
+                                    ]
+                                },
+                            }
+                            for row in padded
+                        ],
                     },
-                    "children": [
-                        {
-                            "object": "block", "type": "table_row",
-                            "table_row": {
-                                "cells": [
-                                    _inline_rich_text(cell)
-                                    for cell in row
-                                ]
-                            },
-                        }
-                        for row in padded
-                    ],
                 })
             continue
 
