@@ -295,6 +295,57 @@ async def enable_pages(repo: str, source_branch: str = "") -> str | None:
                 else:
                     logger.warning(f"[github] enable_pages: index.html не найден в {source_branch}")
 
+            # Копируем assets/images/ если есть
+            async with session.get(
+                f"{_BASE_URL}/repos/{username}/{repo}/contents/assets/images",
+                headers=_headers(),
+                params={"ref": source_branch},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status == 200:
+                    files = await resp.json()
+                    for file in files:
+                        if file["type"] == "file":
+                            # Получаем содержимое файла
+                            async with session.get(
+                                file["url"],
+                                headers=_headers(),
+                                timeout=aiohttp.ClientTimeout(total=15),
+                            ) as file_resp:
+                                file_data = await file_resp.json()
+                                file_content = file_data.get("content", "").replace("\n", "")
+
+                            # Проверяем существует ли файл в gh-pages
+                            put_url = f"{_BASE_URL}/repos/{username}/{repo}/contents/assets/images/{file['name']}"
+                            sha = None
+                            async with session.get(
+                                put_url,
+                                headers=_headers(),
+                                params={"ref": "gh-pages"},
+                                timeout=aiohttp.ClientTimeout(total=10),
+                            ) as check_resp:
+                                if check_resp.status == 200:
+                                    sha = (await check_resp.json()).get("sha")
+
+                            put_body: dict = {
+                                "message": f"deploy: copy {file['name']} to gh-pages",
+                                "content": file_content,
+                                "branch": "gh-pages",
+                            }
+                            if sha:
+                                put_body["sha"] = sha
+
+                            async with session.put(
+                                put_url,
+                                headers=_headers(),
+                                json=put_body,
+                                timeout=aiohttp.ClientTimeout(total=15),
+                            ) as put_resp:
+                                if put_resp.status in (200, 201):
+                                    logger.info(f"[github] enable_pages: {file['name']} скопирован в gh-pages")
+                                else:
+                                    logger.warning(f"[github] enable_pages: не удалось скопировать {file['name']}: {put_resp.status}")
+
             # Шаг 4: Включить Pages из gh-pages
             async with session.post(
                 f"{_BASE_URL}/repos/{username}/{repo}/pages",
