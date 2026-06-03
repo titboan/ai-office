@@ -744,12 +744,12 @@ class BaseAgent(ABC):
                 github_repo_url = None
                 for r in chain_results:
                     r_result = getattr(r, "result", None) or ""
-                    pages_match = _re.search(r'https://[\w\-]+\.github\.io/[\w\-/]+', r_result)
+                    pages_match = _re.search(r'https://[\w\-]+\.github\.io/[\w\-]+(?:/[\w\-]*)*', r_result)
                     repo_match  = _re.search(r'https://github\.com/[\w\-]+/[\w\-]+', r_result)
                     if pages_match:
-                        github_pages_url = pages_match.group(0)
+                        github_pages_url = pages_match.group(0).rstrip(')/,. ')
                     if repo_match:
-                        github_repo_url = repo_match.group(0)
+                        github_repo_url = repo_match.group(0).rstrip(')/,. ')
 
                 # Формируем список шагов с эмодзи
                 _AGENT_EMOJI = {
