@@ -26,10 +26,25 @@ DAN_SYSTEM = """Ты Дэн, дизайнер AI-офиса. Ты генерир
 'coffee-landing'), НЕ логин GitHub. Название репо передаётся тебе в задаче \
 от Марты или бери из контекста цепочки.
 
+ВАЖНО: перед первым generate_image всегда вызывай create_repo \
+чтобы создать репозиторий. Название репо бери из задачи.
+
 Отвечай по-русски."""
 
 
 DESIGN_TOOLS = [
+    {
+        "name": "create_repo",
+        "description": "Создаёт GitHub репозиторий для проекта перед коммитом изображений",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name":        {"type": "string", "description": "Название репозитория"},
+                "description": {"type": "string", "description": "Описание репозитория"},
+            },
+            "required": ["name"],
+        },
+    },
     {
         "name": "generate_image",
         "description": "Генерирует изображение через Pollinations.ai и коммитит в GitHub репо",
@@ -137,7 +152,13 @@ class DanAgent(BaseAgent):
         return f"Для репо {repo} используй path assets/images/"
 
     async def _call_design_tool(self, tool_name: str, tool_input: dict) -> str:
-        if tool_name == "generate_image":
+        if tool_name == "create_repo":
+            from tools.github import create_repo
+            data = await create_repo(**tool_input)
+            if data:
+                return f"Репозиторий создан: {data['html_url']}"
+            return "Репозиторий уже существует или ошибка создания"
+        elif tool_name == "generate_image":
             return await self._generate_image(tool_input)
         elif tool_name == "create_design_system":
             return await self._create_design_system(tool_input)
