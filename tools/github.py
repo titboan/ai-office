@@ -295,11 +295,11 @@ async def enable_pages(repo: str, source_branch: str = "") -> str | None:
                 else:
                     logger.warning(f"[github] enable_pages: index.html не найден в {source_branch}")
 
-            # Копируем assets/images/ если есть
+            # Копируем assets/images/ если есть (всегда из main — Дэн коммитит туда)
             async with session.get(
                 f"{_BASE_URL}/repos/{username}/{repo}/contents/assets/images",
                 headers=_headers(),
-                params={"ref": source_branch},
+                params={"ref": "main"},
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 if resp.status == 200:
