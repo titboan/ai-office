@@ -28,7 +28,7 @@ KEVIN_SYSTEM = """Ты — Кевин, разработчик ИИ-офиса с
 2. create_branch — создать ветку feature/название-задачи
 3. create_file — закоммитить все файлы в эту ветку
 4. create_pull_request — открыть PR из feature-ветки в main
-5. enable_pages — включить GitHub Pages (только для сайтов и лендингов)
+5. enable_pages — включить GitHub Pages (только для сайтов и лендингов). При вызове enable_pages всегда передавай source_branch — название ветки куда ты закоммитил index.html (та же ветка что использовалась в create_file).
 
 ВАЖНО — порядок вызова инструментов:
 Шаг 1: create_repo — создать репозиторий
@@ -127,13 +127,14 @@ GITHUB_TOOLS = [
     },
     {
         "name": "enable_pages",
-        "description": "Включить GitHub Pages для репозитория (деплой из ветки gh-pages)",
+        "description": "Включает GitHub Pages для репозитория. Деплоит из ветки с кодом на gh-pages.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "repo": {"type": "string", "description": "Название репозитория"},
+                "repo":          {"type": "string", "description": "Название репозитория"},
+                "source_branch": {"type": "string", "description": "Ветка с index.html (например feature/coffee-landing-page)"},
             },
-            "required": ["repo"],
+            "required": ["repo", "source_branch"],
         },
     },
 ]
