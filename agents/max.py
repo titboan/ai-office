@@ -852,34 +852,37 @@ class MaxAgent(BaseAgent):
                 except Exception as e:
                     logger.error(f"[Макс/sync] get_orders WB: {e}")
 
-            # Ozon аналитика — агрегат заказов по SKU за 14 дней → marketplace_orders
+            # Ozon аналитика — агрегат заказов по SKU за каждый из последних 14 дней → marketplace_orders
+            # Запрос per-day чтобы order_date соответствовал реальной дате заказа
             # Delivered постинги идут в marketplace_sales через get_sales (выше)
             if mp == "ozon":
-                try:
-                    analytics_since = datetime.now(_UTC) - timedelta(days=14)
-                    analytics_rows = await client.get_orders_analytics(
-                        date_from=analytics_since,
-                        date_to=datetime.now(_UTC),
-                    )
-                    new_count = 0
-                    for row in analytics_rows:
-                        df_str = row["order_date"]
-                        order_id = f"ozon_analytics_{row['product_id']}_{df_str}"
-                        try:
-                            order_date = datetime.strptime(df_str, "%Y-%m-%d").replace(tzinfo=_UTC)
-                        except Exception:
-                            order_date = None
-                        is_new = await save_order(
-                            chat_id=chat_id, marketplace="ozon",
-                            order_id=order_id, product_id=row.get("product_id"),
-                            product_name=row.get("product_name"), quantity=row.get("quantity", 1),
-                            price=row.get("price"), order_date=order_date,
+                total_new = 0
+                for day_offset in range(14):
+                    day = datetime.now(_UTC) - timedelta(days=day_offset)
+                    df_str = day.strftime("%Y-%m-%d")
+                    order_date = day.replace(hour=0, minute=0, second=0, microsecond=0)
+                    try:
+                        analytics_rows = await client.get_orders_analytics(
+                            date_from=day,
+                            date_to=day,
                         )
-                        if is_new:
-                            new_count += 1
-                    logger.info(f"[Макс/sync] Ozon analytics: {new_count} новых аналитических записей")
-                except Exception as e:
-                    logger.error(f"[Макс/sync] get_orders_analytics Ozon: {e}")
+                        new_count = 0
+                        for row in analytics_rows:
+                            order_id = f"ozon_analytics_{row['product_id']}_{df_str}"
+                            is_new = await save_order(
+                                chat_id=chat_id, marketplace="ozon",
+                                order_id=order_id, product_id=row.get("product_id"),
+                                product_name=row.get("product_name"), quantity=row.get("quantity", 1),
+                                price=row.get("price"), order_date=order_date,
+                            )
+                            if is_new:
+                                new_count += 1
+                        if new_count:
+                            logger.info(f"[Макс/sync] Ozon analytics {df_str}: {new_count} новых записей")
+                        total_new += new_count
+                    except Exception as e:
+                        logger.error(f"[Макс/sync] get_orders_analytics Ozon {df_str}: {e}")
+                logger.info(f"[Макс/sync] Ozon analytics итого: {total_new} новых записей за 14 дней")
 
     # ------------------------------------------------------------------ #
     #  Вспомогательные методы для сводки                                  #
