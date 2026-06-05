@@ -709,12 +709,25 @@ class MaxAgent(BaseAgent):
     #  Регистрация хендлеров                                               #
     # ------------------------------------------------------------------ #
 
+    async def cmd_reset_checked(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/reset_checked — сбросить last_checked_at для всех магазинов (для отладки)."""
+        from db import reset_last_checked, get_marketplace_shops
+        chat_id = update.effective_user.id
+        await reset_last_checked(chat_id)
+        shops = await get_marketplace_shops(chat_id)
+        for s in shops:
+            logger.info(
+                f"[reset_checked] shop={s['marketplace']} last_checked_at={s.get('last_checked_at')}"
+            )
+        await update.message.reply_text("✅ last_checked_at сброшен для всех магазинов.")
+
     def _register_extra_handlers(self) -> None:
-        self.app.add_handler(CommandHandler("start",      self.cmd_start))
-        self.app.add_handler(CommandHandler("add_shop",   self.cmd_add_shop))
-        self.app.add_handler(CommandHandler("shops",      self.cmd_shops))
-        self.app.add_handler(CommandHandler("pending",    self.cmd_pending))
-        self.app.add_handler(CommandHandler("reviews",    self.cmd_reviews))
+        self.app.add_handler(CommandHandler("start",         self.cmd_start))
+        self.app.add_handler(CommandHandler("add_shop",      self.cmd_add_shop))
+        self.app.add_handler(CommandHandler("shops",         self.cmd_shops))
+        self.app.add_handler(CommandHandler("pending",       self.cmd_pending))
+        self.app.add_handler(CommandHandler("reviews",       self.cmd_reviews))
+        self.app.add_handler(CommandHandler("reset_checked", self.cmd_reset_checked))
         self.app.add_handler(
             CallbackQueryHandler(self._handle_onboard_callback, pattern=r"^onboard:")
         )
