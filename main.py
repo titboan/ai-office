@@ -31,6 +31,7 @@ from agents import (
     AlexAgent,
     DanAgent,
     EvaAgent,
+    MaxAgent,
 )
 
 # Реестр: ключ → (класс агента, webhook-суффикс)
@@ -43,6 +44,7 @@ AGENTS: dict[str, tuple] = {
     "alex":   (AlexAgent,   "alex"),
     "dan":    (DanAgent,    "dan"),
     "eva":    (EvaAgent,    "eva"),
+    "max":    (MaxAgent,    "max"),
 }
 
 
@@ -155,13 +157,57 @@ async def run_all_async() -> None:
     digest_task = asyncio.create_task(_scheduled_digest_loop())
     logger.info("[main] Scheduled digest task запущен (каждый день 06:30 UTC)")
 
+    max_agent = next((a for a in started if isinstance(a, MaxAgent)), None)
+
+    async def _scheduled_reviews_loop():
+        """Запускает обработку отзывов в 06:00, 11:00, 17:00 UTC."""
+        from datetime import datetime, timezone, timedelta
+        from db import get_all_active_shops
+
+        _FIRE_HOURS = {6, 11, 17}
+
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                # Ближайший час из _FIRE_HOURS
+                candidates = []
+                for h in _FIRE_HOURS:
+                    t = now.replace(hour=h, minute=0, second=0, microsecond=0)
+                    if t <= now:
+                        t += timedelta(days=1)
+                    candidates.append(t)
+                target = min(candidates)
+                wait_seconds = (target - now).total_seconds()
+                logger.info(f"[reviews_scheduler] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
+                await asyncio.sleep(wait_seconds)
+
+                if max_agent is None:
+                    continue
+
+                shops = await get_all_active_shops()
+                unique_chats = list({s["chat_id"] for s in shops})
+                logger.info(f"[reviews_scheduler] обработка отзывов для {len(unique_chats)} пользователей")
+                for chat_id in unique_chats:
+                    try:
+                        await max_agent.process_reviews(chat_id)
+                    except Exception as e:
+                        logger.error(f"[reviews_scheduler] chat={chat_id} error: {e}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[reviews_scheduler] ошибка: {e}")
+                await asyncio.sleep(60)
+
+    reviews_task = asyncio.create_task(_scheduled_reviews_loop())
+    logger.info("[main] Scheduled reviews task запущен (06:00, 11:00, 17:00 UTC)")
+
     try:
         await stop_event.wait()
     except asyncio.CancelledError:
         pass
 
     # Graceful shutdown
-    for task in (status_task, digest_task):
+    for task in (status_task, digest_task, reviews_task):
         task.cancel()
         try:
             await task

@@ -61,6 +61,9 @@ class Config:
     GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
     GITHUB_USERNAME: str = os.getenv("GITHUB_USERNAME", "")
 
+    # Макс — отзывы на маркетплейсах
+    MAX_BOT_TOKEN: str = os.getenv("MAX_BOT_TOKEN", "")
+
     # Ева — Telethon MTProto + бот
     EVA_BOT_TOKEN: str = os.getenv("EVA_BOT_TOKEN", "")
     TELEGRAM_API_ID: str = os.getenv("TELEGRAM_API_ID", "")

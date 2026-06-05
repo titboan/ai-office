@@ -741,6 +741,7 @@ _SECTION_MAP: dict[str, str] = {
     "tina":    "📋 Тендер",
     "digest":  "📰 Дайджест",
     "eva":     "📰 Дайджест",
+    "max":     "🛒 Отзывы",
 }
 
 

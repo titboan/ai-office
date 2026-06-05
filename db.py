@@ -105,6 +105,37 @@ async def _create_schema() -> None:
                 ON projects(chat_id, name_lower);
         """)
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS marketplace_reviews (
+                id                BIGSERIAL PRIMARY KEY,
+                marketplace       TEXT        NOT NULL,
+                review_id         TEXT        NOT NULL,
+                product_id        TEXT,
+                product_name      TEXT,
+                rating            INTEGER,
+                text              TEXT,
+                author            TEXT,
+                status            TEXT        NOT NULL DEFAULT 'new',
+                generated_reply   TEXT,
+                final_reply       TEXT,
+                chat_id           BIGINT,
+                created_at        TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE (marketplace, review_id)
+            );
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS marketplace_shops (
+                id            BIGSERIAL PRIMARY KEY,
+                chat_id       BIGINT      NOT NULL,
+                marketplace   TEXT        NOT NULL,
+                api_token     TEXT        NOT NULL,
+                client_id     TEXT,
+                shop_name     TEXT,
+                is_active     BOOLEAN     NOT NULL DEFAULT true,
+                created_at    TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE (chat_id, marketplace)
+            );
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS digest_channels (
                 id               BIGSERIAL PRIMARY KEY,
                 chat_id          TEXT        NOT NULL,
@@ -244,6 +275,110 @@ async def update_channel_last_checked(
             """,
             chat_id, added_by, checked_at,
         )
+
+
+# ── marketplace_shops / marketplace_reviews ───────────────────────────────────
+
+async def add_marketplace_shop(
+    chat_id: int,
+    marketplace: str,
+    api_token: str,
+    shop_name: str | None = None,
+    client_id: str | None = None,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO marketplace_shops (chat_id, marketplace, api_token, client_id, shop_name)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (chat_id, marketplace) DO UPDATE
+                SET api_token  = EXCLUDED.api_token,
+                    client_id  = EXCLUDED.client_id,
+                    shop_name  = EXCLUDED.shop_name,
+                    is_active  = true
+            """,
+            chat_id, marketplace, api_token, client_id, shop_name,
+        )
+
+
+async def get_marketplace_shops(chat_id: int) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM marketplace_shops WHERE chat_id = $1 AND is_active = true ORDER BY created_at",
+            chat_id,
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_all_active_shops() -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM marketplace_shops WHERE is_active = true ORDER BY chat_id"
+        )
+        return [dict(r) for r in rows]
+
+
+async def save_review(
+    marketplace: str,
+    review_id: str,
+    product_id: str | None,
+    product_name: str | None,
+    rating: int | None,
+    text: str | None,
+    author: str | None,
+    chat_id: int,
+) -> bool:
+    """INSERT нового отзыва. Возвращает True если запись новая."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            INSERT INTO marketplace_reviews
+                (marketplace, review_id, product_id, product_name, rating, text, author, chat_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (marketplace, review_id) DO NOTHING
+            """,
+            marketplace, review_id, product_id, product_name, rating, text, author, chat_id,
+        )
+        return result.split()[-1] != "0"
+
+
+async def update_review_status(
+    marketplace: str,
+    review_id: str,
+    status: str,
+    generated_reply: str | None = None,
+    final_reply: str | None = None,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE marketplace_reviews
+               SET status          = $3,
+                   generated_reply = COALESCE($4, generated_reply),
+                   final_reply     = COALESCE($5, final_reply)
+             WHERE marketplace = $1 AND review_id = $2
+            """,
+            marketplace, review_id, status, generated_reply, final_reply,
+        )
+
+
+async def get_pending_reviews(chat_id: int) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT * FROM marketplace_reviews
+             WHERE chat_id = $1 AND status = 'pending_approval'
+             ORDER BY created_at
+            """,
+            chat_id,
+        )
+        return [dict(r) for r in rows]
 
 
 async def get_distinct_digest_users() -> list[int]:
