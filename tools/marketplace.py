@@ -126,7 +126,7 @@ class WBClient:
                         if resp.status == 200:
                             return True
                         if resp.status == 405 and method == "PATCH":
-                            logger.warning("[WB.send_reply] PATCH→405, пробую POST")
+                            logger.warning(f"[WB.send_reply] PATCH→405 body={raw[:300]!r}, пробую POST")
                             continue
                         logger.error(
                             f"[WB.send_reply({review_id[:8]})] {method} {resp.status}: {raw[:300]}"
