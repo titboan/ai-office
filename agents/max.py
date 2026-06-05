@@ -1099,6 +1099,7 @@ class MaxAgent(BaseAgent):
     async def cmd_sync(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/sync — вручную запустить синхронизацию данных и отправить сводку."""
         chat_id = update.effective_user.id
+        logger.info(f"[Макс/sync] команда получена от {update.effective_user.id}")
         await update.message.reply_text("⏳ Синхронизирую данные…")
         await self.send_daily_summary(chat_id)
         logger.info("[Макс/sync] send_daily_summary завершён")
