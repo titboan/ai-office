@@ -949,7 +949,8 @@ class MaxAgent(BaseAgent):
             if o:
                 parts.append(f"📥 {int(o['orders'])} зак. — {float(o['revenue'] or 0):,.0f} ₽")
             if s:
-                parts.append(f"✅ {int(s['orders'])} выкуп. — {float(s['revenue'] or 0):,.0f} ₽")
+                sal_label = "дост." if mp == "ozon" else "выкуп."
+                parts.append(f"✅ {int(s['orders'])} {sal_label} — {float(s['revenue'] or 0):,.0f} ₽")
             line = f"{label}: " + " | ".join(parts)
             if cmp_orders is not None and cmp_label:
                 cur_cnt = int(o["orders"]) if o else 0

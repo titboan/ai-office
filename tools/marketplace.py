@@ -483,21 +483,10 @@ class OzonClient:
         return results
 
     async def get_sales(self, date_from: datetime, **_) -> list[dict]:
-        """Выкупленные отправления FBO + FBS (status=delivered)."""
+        """Выкупленные отправления FBO (delivered) + FBS (delivered)."""
         import json as _json
 
         now = datetime.now(timezone.utc)
-        base_body = {
-            "dir": "DESC",
-            "filter": {
-                "since":  date_from.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "to":     now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "status": "delivered",
-            },
-            "limit":  100,
-            "offset": 0,
-            "with":   {"financial_data": True},
-        }
 
         def _parse_postings(postings: list, scheme: str) -> list[dict]:
             rows = []
@@ -522,42 +511,58 @@ class OzonClient:
 
         results = []
         async with aiohttp.ClientSession() as session:
-            for scheme, path in (("fbo", "/v3/posting/fbo/list"), ("fbs", "/v3/posting/fbs/list")):
-                url = f"{self._BASE}{path}"
+            for status in ("delivered",):
+                body = {
+                    "dir": "DESC",
+                    "filter": {
+                        "since":  date_from.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "to":     now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "status": status,
+                    },
+                    "limit":  100,
+                    "offset": 0,
+                    "with":   {"financial_data": True},
+                }
+                # FBO
+                fbo_url = f"{self._BASE}/v3/posting/fbo/list"
                 try:
-                    async with session.post(
-                        url,
-                        headers=self._headers(),
-                        json=base_body,
-                        timeout=_TIMEOUT,
-                    ) as resp:
+                    async with session.post(fbo_url, headers=self._headers(), json=body, timeout=_TIMEOUT) as resp:
                         raw = await resp.text()
-                        logger.debug(f"[Ozon.get_sales/{scheme}] POST {url} → {resp.status}: {raw[:200]!r}")
+                        logger.debug(f"[Ozon.get_sales/fbo/{status}] POST → {resp.status}: {raw[:200]!r}")
                         if resp.status != 200:
-                            logger.error(f"[Ozon.get_sales/{scheme}] HTTP {resp.status}: {raw[:200]}")
-                            continue
-                        data = _json.loads(raw)
+                            logger.error(f"[Ozon.get_sales/fbo/{status}] HTTP {resp.status}: {raw[:200]}")
+                        else:
+                            data = _json.loads(raw)
+                            # FBO: {"postings": [...], "has_next": ..., "cursor": ""}
+                            postings = data.get("postings") or []
+                            logger.info(f"[Ozon.get_sales/fbo/{status}] {len(postings)} postings")
+                            results.extend(_parse_postings(postings, "fbo"))
                 except asyncio.TimeoutError:
-                    logger.error(f"[marketplace] timeout: POST {url}")
-                    continue
+                    logger.error(f"[marketplace] timeout: POST {fbo_url}")
                 except Exception as e:
-                    logger.error(f"[Ozon.get_sales/{scheme}] exception: {e}")
-                    continue
-                # FBO: {"result": [...]}  FBS: {"result": {"postings": [...]}}
-                raw_result = data.get("result") or []
-                if isinstance(raw_result, dict):
-                    postings = raw_result.get("postings") or []
-                elif isinstance(raw_result, list):
-                    postings = raw_result
-                else:
-                    postings = []
-                logger.debug(
-                    f"[Ozon.get_sales/{scheme}] result type={type(raw_result).__name__} "
-                    f"postings_count={len(postings)}"
-                )
-                batch = _parse_postings(postings, scheme)
-                logger.info(f"[Ozon.get_sales/{scheme}] {len(batch)} позиций")
-                results.extend(batch)
+                    logger.error(f"[Ozon.get_sales/fbo/{status}] exception: {e}")
+
+                # FBS
+                fbs_url = f"{self._BASE}/v3/posting/fbs/list"
+                try:
+                    async with session.post(fbs_url, headers=self._headers(), json=body, timeout=_TIMEOUT) as resp:
+                        raw = await resp.text()
+                        logger.debug(f"[Ozon.get_sales/fbs/{status}] POST → {resp.status}: {raw[:200]!r}")
+                        if resp.status != 200:
+                            logger.error(f"[Ozon.get_sales/fbs/{status}] HTTP {resp.status}: {raw[:200]}")
+                        else:
+                            data = _json.loads(raw)
+                            # FBS: {"result": {"postings": [...]}}
+                            raw_result = data.get("result") or {}
+                            postings = raw_result.get("postings") or [] if isinstance(raw_result, dict) else []
+                            logger.info(f"[Ozon.get_sales/fbs/{status}] {len(postings)} postings")
+                            results.extend(_parse_postings(postings, "fbs"))
+                except asyncio.TimeoutError:
+                    logger.error(f"[marketplace] timeout: POST {fbs_url}")
+                except Exception as e:
+                    logger.error(f"[Ozon.get_sales/fbs/{status}] exception: {e}")
+
+        logger.info(f"[Ozon.get_sales] итого: {len(results)}")
         return results
 
 
