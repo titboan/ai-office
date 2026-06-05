@@ -747,6 +747,11 @@ class MaxAgent(BaseAgent):
                         reserved=s.get("reserved", 0),
                     )
                 logger.info(f"[Макс/sync] {mp_label}: {len(stocks)} позиций остатков")
+                if mp == "wb":
+                    from db import cleanup_old_stocks
+                    deleted = await cleanup_old_stocks(chat_id, "wb")
+                    if deleted:
+                        logger.info(f"[Макс/sync] WB: удалено {deleted} старых записей с nmId")
             except Exception as e:
                 logger.error(f"[Макс/sync] get_stocks {mp_label}: {e}")
 

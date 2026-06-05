@@ -449,6 +449,18 @@ async def upsert_stock(
         )
 
 
+async def cleanup_old_stocks(chat_id: int, marketplace: str) -> int:
+    """Удалить записи где product_id состоит только из цифр (старые nmId)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM marketplace_stocks WHERE chat_id=$1 AND marketplace=$2 AND product_id ~ '^\\d+$'",
+            chat_id, marketplace,
+        )
+    deleted = int(result.split()[-1]) if result else 0
+    return deleted
+
+
 async def get_low_stocks(chat_id: int, threshold: int = 20) -> list[dict]:
     pool = await get_pool()
     async with pool.acquire() as conn:

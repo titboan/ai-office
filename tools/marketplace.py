@@ -209,9 +209,11 @@ class WBClient:
             return []
         results = []
         for item in (data if isinstance(data, list) else []):
+            supplier_article = str(item.get("supplierArticle") or "").strip()
+            product_id = supplier_article if supplier_article else str(item.get("nmId", ""))
             results.append({
-                "product_id":    str(item.get("nmId", "")),
-                "product_name":  item.get("subject", "") or item.get("supplierArticle", ""),
+                "product_id":    product_id,
+                "product_name":  item.get("subject", "") or supplier_article,
                 "warehouse_name": item.get("warehouseName", ""),
                 "stock":         int(item.get("quantity", 0)),
                 "reserved":      int(item.get("inWayToClient", 0)) + int(item.get("inWayFromClient", 0)),
