@@ -153,7 +153,7 @@ class WBClient:
 
 # ── Ozon ──────────────────────────────────────────────────────────────────────
 
-# Минимальный limit по API Ozon v1/review/list = 20
+# Минимальный limit по API Ozon v2/review/list = 20
 _OZON_LIMIT = 20
 
 class OzonClient:
@@ -171,29 +171,30 @@ class OzonClient:
         }
 
     async def get_new_reviews(self, since: datetime) -> list[dict]:
+        now = datetime.now(since.tzinfo)
         reviews: list[dict] = []
         async with aiohttp.ClientSession() as session:
             data = await _request(
                 session, "POST",
-                f"{self._BASE}/v1/review/list",
+                f"{self._BASE}/v2/review/list",
                 headers=self._headers(),
-                json={"sort_dir": "DESC", "limit": _OZON_LIMIT, "offset": 0},
+                json={
+                    "sort_dir": "DESC",
+                    "filter": {
+                        "posting_date": {
+                            "time_from": since.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            "time_to":   now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        }
+                    },
+                    "limit":  _OZON_LIMIT,
+                    "offset": 0,
+                },
                 label="Ozon.get_new_reviews",
             )
         if not data:
             return reviews
 
         for item in data.get("reviews", []):
-            created_raw = item.get("created_at", "")
-            try:
-                created = datetime.fromisoformat(created_raw.rstrip("Z")).replace(
-                    tzinfo=since.tzinfo
-                )
-                if created < since:
-                    continue
-            except Exception:
-                pass
-
             reviews.append({
                 "review_id":    item.get("review_uuid", ""),
                 "product_id":   str(item.get("sku", "") or ""),
@@ -208,9 +209,9 @@ class OzonClient:
         async with aiohttp.ClientSession() as session:
             data = await _request(
                 session, "POST",
-                f"{self._BASE}/v1/review/seller-comment/create",
+                f"{self._BASE}/v1/review/comment/create",
                 headers=self._headers(),
-                json={"review_uuid": review_id, "text": text},
+                json={"review_id": review_id, "text": text},
                 label=f"Ozon.send_reply({review_id[:8]})",
             )
         return data is not None
@@ -219,18 +220,20 @@ class OzonClient:
         """Проверить валидность токена.
         200/400 → credentials верны; 401/403 → неверные.
         """
+        url = f"{self._BASE}/v2/review/list"
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    f"{self._BASE}/v1/review/list",
+                    url,
                     headers=self._headers(),
-                    json={"sort_dir": "DESC", "limit": _OZON_LIMIT, "offset": 0},
+                    json={"sort_dir": "DESC", "filter": {}, "limit": _OZON_LIMIT, "offset": 0},
                     timeout=_TIMEOUT_CHECK,
                 ) as resp:
-                    logger.debug(f"[Ozon.check_connection] status={resp.status}")
+                    raw = await resp.text()
+                    logger.debug(f"[Ozon.check_connection] status={resp.status} body={raw[:200]!r}")
                     return resp.status in (200, 400)
         except asyncio.TimeoutError:
-            logger.error(f"[marketplace] timeout: POST {self._BASE}/v1/review/list")
+            logger.error(f"[marketplace] timeout: POST {url}")
             return False
         except Exception as e:
             logger.warning(f"[Ozon.check_connection] exception: {e}")
