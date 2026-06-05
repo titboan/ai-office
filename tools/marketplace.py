@@ -185,14 +185,26 @@ class WBClient:
         _STATS_BASE = "https://statistics-api.wildberries.ru"
         stats_headers = {"Authorization": f"Bearer {statistics_token}", "Content-Type": "application/json"}
         date_from = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT00:00:00")
-        async with aiohttp.ClientSession() as session:
-            data = await _request(
-                session, "GET",
-                f"{_STATS_BASE}/api/v1/supplier/stocks",
-                headers=stats_headers,
-                params={"dateFrom": date_from},
-                label="WB.get_stocks",
-            )
+        url = f"{_STATS_BASE}/api/v1/supplier/stocks"
+        data = None
+        for attempt in range(2):
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url, headers=stats_headers,
+                    params={"dateFrom": date_from},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    if resp.status == 429:
+                        logger.warning("[WB.get_stocks] rate limit, жду 60 сек")
+                        await asyncio.sleep(60)
+                        continue
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[WB.get_stocks] HTTP {resp.status}: {raw[:200]}")
+                        return []
+                    import json as _json
+                    data = _json.loads(raw)
+                    break
         if not data:
             return []
         results = []
@@ -211,14 +223,26 @@ class WBClient:
         _STATS_BASE = "https://statistics-api.wildberries.ru"
         stats_headers = {"Authorization": f"Bearer {statistics_token}", "Content-Type": "application/json"}
         df_str = date_from.strftime("%Y-%m-%dT00:00:00")
-        async with aiohttp.ClientSession() as session:
-            data = await _request(
-                session, "GET",
-                f"{_STATS_BASE}/api/v1/supplier/sales",
-                headers=stats_headers,
-                params={"dateFrom": df_str, "flag": 1},
-                label="WB.get_sales",
-            )
+        url = f"{_STATS_BASE}/api/v1/supplier/sales"
+        data = None
+        for attempt in range(2):
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url, headers=stats_headers,
+                    params={"dateFrom": df_str, "flag": 1},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    if resp.status == 429:
+                        logger.warning("[WB.get_sales] rate limit, жду 60 сек")
+                        await asyncio.sleep(60)
+                        continue
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[WB.get_sales] HTTP {resp.status}: {raw[:200]}")
+                        return []
+                    import json as _json
+                    data = _json.loads(raw)
+                    break
         if not data:
             return []
         results = []
@@ -424,8 +448,20 @@ class OzonClient:
                 except Exception as e:
                     logger.error(f"[Ozon.get_sales/{scheme}] exception: {e}")
                     continue
-                batch = _parse_postings(data.get("result", []) or [], scheme)
-                logger.info(f"[Ozon.get_sales/{scheme}] {len(batch)} отправлений")
+                # FBO: {"result": [...]}  FBS: {"result": {"postings": [...]}}
+                raw_result = data.get("result") or []
+                if isinstance(raw_result, dict):
+                    postings = raw_result.get("postings") or []
+                elif isinstance(raw_result, list):
+                    postings = raw_result
+                else:
+                    postings = []
+                logger.debug(
+                    f"[Ozon.get_sales/{scheme}] result type={type(raw_result).__name__} "
+                    f"postings_count={len(postings)}"
+                )
+                batch = _parse_postings(postings, scheme)
+                logger.info(f"[Ozon.get_sales/{scheme}] {len(batch)} позиций")
                 results.extend(batch)
         return results
 
