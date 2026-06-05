@@ -457,7 +457,7 @@ async def get_low_stocks(chat_id: int, threshold: int = 20) -> list[dict]:
             SELECT marketplace, product_id, product_name, warehouse_name, stock, reserved
             FROM marketplace_stocks
             WHERE chat_id = $1 AND stock <= $2
-            ORDER BY stock ASC
+            ORDER BY marketplace, product_id, stock ASC
             """,
             chat_id, threshold,
         )
