@@ -77,14 +77,31 @@ class WBClient:
     async def get_new_reviews(self, since: datetime) -> list[dict]:
         """Вернуть неотвеченные отзывы."""
         reviews: list[dict] = []
-        async with aiohttp.ClientSession() as session:
-            data = await _request(
-                session, "GET",
-                f"{self._BASE}/api/v1/feedbacks",
-                headers=self._headers(),
-                params={"isAnswered": "false", "take": 100, "skip": 0},
-                label="WB.get_new_reviews",
-            )
+        url    = f"{self._BASE}/api/v1/feedbacks"
+        params = {"isAnswered": "false", "take": 100, "skip": 0}
+        logger.debug(f"[WB.get_new_reviews] since={since}, params={params}")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url,
+                    headers=self._headers(),
+                    params=params,
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    text = await resp.text()
+                    logger.debug(
+                        f"[WB.get_new_reviews] status={resp.status}, body[:300]={text[:300]}"
+                    )
+                    if resp.status != 200:
+                        return reviews
+                    import json as _json
+                    data = _json.loads(text)
+        except asyncio.TimeoutError:
+            logger.error(f"[marketplace] timeout: GET {url}")
+            return reviews
+        except Exception as e:
+            logger.error(f"[WB.get_new_reviews] exception: {e}")
+            return reviews
         if not data:
             return reviews
 
