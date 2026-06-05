@@ -327,8 +327,8 @@ class OzonClient:
 
 
     async def get_stocks(self, **_) -> list[dict]:
-        """Остатки по складам через analytics API."""
-        url = f"{self._BASE}/v1/analytics/stock_on_warehouses"
+        """Остатки по складам через v2 analytics API."""
+        url = f"{self._BASE}/v2/analytics/stock_on_warehouses"
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -364,16 +364,19 @@ class OzonClient:
         return results
 
     async def get_sales(self, date_from: datetime, **_) -> list[dict]:
-        """Выкупленные заказы через cash-flow-statement."""
-        url  = f"{self._BASE}/v1/finance/cash-flow-statement/list"
-        now  = datetime.now(timezone.utc)
+        """Выкупленные отправления через v3/posting/fbo/list (status=delivered)."""
+        url = f"{self._BASE}/v3/posting/fbo/list"
+        now = datetime.now(timezone.utc)
         body = {
-            "date": {
-                "from": date_from.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "to":   now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "dir": "DESC",
+            "filter": {
+                "since":  date_from.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "to":     now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "status": "delivered",
             },
-            "page":      1,
-            "page_size": 100,
+            "limit":  100,
+            "offset": 0,
+            "with":   {"financial_data": True},
         }
         try:
             async with aiohttp.ClientSession() as session:
@@ -397,16 +400,24 @@ class OzonClient:
             logger.error(f"[Ozon.get_sales] exception: {e}")
             return []
         results = []
-        for item in (data.get("items") or data.get("result", {}).get("rows", [])):
-            results.append({
-                "order_id":    str(item.get("posting_number", "") or item.get("order_id", "")),
-                "product_id":  str(item.get("offer_id", "")),
-                "product_name": item.get("item_name", "") or item.get("product_name", ""),
-                "quantity":    int(item.get("quantity", 1) or 1),
-                "price":       float(item.get("amount", 0) or item.get("price", 0) or 0),
-                "commission":  float(item.get("commission_amount", 0) or 0),
-                "sale_date":   item.get("accepted_date", "") or item.get("date", ""),
-            })
+        results = []
+        for posting in (data.get("result", []) or []):
+            posting_number = posting.get("posting_number", "")
+            products       = posting.get("products") or []
+            fin_products   = (posting.get("financial_data") or {}).get("products") or []
+            sale_date      = posting.get("delivering_date") or posting.get("in_process_at", "")
+
+            for i, prod in enumerate(products):
+                fin = fin_products[i] if i < len(fin_products) else {}
+                results.append({
+                    "order_id":    f"{posting_number}_{i}" if i > 0 else posting_number,
+                    "product_id":  str(prod.get("offer_id", "")),
+                    "product_name": prod.get("name", ""),
+                    "quantity":    int(prod.get("quantity", 1) or 1),
+                    "price":       float(fin.get("price", 0) or prod.get("price", 0) or 0),
+                    "commission":  abs(float(fin.get("commission_amount", 0) or 0)),
+                    "sale_date":   sale_date,
+                })
         return results
 
 
