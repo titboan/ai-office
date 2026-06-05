@@ -112,6 +112,20 @@ class WBClient:
             )
         return data is not None
 
+    async def check_connection(self) -> bool:
+        """Проверить валидность токена (тестовый запрос)."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self._BASE}/api/v1/feedbacks",
+                    headers=self._headers(),
+                    params={"isAnswered": "false", "take": 1, "skip": 0},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    return resp.status == 200
+        except Exception:
+            return False
+
 
 # ── Ozon ──────────────────────────────────────────────────────────────────────
 
@@ -173,6 +187,20 @@ class OzonClient:
                 label=f"Ozon.send_reply({review_id[:8]})",
             )
         return data is not None
+
+    async def check_connection(self) -> bool:
+        """Проверить валидность токена (тестовый запрос)."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self._BASE}/v1/review/list",
+                    headers=self._headers(),
+                    json={"page": 1, "page_size": 1},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    return resp.status == 200
+        except Exception:
+            return False
 
 
 def make_client(shop: dict):
