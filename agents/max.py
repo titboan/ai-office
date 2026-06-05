@@ -459,11 +459,32 @@ class MaxAgent(BaseAgent):
             from db import add_marketplace_shop
             await add_marketplace_shop(chat_id, "wb", text)
             data["wb_connected"] = True
+            data["wb_token"] = text
+            await self._set_onboard(chat_id, {"step": "wb_statistics_token", "data": data})
+            await update.message.reply_text(
+                "✅ Wildberries подключён!\n\n"
+                "Теперь отправь токен для *Statistics API* (остатки и продажи).\n\n"
+                "📌 Где взять:\n"
+                "seller.wildberries.ru → Настройки → Доступ к API → "
+                "создать токен с категорией *Статистика*\n\n"
+                "Если не нужно — отправь /skip",
+                parse_mode="Markdown",
+            )
+
+        elif step == "wb_statistics_token":
+            from db import get_pool
+            stat_token = None if text == "/skip" else text
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE marketplace_shops SET statistics_token = $1 WHERE chat_id = $2 AND marketplace = 'wb'",
+                    stat_token, chat_id,
+                )
             if data.get("need_ozon"):
                 data["step_done"] = "wb"
                 await self._set_onboard(chat_id, {"step": "ozon_client_id", "data": data})
                 await update.message.reply_text(
-                    "✅ Wildberries подключён!\n\n"
+                    "✅ Сохранено!\n\n"
                     "Теперь Ozon. Отправь Client-Id магазина.\n\n"
                     "📌 Где взять:\n"
                     "seller.ozon.ru → Настройки → API ключи"
@@ -620,6 +641,112 @@ class MaxAgent(BaseAgent):
             results[mp] = stats
 
         return results
+
+    async def sync_marketplace_data(self, chat_id: int) -> None:
+        """Синхронизировать остатки и продажи для всех магазинов пользователя."""
+        from db import get_marketplace_shops, upsert_stock, save_sale
+        from tools.marketplace import make_client
+
+        shops = await get_marketplace_shops(chat_id)
+        since = datetime.now(_UTC) - timedelta(days=2)
+
+        for shop in shops:
+            mp = shop["marketplace"]
+            mp_label = _MP_LABELS.get(mp, mp)
+            stats_token = shop.get("statistics_token") or ""
+            client = make_client(shop)
+
+            # Остатки
+            try:
+                stocks = await client.get_stocks(statistics_token=stats_token)
+                for s in stocks:
+                    await upsert_stock(
+                        chat_id=chat_id, marketplace=mp,
+                        product_id=s["product_id"], product_name=s.get("product_name"),
+                        warehouse_name=s.get("warehouse_name", ""), stock=s["stock"],
+                        reserved=s.get("reserved", 0),
+                    )
+                logger.info(f"[Макс/sync] {mp_label}: {len(stocks)} позиций остатков")
+            except Exception as e:
+                logger.error(f"[Макс/sync] get_stocks {mp_label}: {e}")
+
+            # Продажи
+            try:
+                sales = await client.get_sales(date_from=since, statistics_token=stats_token)
+                new_count = 0
+                for s in sales:
+                    sale_date = None
+                    if s.get("sale_date"):
+                        try:
+                            from datetime import datetime as _dt
+                            sale_date = _dt.fromisoformat(str(s["sale_date"]).rstrip("Z")).replace(tzinfo=_UTC)
+                        except Exception:
+                            pass
+                    is_new = await save_sale(
+                        chat_id=chat_id, marketplace=mp,
+                        order_id=s["order_id"], product_id=s.get("product_id"),
+                        product_name=s.get("product_name"), quantity=s.get("quantity", 1),
+                        price=s.get("price"), commission=s.get("commission"), sale_date=sale_date,
+                    )
+                    if is_new:
+                        new_count += 1
+                logger.info(f"[Макс/sync] {mp_label}: {new_count} новых продаж")
+            except Exception as e:
+                logger.error(f"[Макс/sync] get_sales {mp_label}: {e}")
+
+    async def send_daily_summary(self, chat_id: int) -> None:
+        """Синхронизировать данные и отправить ежедневную сводку."""
+        from db import get_sales_summary, get_sales_total, get_low_stocks
+        from zoneinfo import ZoneInfo
+
+        await self.sync_marketplace_data(chat_id)
+
+        summary_day  = await get_sales_summary(chat_id, days=1)
+        totals_week  = await get_sales_total(chat_id, days=7)
+        low_stocks   = await get_low_stocks(chat_id, threshold=20)
+
+        date_str = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y")
+        _EMOJI   = {"wb": "🟣 Wildberries", "ozon": "🔵 Ozon"}
+        _SHORT   = {"wb": "🟣 WB", "ozon": "🔵 Ozon"}
+
+        lines = [f"📦 *Сводка магазина — {date_str}*\n"]
+
+        # Продажи вчера
+        lines.append("💰 *Продажи вчера*")
+        if summary_day:
+            by_mp: dict = {}
+            for row in summary_day:
+                mp = row["marketplace"]
+                agg = by_mp.setdefault(mp, {"orders": 0, "revenue": 0.0})
+                agg["orders"]  += int(row["orders"] or 0)
+                agg["revenue"] += float(row["revenue"] or 0)
+            for mp, agg in by_mp.items():
+                lines.append(f"{_EMOJI.get(mp, mp)}: {agg['orders']} заказов — {agg['revenue']:,.0f} ₽")
+        else:
+            lines.append("Нет данных за вчера")
+
+        # Выручка за 7 дней
+        lines.append("\n📈 *Выручка за 7 дней*")
+        if totals_week:
+            for row in totals_week:
+                mp = row["marketplace"]
+                lines.append(f"{_SHORT.get(mp, mp)}: {float(row['revenue'] or 0):,.0f} ₽")
+        else:
+            lines.append("Нет данных")
+
+        # Остатки
+        lines.append("\n⚠️ *Заканчиваются остатки* (< 20 шт)")
+        if low_stocks:
+            for s in low_stocks[:10]:
+                mp_short = "WB" if s["marketplace"] == "wb" else "Ozon"
+                wh = s.get("warehouse_name") or "?"
+                lines.append(f"• {s.get('product_name') or s['product_id']} — {mp_short}/{wh}: {s['stock']} шт")
+        else:
+            lines.append("✅ Остатки в норме")
+
+        text = "\n".join(lines)
+        target = config.PARTNERS_GROUP_ID if config.PARTNERS_GROUP_ID else chat_id
+        await self._notify_user(target, text)
 
     async def check_negative_reviews(self, chat_id: int) -> None:
         """Быстрый polling: только 1-2★, использует last_checked_negative."""

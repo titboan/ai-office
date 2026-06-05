@@ -144,6 +144,40 @@ async def _create_schema() -> None:
                 ADD COLUMN IF NOT EXISTS last_checked_negative TIMESTAMPTZ;
         """)
         await conn.execute("""
+            ALTER TABLE marketplace_shops
+                ADD COLUMN IF NOT EXISTS statistics_token TEXT;
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS marketplace_stocks (
+                id             BIGSERIAL PRIMARY KEY,
+                chat_id        BIGINT      NOT NULL,
+                marketplace    TEXT        NOT NULL,
+                product_id     TEXT        NOT NULL,
+                product_name   TEXT,
+                warehouse_name TEXT,
+                stock          INTEGER     NOT NULL DEFAULT 0,
+                reserved       INTEGER     NOT NULL DEFAULT 0,
+                updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (chat_id, marketplace, product_id, warehouse_name)
+            );
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS marketplace_sales (
+                id           BIGSERIAL PRIMARY KEY,
+                chat_id      BIGINT        NOT NULL,
+                marketplace  TEXT          NOT NULL,
+                order_id     TEXT          NOT NULL,
+                product_id   TEXT,
+                product_name TEXT,
+                quantity     INTEGER       NOT NULL DEFAULT 1,
+                price        NUMERIC(10,2),
+                commission   NUMERIC(10,2),
+                sale_date    TIMESTAMPTZ,
+                created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+                UNIQUE (marketplace, order_id)
+            );
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS digest_channels (
                 id               BIGSERIAL PRIMARY KEY,
                 chat_id          TEXT        NOT NULL,
@@ -385,6 +419,117 @@ async def get_pending_reviews(chat_id: int) -> list[dict]:
              ORDER BY created_at
             """,
             chat_id,
+        )
+        return [dict(r) for r in rows]
+
+
+async def upsert_stock(
+    chat_id: int,
+    marketplace: str,
+    product_id: str,
+    product_name: str | None,
+    warehouse_name: str | None,
+    stock: int,
+    reserved: int,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO marketplace_stocks
+                (chat_id, marketplace, product_id, product_name, warehouse_name, stock, reserved, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+            ON CONFLICT (chat_id, marketplace, product_id, warehouse_name) DO UPDATE
+                SET product_name   = EXCLUDED.product_name,
+                    stock          = EXCLUDED.stock,
+                    reserved       = EXCLUDED.reserved,
+                    updated_at     = NOW()
+            """,
+            chat_id, marketplace, product_id, product_name, warehouse_name or "", stock, reserved,
+        )
+
+
+async def get_low_stocks(chat_id: int, threshold: int = 20) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT marketplace, product_id, product_name, warehouse_name, stock, reserved
+            FROM marketplace_stocks
+            WHERE chat_id = $1 AND stock <= $2
+            ORDER BY stock ASC
+            """,
+            chat_id, threshold,
+        )
+        return [dict(r) for r in rows]
+
+
+async def save_sale(
+    chat_id: int,
+    marketplace: str,
+    order_id: str,
+    product_id: str | None,
+    product_name: str | None,
+    quantity: int,
+    price: float | None,
+    commission: float | None,
+    sale_date,
+) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            INSERT INTO marketplace_sales
+                (chat_id, marketplace, order_id, product_id, product_name,
+                 quantity, price, commission, sale_date)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (marketplace, order_id) DO NOTHING
+            """,
+            chat_id, marketplace, order_id, product_id, product_name,
+            quantity, price, commission, sale_date,
+        )
+        return result.split()[-1] != "0"
+
+
+async def get_sales_summary(chat_id: int, days: int = 1) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                marketplace,
+                product_name,
+                COUNT(*)              AS orders,
+                SUM(quantity)         AS total_qty,
+                SUM(price)            AS revenue,
+                SUM(commission)       AS commission
+            FROM marketplace_sales
+            WHERE chat_id = $1
+              AND sale_date >= NOW() - ($2 || ' days')::interval
+            GROUP BY marketplace, product_name
+            ORDER BY marketplace, revenue DESC NULLS LAST
+            """,
+            chat_id, str(days),
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_sales_total(chat_id: int, days: int = 7) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                marketplace,
+                COUNT(*)   AS orders,
+                SUM(price) AS revenue
+            FROM marketplace_sales
+            WHERE chat_id = $1
+              AND sale_date >= NOW() - ($2 || ' days')::interval
+            GROUP BY marketplace
+            ORDER BY marketplace
+            """,
+            chat_id, str(days),
         )
         return [dict(r) for r in rows]
 

@@ -189,6 +189,7 @@ async def run_all_async() -> None:
                 logger.info(f"[reviews_scheduler] обработка отзывов для {len(unique_chats)} пользователей")
 
                 all_results: dict = {}
+                is_morning_run = (target.hour == 6)
                 for chat_id in unique_chats:
                     try:
                         r = await max_agent.process_reviews(chat_id)
@@ -198,6 +199,12 @@ async def run_all_async() -> None:
                                 agg[k] += stats.get(k, 0)
                     except Exception as e:
                         logger.error(f"[reviews_scheduler] chat={chat_id} error: {e}")
+                    # Ежедневная сводка только в утренний прогон (06:00 UTC)
+                    if is_morning_run:
+                        try:
+                            await max_agent.send_daily_summary(chat_id)
+                        except Exception as e:
+                            logger.error(f"[reviews_scheduler] send_daily_summary chat={chat_id}: {e}")
 
                 # Сводка в группу партнёров если задана
                 if config.PARTNERS_GROUP_ID:

@@ -180,6 +180,63 @@ class WBClient:
             return False
 
 
+    async def get_stocks(self, statistics_token: str) -> list[dict]:
+        """Остатки по складам. Требует отдельный Statistics API токен."""
+        _STATS_BASE = "https://statistics-api.wildberries.ru"
+        stats_headers = {"Authorization": f"Bearer {statistics_token}", "Content-Type": "application/json"}
+        date_from = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT00:00:00")
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "GET",
+                f"{_STATS_BASE}/api/v1/supplier/stocks",
+                headers=stats_headers,
+                params={"dateFrom": date_from},
+                label="WB.get_stocks",
+            )
+        if not data:
+            return []
+        results = []
+        for item in (data if isinstance(data, list) else []):
+            results.append({
+                "product_id":    str(item.get("nmId", "")),
+                "product_name":  item.get("subject", "") or item.get("supplierArticle", ""),
+                "warehouse_name": item.get("warehouseName", ""),
+                "stock":         int(item.get("quantity", 0)),
+                "reserved":      int(item.get("inWayToClient", 0)) + int(item.get("inWayFromClient", 0)),
+            })
+        return results
+
+    async def get_sales(self, date_from: datetime, statistics_token: str) -> list[dict]:
+        """Выкупленные заказы через Statistics API."""
+        _STATS_BASE = "https://statistics-api.wildberries.ru"
+        stats_headers = {"Authorization": f"Bearer {statistics_token}", "Content-Type": "application/json"}
+        df_str = date_from.strftime("%Y-%m-%dT00:00:00")
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "GET",
+                f"{_STATS_BASE}/api/v1/supplier/sales",
+                headers=stats_headers,
+                params={"dateFrom": df_str, "flag": 1},
+                label="WB.get_sales",
+            )
+        if not data:
+            return []
+        results = []
+        for item in (data if isinstance(data, list) else []):
+            finished = float(item.get("finishedPrice", 0) or 0)
+            for_pay  = float(item.get("forPay", 0) or 0)
+            results.append({
+                "order_id":    item.get("srid", "") or item.get("odid", ""),
+                "product_id":  str(item.get("nmId", "")),
+                "product_name": item.get("subject", "") or item.get("supplierArticle", ""),
+                "quantity":    int(item.get("quantity", 1) or 1),
+                "price":       finished,
+                "commission":  round(for_pay - finished, 2),
+                "sale_date":   item.get("lastChangeDate", ""),
+            })
+        return results
+
+
 # ── Ozon ──────────────────────────────────────────────────────────────────────
 
 # Минимальный limit по API Ozon v2/review/list = 20
@@ -267,6 +324,56 @@ class OzonClient:
         except Exception as e:
             logger.warning(f"[Ozon.check_connection] exception: {e}")
             return False
+
+
+    async def get_stocks(self, **_) -> list[dict]:
+        """Остатки по складам через analytics API."""
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "POST",
+                f"{self._BASE}/v1/analytics/stock_on_warehouses",
+                headers=self._headers(),
+                json={"limit": 100, "offset": 0},
+                label="Ozon.get_stocks",
+            )
+        if not data:
+            return []
+        results = []
+        for item in data.get("result", {}).get("rows", []):
+            results.append({
+                "product_id":    str(item.get("offer_id", "")),
+                "product_name":  item.get("item_name", "") or item.get("title", ""),
+                "warehouse_name": item.get("warehouse_name", ""),
+                "stock":         int(item.get("free_to_sell_amount", 0) or item.get("for_sale", 0)),
+                "reserved":      int(item.get("reserved_amount", 0)),
+            })
+        return results
+
+    async def get_sales(self, date_from: datetime, **_) -> list[dict]:
+        """Выкупленные заказы через finance/realization."""
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "POST",
+                f"{self._BASE}/v1/finance/realization",
+                headers=self._headers(),
+                json={"month": date_from.month, "year": date_from.year},
+                label="Ozon.get_sales",
+            )
+        if not data:
+            return []
+        results = []
+        for item in data.get("result", {}).get("rows", []):
+            price = float(item.get("sale_commission", 0) or 0)
+            results.append({
+                "order_id":    str(item.get("posting_number", "") or item.get("order_id", "")),
+                "product_id":  str(item.get("offer_id", "")),
+                "product_name": item.get("item_name", ""),
+                "quantity":    int(item.get("quantity", 1) or 1),
+                "price":       float(item.get("price", 0) or 0),
+                "commission":  price,
+                "sale_date":   item.get("accepted_date", ""),
+            })
+        return results
 
 
 def make_client(shop: dict):
