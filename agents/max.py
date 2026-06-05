@@ -1008,7 +1008,13 @@ class MaxAgent(BaseAgent):
                 parts.append(f"📥 {int(o['orders'])} зак. — {float(o['revenue'] or 0):,.0f} ₽")
             if s:
                 sal_label = "дост." if mp == "ozon" else "выкуп."
-                parts.append(f"✅ {int(s['orders'])} {sal_label} — {float(s['revenue'] or 0):,.0f} ₽")
+                # Для Ozon скрываем дост. если совпадает с заказами (>= 90% — источники дублируют друг друга)
+                ozon_sales_cnt = int(s["orders"] or 0)
+                ozon_orders_cnt = int(o["orders"] or 0) if o else 0
+                if mp == "ozon" and ozon_orders_cnt > 0 and ozon_sales_cnt >= ozon_orders_cnt * 0.9:
+                    pass  # скрываем дублирующий блок
+                else:
+                    parts.append(f"✅ {ozon_sales_cnt} {sal_label} — {float(s['revenue'] or 0):,.0f} ₽")
             line = f"{label}: " + " | ".join(parts)
             if cmp_orders is not None and cmp_label:
                 cur_cnt = int(o["orders"]) if o else 0
