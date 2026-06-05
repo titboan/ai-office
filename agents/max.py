@@ -824,9 +824,12 @@ class MaxAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[Макс/sync] get_sales {mp_label}: {e}")
 
-            # Заказы (WB и Ozon)
+            # Заказы: WB — get_orders_all (flag=0, все за период); Ozon — get_orders
             try:
-                orders = await client.get_orders(date_from=since, statistics_token=stats_token)
+                if mp == "wb":
+                    orders = await client.get_orders_all(date_from=since, statistics_token=stats_token)
+                else:
+                    orders = await client.get_orders(date_from=since, statistics_token=stats_token)
                 new_count = 0
                 for o in orders:
                     order_date = None
@@ -847,34 +850,6 @@ class MaxAgent(BaseAgent):
                 logger.info(f"[Макс/sync] {mp_label}: {new_count} новых заказов")
             except Exception as e:
                 logger.error(f"[Макс/sync] get_orders {mp_label}: {e}")
-
-            # Realtime заказы WB (основной токен, сегодня с 00:00 МСК)
-            if mp == "wb":
-                try:
-                    from zoneinfo import ZoneInfo
-                    msk = ZoneInfo("Europe/Moscow")
-                    today_msk = datetime.now(msk).replace(hour=0, minute=0, second=0, microsecond=0)
-                    rt_orders = await client.get_orders_today(date_from=today_msk, statistics_token=stats_token)
-                    new_count = 0
-                    for o in rt_orders:
-                        order_date = None
-                        if o.get("order_date"):
-                            try:
-                                from datetime import datetime as _dt
-                                order_date = _dt.fromisoformat(str(o["order_date"]).rstrip("Z")).replace(tzinfo=_UTC)
-                            except Exception:
-                                pass
-                        is_new = await save_order(
-                            chat_id=chat_id, marketplace="wb",
-                            order_id=o["order_id"], product_id=o.get("product_id"),
-                            product_name=o.get("product_name"), quantity=o.get("quantity", 1),
-                            price=o.get("price"), order_date=order_date,
-                        )
-                        if is_new:
-                            new_count += 1
-                    logger.info(f"[Макс/sync] WB realtime: {new_count} новых заказов сегодня")
-                except Exception as e:
-                    logger.error(f"[Макс/sync] get_orders_today WB: {e}")
 
     # ------------------------------------------------------------------ #
     #  Вспомогательные методы для сводки                                  #

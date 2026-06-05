@@ -263,13 +263,13 @@ class WBClient:
         logger.info(f"[WB.get_orders] итого не отменённых: {len(results)}")
         return results
 
-    async def get_orders_today(self, date_from: datetime, statistics_token: str) -> list[dict]:
-        """Заказы сегодня через Statistics API (flag=0 — все изменения включая сегодняшние)."""
+    async def get_orders_all(self, date_from: datetime, statistics_token: str) -> list[dict]:
+        """Все заказы через Statistics API (flag=0 — все изменения за период включая сегодня)."""
         _STATS_BASE = "https://statistics-api.wildberries.ru"
         stats_headers = {"Authorization": f"Bearer {statistics_token}", "Content-Type": "application/json"}
         df_str = date_from.strftime("%Y-%m-%dT%H:%M:%S")
         url = f"{_STATS_BASE}/api/v1/supplier/orders"
-        logger.info(f"[WB.get_orders_today] GET {url} dateFrom={df_str}")
+        logger.info(f"[WB.get_orders_all] GET {url} dateFrom={df_str}")
         data = None
         for attempt in range(2):
             async with aiohttp.ClientSession() as session:
@@ -279,13 +279,13 @@ class WBClient:
                     timeout=_TIMEOUT,
                 ) as resp:
                     if resp.status == 429:
-                        logger.warning("[WB.get_orders_today] rate limit, жду 60 сек")
+                        logger.warning("[WB.get_orders_all] rate limit, жду 60 сек")
                         await asyncio.sleep(60)
                         continue
                     raw = await resp.text()
-                    logger.info(f"[WB.get_orders_today] HTTP {resp.status}, тело: {raw[:200]}")
+                    logger.info(f"[WB.get_orders_all] HTTP {resp.status}, тело: {raw[:200]}")
                     if resp.status != 200:
-                        logger.error(f"[WB.get_orders_today] HTTP {resp.status}: {raw[:200]}")
+                        logger.error(f"[WB.get_orders_all] HTTP {resp.status}: {raw[:200]}")
                         return []
                     import json as _json
                     data = _json.loads(raw)
@@ -305,7 +305,8 @@ class WBClient:
                 "price":       float(item.get("priceWithDisc") or item.get("finishedPrice") or (item.get("totalPrice", 0) or 0)),
                 "order_date":  item.get("lastChangeDate", ""),
             })
-        logger.info(f"[WB.get_orders_today] итого не отменённых: {len(results)}")
+        logger.info(f"[WB.get_orders_all] итого не отменённых: {len(results)}")
+        logger.info(f"[WB.get_orders_all] sample order_ids: {[o.get('order_id') for o in results[:3]]}")
         return results
 
     async def get_sales(self, date_from: datetime, statistics_token: str) -> list[dict]:
