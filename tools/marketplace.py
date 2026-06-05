@@ -263,6 +263,51 @@ class WBClient:
         logger.info(f"[WB.get_orders] итого не отменённых: {len(results)}")
         return results
 
+    async def get_orders_realtime(self, date_from: datetime) -> list[dict]:
+        """Заказы в реальном времени через основной API (не Statistics)."""
+        _SUPPLIERS_BASE = "https://suppliers-api.wildberries.ru"
+        headers = {"Authorization": self._token, "Content-Type": "application/json"}
+        date_from_ts = int(date_from.timestamp())
+        url = f"{_SUPPLIERS_BASE}/api/v3/orders"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url,
+                    headers=headers,
+                    params={"dateFrom": date_from_ts, "limit": 1000},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    logger.info(f"[WB.get_orders_realtime] HTTP {resp.status}, тело: {raw[:200]}")
+                    if resp.status != 200:
+                        logger.error(f"[WB.get_orders_realtime] HTTP {resp.status}: {raw[:200]}")
+                        return []
+                    import json as _json
+                    data = _json.loads(raw)
+        except asyncio.TimeoutError:
+            logger.error(f"[marketplace] timeout: GET {url}")
+            return []
+        except Exception as e:
+            logger.error(f"[WB.get_orders_realtime] exception: {e}")
+            return []
+
+        results = []
+        for item in (data.get("orders") or []):
+            if item.get("cancelledAt") or item.get("wbStatus") == "cancelled":
+                continue
+            article = str(item.get("article") or "")
+            skus = item.get("skus") or []
+            results.append({
+                "order_id":    str(item.get("id", "")),
+                "product_id":  article,
+                "product_name": skus[0] if skus else article,
+                "quantity":    1,
+                "price":       float(item.get("convertedPrice", 0) or 0) / 100,
+                "order_date":  item.get("createdAt", ""),
+            })
+        logger.info(f"[WB.get_orders_realtime] итого не отменённых: {len(results)}")
+        return results
+
     async def get_sales(self, date_from: datetime, statistics_token: str) -> list[dict]:
         """Выкупленные заказы через Statistics API."""
         _STATS_BASE = "https://statistics-api.wildberries.ru"
