@@ -477,14 +477,17 @@ class MaxAgent(BaseAgent):
                     await self._notify_pending(chat_id, shop, rv, reply)
                 else:
                     ok = await self._send_to_marketplace(shop, rv["review_id"], reply)
-                    status = "auto_replied" if ok else "pending_approval"
-                    await update_review_status(
-                        shop["marketplace"], rv["review_id"],
-                        status=status,
-                        final_reply=reply if ok else None,
-                    )
-                    if not ok and rating <= 4:
-                        await self._notify_pending(chat_id, shop, rv, reply)
+                    if ok:
+                        await update_review_status(
+                            shop["marketplace"], rv["review_id"],
+                            status="auto_replied",
+                            final_reply=reply,
+                        )
+                    else:
+                        logger.error(
+                            f"[Макс] send_reply failed: mp={shop['marketplace']} "
+                            f"review={rv['review_id'][:8]} rating={rating} — статус остаётся 'new'"
+                        )
                     logger.info(
                         f"[Макс] review={rv['review_id'][:8]} rating={rating} → {status}"
                     )

@@ -102,15 +102,32 @@ class WBClient:
         return reviews
 
     async def send_reply(self, review_id: str, text: str) -> bool:
+        url = f"{self._BASE}/api/v1/feedbacks"
+        body = {"id": review_id, "text": text}
         async with aiohttp.ClientSession() as session:
-            data = await _request(
-                session, "PATCH",
-                f"{self._BASE}/api/v1/feedbacks",
-                headers=self._headers(),
-                json={"id": review_id, "text": text},
-                label=f"WB.send_reply({review_id[:8]})",
-            )
-        return data is not None
+            # Пробуем PATCH; если 405 — пробуем POST
+            for method in ("PATCH", "POST"):
+                try:
+                    async with session.request(
+                        method, url,
+                        headers=self._headers(),
+                        json=body,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as resp:
+                        raw = await resp.text()
+                        if resp.status == 200:
+                            return True
+                        if resp.status == 405 and method == "PATCH":
+                            logger.warning(f"[WB.send_reply] PATCH→405, пробую POST")
+                            continue
+                        logger.error(
+                            f"[WB.send_reply({review_id[:8]})] {method} {resp.status}: {raw[:300]}"
+                        )
+                        return False
+                except Exception as e:
+                    logger.error(f"[WB.send_reply] {method} exception: {e}")
+                    return False
+        return False
 
     async def check_connection(self) -> bool:
         """Проверить валидность токена (тестовый запрос)."""
@@ -150,7 +167,7 @@ class OzonClient:
                 session, "POST",
                 f"{self._BASE}/v1/review/list",
                 headers=self._headers(),
-                json={"sort_dir": "DESC", "page": 1, "page_size": 100},
+                json={"sort_dir": "DESC", "page": 1, "page_size": 20},
                 label="Ozon.get_new_reviews",
             )
         if not data:
@@ -197,7 +214,7 @@ class OzonClient:
                 async with session.post(
                     f"{self._BASE}/v1/review/list",
                     headers=self._headers(),
-                    json={"sort": {"order": "DESC"}, "filter": {}, "limit": 1, "offset": 0},
+                    json={"sort": {"order": "DESC"}, "filter": {}, "limit": 20, "offset": 0},
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     logger.debug(f"[Ozon.check_connection] status={resp.status}")
