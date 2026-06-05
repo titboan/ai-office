@@ -828,7 +828,7 @@ class MaxAgent(BaseAgent):
             oz_zero  = [s for s in low_stocks if s["marketplace"] == "ozon" and s["stock"] == 0]
 
             def _group_by_sku(rows: list[dict], cluster_fn) -> dict:
-                """product_id → {name, region → stock}"""
+                """product_id → {name, regions → stock}"""
                 grouped: dict = {}
                 for s in rows:
                     pid  = s["product_id"]
@@ -836,21 +836,28 @@ class MaxAgent(BaseAgent):
                     region = cluster_fn(s.get("warehouse_name", ""))
                     entry = grouped.setdefault(pid, {"name": name, "regions": {}})
                     entry["regions"][region] = entry["regions"].get(region, 0) + s["stock"]
+                # Если одно название у нескольких артикулов — добавить артикул в скобках
+                name_counts: dict[str, int] = {}
+                for info in grouped.values():
+                    name_counts[info["name"]] = name_counts.get(info["name"], 0) + 1
+                for pid, info in grouped.items():
+                    if name_counts[info["name"]] > 1:
+                        info["name"] = f"{info['name']} ({pid})"
                 return grouped
 
             def _render_low(grouped: dict) -> list[str]:
                 out = []
-                for pid, info in grouped.items():
-                    out.append(f"📦 *{info['name']}* [{pid}]")
+                for info in grouped.values():
+                    out.append(f"📦 *{info['name']}*")
                     for region, qty in info["regions"].items():
                         out.append(f"  • {region}: {qty} шт")
                 return out
 
             def _render_zero(grouped: dict) -> list[str]:
                 out = []
-                for pid, info in grouped.items():
+                for info in grouped.values():
                     regions = ", ".join(info["regions"].keys())
-                    out.append(f"📦 *{info['name']}* [{pid}]")
+                    out.append(f"📦 *{info['name']}*")
                     out.append(f"  • {regions}")
                 return out
 
