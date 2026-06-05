@@ -824,40 +824,39 @@ class MaxAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[Макс/sync] get_sales {mp_label}: {e}")
 
-            # Заказы: WB — get_orders_all всегда за 7 дней (ON CONFLICT DO NOTHING); Ozon — get_orders
-            try:
-                if mp == "wb":
+            # Заказы WB — get_orders_all (Statistics API, flag=0, за 7 дней)
+            # Заказы Ozon — только через get_orders_analytics (агрегат по SKU),
+            #   get_orders (активные постинги) НЕ сохраняем в marketplace_orders во избежание двойного счёта
+            if mp == "wb":
+                try:
                     since_orders = datetime.now(_UTC) - timedelta(days=7)
                     orders = await client.get_orders_all(date_from=since_orders, statistics_token=stats_token)
-                else:
-                    orders = await client.get_orders(date_from=since, statistics_token=stats_token)
-                new_count = 0
-                for o in orders:
-                    order_date = None
-                    if o.get("order_date"):
-                        try:
-                            from datetime import datetime as _dt
-                            order_date = _dt.fromisoformat(str(o["order_date"]).rstrip("Z")).replace(tzinfo=_UTC)
-                        except Exception:
-                            pass
-                    is_new = await save_order(
-                        chat_id=chat_id, marketplace=mp,
-                        order_id=o["order_id"], product_id=o.get("product_id"),
-                        product_name=o.get("product_name"), quantity=o.get("quantity", 1),
-                        price=o.get("price"), order_date=order_date,
-                    )
-                    if is_new:
-                        new_count += 1
-                logger.info(f"[Макс/sync] {mp_label}: {new_count} новых заказов")
-            except Exception as e:
-                logger.error(f"[Макс/sync] get_orders {mp_label}: {e}")
+                    new_count = 0
+                    for o in orders:
+                        order_date = None
+                        if o.get("order_date"):
+                            try:
+                                from datetime import datetime as _dt
+                                order_date = _dt.fromisoformat(str(o["order_date"]).rstrip("Z")).replace(tzinfo=_UTC)
+                            except Exception:
+                                pass
+                        is_new = await save_order(
+                            chat_id=chat_id, marketplace="wb",
+                            order_id=o["order_id"], product_id=o.get("product_id"),
+                            product_name=o.get("product_name"), quantity=o.get("quantity", 1),
+                            price=o.get("price"), order_date=order_date,
+                        )
+                        if is_new:
+                            new_count += 1
+                    logger.info(f"[Макс/sync] WB: {new_count} новых заказов")
+                except Exception as e:
+                    logger.error(f"[Макс/sync] get_orders WB: {e}")
 
-            # Аналитика заказов Ozon (исторические данные по SKU)
+            # Ozon аналитика — агрегат заказов по SKU за 14 дней → marketplace_orders
+            # Delivered постинги идут в marketplace_sales через get_sales (выше)
             if mp == "ozon":
                 try:
-                    analytics_since = shop.get("last_checked_at") or (datetime.now(_UTC) - timedelta(days=14))
-                    if analytics_since.tzinfo is None:
-                        analytics_since = analytics_since.replace(tzinfo=_UTC)
+                    analytics_since = datetime.now(_UTC) - timedelta(days=14)
                     analytics_rows = await client.get_orders_analytics(
                         date_from=analytics_since,
                         date_to=datetime.now(_UTC),
