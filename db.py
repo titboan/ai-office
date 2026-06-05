@@ -592,7 +592,7 @@ async def get_orders_summary(chat_id: int, date_from, date_to) -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT marketplace, COUNT(*) AS orders, SUM(price) AS revenue
+            SELECT marketplace, SUM(quantity) AS orders, SUM(price * quantity) AS revenue
             FROM marketplace_orders
             WHERE chat_id = $1 AND order_date >= $2 AND order_date < $3
             GROUP BY marketplace
@@ -624,7 +624,7 @@ async def get_orders_total(chat_id: int, days: int = 7) -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT marketplace, COUNT(*) AS orders, SUM(price) AS revenue
+            SELECT marketplace, SUM(quantity) AS orders, SUM(price * quantity) AS revenue
             FROM marketplace_orders
             WHERE chat_id = $1
               AND order_date >= NOW() - ($2 || ' days')::interval
