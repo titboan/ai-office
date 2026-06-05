@@ -924,7 +924,7 @@ class MaxAgent(BaseAgent):
         return out
 
     async def _send_sales_summary(self, owner_chat_id: int, target_chat_id: int, bot=None) -> None:
-        from db import get_orders_summary, get_orders_total, get_sales_period, get_sales_total
+        from db import get_orders_summary, get_orders_total, get_orders_days_count, get_sales_period, get_sales_total
         from zoneinfo import ZoneInfo
         _bot = bot if bot is not None else self.app.bot
         _SHORT = {"wb": "🟣 WB", "ozon": "🔵 Ozon"}
@@ -1021,11 +1021,10 @@ class MaxAgent(BaseAgent):
         for mp in ("wb", "ozon"):
             lines.append(_mp_line(mp, ord_wago, sal_wago))
 
-        # Показывать динамику за 7 дней только если есть данные за предыдущую неделю
-        prev_week_has_data = any(
-            (int(r.get("orders") or 0) > 0 or float(r.get("revenue") or 0) > 0)
-            for r in list(ord_prev_week.values()) + list(sal_prev_week.values())
-        )
+        # Показывать динамику за 7 дней только если данные за пред. неделю достаточно полные (≥5 дней)
+        prev_week_days = await get_orders_days_count(owner_chat_id, prev_week_start, prev_week_end)
+        prev_week_has_data = prev_week_days >= 5
+        logger.info(f"[sales_summary] prev_week_days={prev_week_days}, show_delta={prev_week_has_data}")
         lines.append("\n📈 *За 7 дней*")
         for mp in ("wb", "ozon"):
             lines.append(_mp_line(

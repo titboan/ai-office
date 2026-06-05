@@ -619,6 +619,21 @@ async def get_sales_period(chat_id: int, date_from, date_to) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def get_orders_days_count(chat_id: int, date_from, date_to) -> int:
+    """Количество дней с заказами в периоде (по всем площадкам)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT COUNT(DISTINCT DATE(order_date AT TIME ZONE 'UTC')) AS days
+            FROM marketplace_orders
+            WHERE chat_id = $1 AND order_date >= $2 AND order_date < $3
+            """,
+            chat_id, date_from, date_to,
+        )
+    return int(row["days"]) if row else 0
+
+
 async def get_orders_total(chat_id: int, days: int = 7) -> list[dict]:
     pool = await get_pool()
     async with pool.acquire() as conn:
