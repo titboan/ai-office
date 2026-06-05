@@ -120,7 +120,7 @@ class WBClient:
                     timeout=_TIMEOUT,
                 ) as resp:
                     raw = await resp.text()
-                    if resp.status == 200:
+                    if resp.status in (200, 204):
                         return True
                     logger.error(f"[WB.send_reply({review_id[:8]})] POST {resp.status}: {raw[:300]}")
                     return False
