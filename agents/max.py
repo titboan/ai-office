@@ -112,6 +112,18 @@ class MaxAgent(BaseAgent):
     #  handle_message — блокируем Claude во время онбординга              #
     # ------------------------------------------------------------------ #
 
+    async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from telegram import Chat
+        if not (update.effective_chat and update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP)):
+            await super().handle_voice(update, context)
+            return
+        # Группа: базовый класс транскрибирует и выставляет update.message.text,
+        # но вызывает handle_message который для групп ничего не делает.
+        # После возврата подхватываем транскрипцию и проверяем триггер.
+        await super().handle_voice(update, context)
+        if update.message and update.message.text:
+            await self._handle_group_message(update, context)
+
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         from telegram import Chat
         if update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
