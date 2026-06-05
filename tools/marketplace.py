@@ -257,7 +257,7 @@ class WBClient:
                 "order_id":    str(item.get("srid", "") or item.get("orderId", "")),
                 "product_id":  supplier_article or str(item.get("nmId", "")),
                 "product_name": item.get("subject", "") or supplier_article,
-                "price":       float(item.get("totalPrice", 0) or item.get("finishedPrice", 0) or 0),
+                "price":       float(item.get("priceWithDisc") or item.get("finishedPrice") or (item.get("totalPrice", 0) or 0)),
                 "order_date":  item.get("lastChangeDate", ""),
             })
         logger.info(f"[WB.get_orders] итого не отменённых: {len(results)}")
@@ -302,7 +302,7 @@ class WBClient:
                 "product_id":  supplier_article or str(item.get("nmId", "")),
                 "product_name": item.get("subject", "") or supplier_article,
                 "quantity":    int(item.get("quantity", 1) or 1),
-                "price":       float(item.get("totalPrice", 0) or item.get("finishedPrice", 0) or 0),
+                "price":       float(item.get("priceWithDisc") or item.get("finishedPrice") or (item.get("totalPrice", 0) or 0)),
                 "order_date":  item.get("lastChangeDate", ""),
             })
         logger.info(f"[WB.get_orders_today] итого не отменённых: {len(results)}")
