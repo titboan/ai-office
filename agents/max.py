@@ -244,7 +244,10 @@ class MaxAgent(BaseAgent):
         row1 = [InlineKeyboardButton("▶️ Проверить отзывы сейчас", callback_data="onboard:run_now")]
         if count > 0:
             row1.append(InlineKeyboardButton(f"📬 Отзывы ({count})", callback_data="onboard:show_pending"))
-        row2 = [InlineKeyboardButton("📊 Статистика", callback_data="onboard:stats")]
+        row2 = [
+            InlineKeyboardButton("📊 Статистика",        callback_data="onboard:stats"),
+            InlineKeyboardButton("📦 Сводка магазина",   callback_data="onboard:daily_summary"),
+        ]
         row3 = [InlineKeyboardButton("❓ Что я умею",  callback_data="onboard:help")]
 
         rows = [row1, row2]
@@ -417,6 +420,19 @@ class MaxAgent(BaseAgent):
             await query.answer()
             from telegram.constants import ParseMode
             await query.message.reply_text(_HELP_TEXT, parse_mode=ParseMode.MARKDOWN)
+            return
+
+        if action == "daily_summary":
+            await query.answer()
+            await query.message.reply_text("⏳ Собираю сводку…")
+            from db import get_marketplace_shops
+            owner_shops = await get_marketplace_shops(query.from_user.id)
+            owner_chat_id = owner_shops[0]["chat_id"] if owner_shops else query.from_user.id
+            await self.send_daily_summary(
+                owner_chat_id=owner_chat_id,
+                target_chat_id=query.message.chat_id,
+                bot=query.bot,
+            )
             return
 
         if action == "update_wb":
