@@ -849,11 +849,16 @@ class MaxAgent(BaseAgent):
         if msg.from_user and msg.from_user.is_bot:
             return
 
+        logger.debug(
+            f"[max:group] msg='{msg.text[:50] if msg.text else ''}' "
+            f"from={msg.from_user.first_name if msg.from_user else '?'}"
+        )
+
         # Триггер — хотя бы одно из трёх условий:
         bot_username = (context.bot.username or "").lower()
 
         # 1. @mention бота в entities
-        mentioned = any(
+        has_mention = any(
             e.type == "mention"
             and msg.text[e.offset:e.offset + e.length].lstrip("@").lower() == bot_username
             for e in (msg.entities or [])
@@ -872,8 +877,16 @@ class MaxAgent(BaseAgent):
             reply and reply.from_user and reply.from_user.id == context.bot.id
         )
 
-        if not (mentioned or starts_with_max or is_reply_to_bot):
+        logger.debug(
+            f"[max:group] trigger check: mention={has_mention}, starts_with={starts_with_max}, reply={is_reply_to_bot}"
+        )
+
+        if not (has_mention or starts_with_max or is_reply_to_bot):
+            logger.debug("[max:group] no trigger — ignoring")
             return
+
+        first_name = msg.from_user.first_name if msg.from_user else "?"
+        logger.info(f"[max:group] triggered by {first_name}: {msg.text[:50] if msg.text else ''}")
 
         chat_id = msg.chat_id
         user_name = (msg.from_user.first_name if msg.from_user else None) or "Участник"
