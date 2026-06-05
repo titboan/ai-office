@@ -509,59 +509,56 @@ class OzonClient:
                     })
             return rows
 
-        results = []
-        async with aiohttp.ClientSession() as session:
-            for status in ("delivered",):
+        async def _fetch_all(session, url: str, base_filter: dict, scheme: str) -> list[dict]:
+            offset = 0
+            total: list[dict] = []
+            while True:
                 body = {
                     "dir": "DESC",
-                    "filter": {
-                        "since":  date_from.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        "to":     now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        "status": status,
-                    },
+                    "filter": base_filter,
                     "limit":  100,
-                    "offset": 0,
+                    "offset": offset,
                     "with":   {"financial_data": True},
                 }
-                # FBO
-                fbo_url = f"{self._BASE}/v3/posting/fbo/list"
                 try:
-                    async with session.post(fbo_url, headers=self._headers(), json=body, timeout=_TIMEOUT) as resp:
+                    async with session.post(url, headers=self._headers(), json=body, timeout=_TIMEOUT) as resp:
                         raw = await resp.text()
-                        logger.debug(f"[Ozon.get_sales/fbo/{status}] POST → {resp.status}: {raw[:200]!r}")
+                        logger.debug(f"[Ozon.get_sales/{scheme}] POST offset={offset} → {resp.status}: {raw[:100]!r}")
                         if resp.status != 200:
-                            logger.error(f"[Ozon.get_sales/fbo/{status}] HTTP {resp.status}: {raw[:200]}")
-                        else:
-                            data = _json.loads(raw)
-                            # FBO: {"postings": [...], "has_next": ..., "cursor": ""}
-                            postings = data.get("postings") or []
-                            logger.info(f"[Ozon.get_sales/fbo/{status}] {len(postings)} postings")
-                            results.extend(_parse_postings(postings, "fbo"))
+                            logger.error(f"[Ozon.get_sales/{scheme}] HTTP {resp.status}: {raw[:200]}")
+                            break
+                        data = _json.loads(raw)
                 except asyncio.TimeoutError:
-                    logger.error(f"[marketplace] timeout: POST {fbo_url}")
+                    logger.error(f"[marketplace] timeout: POST {url}")
+                    break
                 except Exception as e:
-                    logger.error(f"[Ozon.get_sales/fbo/{status}] exception: {e}")
+                    logger.error(f"[Ozon.get_sales/{scheme}] exception: {e}")
+                    break
+                # FBO: {"postings": [...], "has_next": ...}
+                # FBS: {"result": {"postings": [...], "has_next": ...}}
+                if scheme == "fbo":
+                    postings = data.get("postings") or []
+                    has_next = data.get("has_next", False)
+                else:
+                    raw_result = data.get("result") or {}
+                    postings = raw_result.get("postings") or [] if isinstance(raw_result, dict) else []
+                    has_next = raw_result.get("has_next", False) if isinstance(raw_result, dict) else False
+                total.extend(_parse_postings(postings, scheme))
+                if not has_next or offset >= 2000:
+                    break
+                offset += len(postings)
+            logger.info(f"[Ozon.get_sales/{scheme}/delivered] итого: {len(total)}")
+            return total
 
-                # FBS
-                fbs_url = f"{self._BASE}/v3/posting/fbs/list"
-                try:
-                    async with session.post(fbs_url, headers=self._headers(), json=body, timeout=_TIMEOUT) as resp:
-                        raw = await resp.text()
-                        logger.debug(f"[Ozon.get_sales/fbs/{status}] POST → {resp.status}: {raw[:200]!r}")
-                        if resp.status != 200:
-                            logger.error(f"[Ozon.get_sales/fbs/{status}] HTTP {resp.status}: {raw[:200]}")
-                        else:
-                            data = _json.loads(raw)
-                            # FBS: {"result": {"postings": [...]}}
-                            raw_result = data.get("result") or {}
-                            postings = raw_result.get("postings") or [] if isinstance(raw_result, dict) else []
-                            logger.info(f"[Ozon.get_sales/fbs/{status}] {len(postings)} postings")
-                            results.extend(_parse_postings(postings, "fbs"))
-                except asyncio.TimeoutError:
-                    logger.error(f"[marketplace] timeout: POST {fbs_url}")
-                except Exception as e:
-                    logger.error(f"[Ozon.get_sales/fbs/{status}] exception: {e}")
-
+        base_filter = {
+            "since":  date_from.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "to":     now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "status": "delivered",
+        }
+        results = []
+        async with aiohttp.ClientSession() as session:
+            results.extend(await _fetch_all(session, f"{self._BASE}/v3/posting/fbo/list", base_filter, "fbo"))
+            results.extend(await _fetch_all(session, f"{self._BASE}/v3/posting/fbs/list", base_filter, "fbs"))
         logger.info(f"[Ozon.get_sales] итого: {len(results)}")
         return results
 
@@ -595,41 +592,47 @@ class OzonClient:
         url = f"{self._BASE}/v3/posting/fbo/list"
         async with aiohttp.ClientSession() as session:
             for status in ("awaiting_packaging", "awaiting_deliver", "delivering"):
-                body = {
-                    "dir": "DESC",
-                    "filter": {
-                        "since":  date_from.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        "to":     now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        "status": status,
-                    },
-                    "limit":  100,
-                    "offset": 0,
-                    "with":   {"financial_data": True},
-                }
-                try:
-                    async with session.post(
-                        url,
-                        headers=self._headers(),
-                        json=body,
-                        timeout=_TIMEOUT,
-                    ) as resp:
-                        raw = await resp.text()
-                        if resp.status != 200:
-                            logger.error(f"[Ozon.get_orders/{status}] HTTP {resp.status}: {raw[:200]}")
-                            continue
-                        data = _json.loads(raw)
-                except asyncio.TimeoutError:
-                    logger.error(f"[marketplace] timeout: POST {url} status={status}")
-                    continue
-                except Exception as e:
-                    logger.error(f"[Ozon.get_orders/{status}] exception: {e}")
-                    continue
-                # FBO ответ: {"postings": [...], "has_next": false, "cursor": ""}
-                postings = data.get("postings") or []
-                logger.debug(f"[Ozon.get_orders/{status}] keys={list(data.keys())}, postings_count={len(postings)}")
-                batch = _parse_postings(postings)
-                logger.info(f"[Ozon.get_orders/{status}] {len(batch)} позиций")
-                results.extend(batch)
+                offset = 0
+                status_total = 0
+                while True:
+                    body = {
+                        "dir": "DESC",
+                        "filter": {
+                            "since":  date_from.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            "to":     now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            "status": status,
+                        },
+                        "limit":  100,
+                        "offset": offset,
+                        "with":   {"financial_data": True},
+                    }
+                    try:
+                        async with session.post(
+                            url,
+                            headers=self._headers(),
+                            json=body,
+                            timeout=_TIMEOUT,
+                        ) as resp:
+                            raw = await resp.text()
+                            if resp.status != 200:
+                                logger.error(f"[Ozon.get_orders/{status}] HTTP {resp.status}: {raw[:200]}")
+                                break
+                            data = _json.loads(raw)
+                    except asyncio.TimeoutError:
+                        logger.error(f"[marketplace] timeout: POST {url} status={status}")
+                        break
+                    except Exception as e:
+                        logger.error(f"[Ozon.get_orders/{status}] exception: {e}")
+                        break
+                    postings = data.get("postings") or []
+                    logger.debug(f"[Ozon.get_orders/{status}] offset={offset}, postings_count={len(postings)}")
+                    batch = _parse_postings(postings)
+                    results.extend(batch)
+                    status_total += len(batch)
+                    if not data.get("has_next") or offset >= 2000:
+                        break
+                    offset += len(postings)
+                logger.info(f"[Ozon.get_orders/{status}] итого: {status_total}")
         logger.info(f"[Ozon.get_orders] итого: {len(results)}")
         return results
 
