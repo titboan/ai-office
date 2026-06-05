@@ -768,8 +768,8 @@ class MaxAgent(BaseAgent):
         return results
 
     async def sync_marketplace_data(self, chat_id: int) -> None:
-        """Синхронизировать остатки и продажи для всех магазинов пользователя."""
-        from db import get_marketplace_shops, upsert_stock, save_sale
+        """Синхронизировать остатки, продажи и заказы для всех магазинов пользователя."""
+        from db import get_marketplace_shops, upsert_stock, save_sale, save_order
         from tools.marketplace import make_client
 
         shops = await get_marketplace_shops(chat_id)
@@ -824,6 +824,31 @@ class MaxAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[Макс/sync] get_sales {mp_label}: {e}")
 
+            # Заказы (только WB)
+            if mp == "wb":
+                try:
+                    orders = await client.get_orders(date_from=since, statistics_token=stats_token)
+                    new_count = 0
+                    for o in orders:
+                        order_date = None
+                        if o.get("order_date"):
+                            try:
+                                from datetime import datetime as _dt
+                                order_date = _dt.fromisoformat(str(o["order_date"]).rstrip("Z")).replace(tzinfo=_UTC)
+                            except Exception:
+                                pass
+                        is_new = await save_order(
+                            chat_id=chat_id, marketplace=mp,
+                            order_id=o["order_id"], product_id=o.get("product_id"),
+                            product_name=o.get("product_name"), quantity=o.get("quantity", 1),
+                            price=o.get("price"), order_date=order_date,
+                        )
+                        if is_new:
+                            new_count += 1
+                    logger.info(f"[Макс/sync] {mp_label}: {new_count} новых заказов")
+                except Exception as e:
+                    logger.error(f"[Макс/sync] get_orders {mp_label}: {e}")
+
     # ------------------------------------------------------------------ #
     #  Вспомогательные методы для сводки                                  #
     # ------------------------------------------------------------------ #
@@ -864,44 +889,56 @@ class MaxAgent(BaseAgent):
         return out
 
     async def _send_sales_summary(self, owner_chat_id: int, target_chat_id: int, bot=None) -> None:
-        from db import get_sales_summary, get_sales_total
+        from db import get_orders_summary, get_orders_total, get_sales_period, get_sales_total
         from zoneinfo import ZoneInfo
         _bot = bot if bot is not None else self.app.bot
-        _EMOJI = {"wb": "🟣 Wildberries", "ozon": "🔵 Ozon"}
         _SHORT = {"wb": "🟣 WB", "ozon": "🔵 Ozon"}
 
-        summary_week = await get_sales_summary(owner_chat_id, days=7)
-        totals_week  = await get_sales_total(owner_chat_id, days=7)
-        date_str = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y")
+        msk = ZoneInfo("Europe/Moscow")
+        now_msk = datetime.now(msk)
+        today = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
+        yesterday     = today - timedelta(days=1)
+        yesterday_end = today
+        week_ago      = today - timedelta(days=7)
+        week_ago_end  = week_ago + timedelta(days=1)
 
-        lines = [f"💰 *Продажи за 7 дней — {date_str}*\n"]
-        by_mp: dict = {}
-        for row in (summary_week or []):
-            mp = row["marketplace"]
-            entry = by_mp.setdefault(mp, {"orders": 0, "revenue": 0.0, "items": []})
-            qty = int(row["orders"] or 0)
-            rev = float(row["revenue"] or 0)
-            entry["orders"]  += qty
-            entry["revenue"] += rev
-            entry["items"].append((row.get("product_name") or "—", qty, rev))
+        def _fmt_date(dt) -> str:
+            return dt.strftime("%d.%m")
 
+        ord_yday  = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, yesterday, yesterday_end)}
+        sal_yday  = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, yesterday, yesterday_end)}
+        ord_wago  = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, week_ago, week_ago_end)}
+        sal_wago  = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, week_ago, week_ago_end)}
+        ord_week  = {r["marketplace"]: r for r in await get_orders_total(owner_chat_id, days=7)}
+        sal_week  = {r["marketplace"]: r for r in await get_sales_total(owner_chat_id, days=7)}
+
+        def _mp_line(mp: str, orders_map: dict, sales_map: dict) -> str:
+            label = _SHORT.get(mp, mp)
+            o = orders_map.get(mp)
+            s = sales_map.get(mp)
+            if not o and not s:
+                return f"{label}: нет данных"
+            parts = []
+            if o:
+                parts.append(f"📥 {int(o['orders'])} зак. — {float(o['revenue'] or 0):,.0f} ₽")
+            if s:
+                parts.append(f"✅ {int(s['orders'])} выкуп. — {float(s['revenue'] or 0):,.0f} ₽")
+            return f"{label}: " + " | ".join(parts)
+
+        date_str = now_msk.strftime("%d.%m.%Y")
+        lines = [f"💰 *Статистика — {date_str}*\n"]
+
+        lines.append(f"📅 *Вчера ({_fmt_date(yesterday)})*")
         for mp in ("wb", "ozon"):
-            label = _EMOJI.get(mp, mp)
-            if mp not in by_mp:
-                lines.append(f"{label} — нет данных")
-                continue
-            agg = by_mp[mp]
-            lines.append(f"{label} — {agg['orders']} заказов, {agg['revenue']:,.0f} ₽")
-            for name, qty, rev in agg["items"]:
-                lines.append(f"  • {name}: {qty} шт — {rev:,.0f} ₽")
-            lines.append("")
+            lines.append(_mp_line(mp, ord_yday, sal_yday))
 
-        lines.append("📈 *Итог за 7 дней*")
-        if totals_week:
-            for row in totals_week:
-                lines.append(f"{_SHORT.get(row['marketplace'], row['marketplace'])}: {float(row['revenue'] or 0):,.0f} ₽")
-        else:
-            lines.append("Нет данных")
+        lines.append(f"\n📅 *Неделю назад ({_fmt_date(week_ago)})*")
+        for mp in ("wb", "ozon"):
+            lines.append(_mp_line(mp, ord_wago, sal_wago))
+
+        lines.append("\n📈 *За 7 дней*")
+        for mp in ("wb", "ozon"):
+            lines.append(_mp_line(mp, ord_week, sal_week))
 
         await _bot.send_message(chat_id=target_chat_id, text="\n".join(lines), parse_mode="Markdown")
 

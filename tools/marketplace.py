@@ -220,6 +220,49 @@ class WBClient:
             })
         return results
 
+    async def get_orders(self, date_from: datetime, statistics_token: str) -> list[dict]:
+        """Новые заказы через Statistics API (isCancel=false)."""
+        _STATS_BASE = "https://statistics-api.wildberries.ru"
+        stats_headers = {"Authorization": f"Bearer {statistics_token}", "Content-Type": "application/json"}
+        df_str = date_from.strftime("%Y-%m-%dT%H:%M:%S")
+        url = f"{_STATS_BASE}/api/v1/supplier/orders"
+        data = None
+        for attempt in range(2):
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url, headers=stats_headers,
+                    params={"dateFrom": df_str, "flag": 1},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    if resp.status == 429:
+                        logger.warning("[WB.get_orders] rate limit, жду 60 сек")
+                        await asyncio.sleep(60)
+                        continue
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[WB.get_orders] HTTP {resp.status}: {raw[:200]}")
+                        return []
+                    import json as _json
+                    data = _json.loads(raw)
+                    logger.info(f"[WB.get_orders] HTTP {resp.status}, записей в ответе: {len(data) if isinstance(data, list) else '?'}")
+                    break
+        if not data:
+            return []
+        results = []
+        for item in (data if isinstance(data, list) else []):
+            if item.get("isCancel"):
+                continue
+            supplier_article = str(item.get("supplierArticle") or "").strip()
+            results.append({
+                "order_id":    str(item.get("srid", "") or item.get("orderId", "")),
+                "product_id":  supplier_article or str(item.get("nmId", "")),
+                "product_name": item.get("subject", "") or supplier_article,
+                "price":       float(item.get("totalPrice", 0) or item.get("finishedPrice", 0) or 0),
+                "order_date":  item.get("lastChangeDate", ""),
+            })
+        logger.info(f"[WB.get_orders] итого не отменённых: {len(results)}")
+        return results
+
     async def get_sales(self, date_from: datetime, statistics_token: str) -> list[dict]:
         """Выкупленные заказы через Statistics API."""
         _STATS_BASE = "https://statistics-api.wildberries.ru"

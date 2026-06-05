@@ -178,6 +178,21 @@ async def _create_schema() -> None:
             );
         """)
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS marketplace_orders (
+                id           BIGSERIAL PRIMARY KEY,
+                chat_id      BIGINT        NOT NULL,
+                marketplace  TEXT          NOT NULL,
+                order_id     TEXT          NOT NULL,
+                product_id   TEXT,
+                product_name TEXT,
+                quantity     INTEGER       NOT NULL DEFAULT 1,
+                price        NUMERIC(10,2),
+                order_date   TIMESTAMPTZ,
+                created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+                UNIQUE (marketplace, order_id)
+            );
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS digest_channels (
                 id               BIGSERIAL PRIMARY KEY,
                 chat_id          TEXT        NOT NULL,
@@ -538,6 +553,81 @@ async def get_sales_total(chat_id: int, days: int = 7) -> list[dict]:
             FROM marketplace_sales
             WHERE chat_id = $1
               AND sale_date >= NOW() - ($2 || ' days')::interval
+            GROUP BY marketplace
+            ORDER BY marketplace
+            """,
+            chat_id, str(days),
+        )
+        return [dict(r) for r in rows]
+
+
+async def save_order(
+    chat_id: int,
+    marketplace: str,
+    order_id: str,
+    product_id: str | None,
+    product_name: str | None,
+    quantity: int,
+    price: float | None,
+    order_date,
+) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            INSERT INTO marketplace_orders
+                (chat_id, marketplace, order_id, product_id, product_name,
+                 quantity, price, order_date)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (marketplace, order_id) DO NOTHING
+            """,
+            chat_id, marketplace, order_id, product_id, product_name,
+            quantity, price, order_date,
+        )
+        return result.split()[-1] != "0"
+
+
+async def get_orders_summary(chat_id: int, date_from, date_to) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT marketplace, COUNT(*) AS orders, SUM(price) AS revenue
+            FROM marketplace_orders
+            WHERE chat_id = $1 AND order_date >= $2 AND order_date < $3
+            GROUP BY marketplace
+            ORDER BY marketplace
+            """,
+            chat_id, date_from, date_to,
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_sales_period(chat_id: int, date_from, date_to) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT marketplace, COUNT(*) AS orders, SUM(price) AS revenue
+            FROM marketplace_sales
+            WHERE chat_id = $1 AND sale_date >= $2 AND sale_date < $3
+            GROUP BY marketplace
+            ORDER BY marketplace
+            """,
+            chat_id, date_from, date_to,
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_orders_total(chat_id: int, days: int = 7) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT marketplace, COUNT(*) AS orders, SUM(price) AS revenue
+            FROM marketplace_orders
+            WHERE chat_id = $1
+              AND order_date >= NOW() - ($2 || ' days')::interval
             GROUP BY marketplace
             ORDER BY marketplace
             """,
