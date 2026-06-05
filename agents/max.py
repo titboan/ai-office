@@ -721,57 +721,69 @@ class MaxAgent(BaseAgent):
 
     async def send_daily_summary(self, chat_id: int) -> None:
         """Синхронизировать данные и отправить ежедневную сводку."""
-        from db import get_sales_summary, get_sales_total, get_low_stocks
-        from zoneinfo import ZoneInfo
+        logger.info(f"[Макс/sync] send_daily_summary старт для chat_id={chat_id}")
+        try:
+            from db import get_sales_summary, get_sales_total, get_low_stocks
+            from zoneinfo import ZoneInfo
 
-        await self.sync_marketplace_data(chat_id)
+            await self.sync_marketplace_data(chat_id)
 
-        summary_day  = await get_sales_summary(chat_id, days=1)
-        totals_week  = await get_sales_total(chat_id, days=7)
-        low_stocks   = await get_low_stocks(chat_id, threshold=20)
+            summary_day = await get_sales_summary(chat_id, days=1)
+            logger.info(f"[Макс/sync] sales_summary получен: {summary_day}")
 
-        date_str = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y")
-        _EMOJI   = {"wb": "🟣 Wildberries", "ozon": "🔵 Ozon"}
-        _SHORT   = {"wb": "🟣 WB", "ozon": "🔵 Ozon"}
+            totals_week = await get_sales_total(chat_id, days=7)
+            logger.info(f"[Макс/sync] sales_total получен: {totals_week}")
 
-        lines = [f"📦 *Сводка магазина — {date_str}*\n"]
+            low_stocks = await get_low_stocks(chat_id, threshold=20)
+            logger.info(f"[Макс/sync] low_stocks получен: {len(low_stocks)} позиций")
 
-        # Продажи вчера
-        lines.append("💰 *Продажи вчера*")
-        if summary_day:
-            by_mp: dict = {}
-            for row in summary_day:
-                mp = row["marketplace"]
-                agg = by_mp.setdefault(mp, {"orders": 0, "revenue": 0.0})
-                agg["orders"]  += int(row["orders"] or 0)
-                agg["revenue"] += float(row["revenue"] or 0)
-            for mp, agg in by_mp.items():
-                lines.append(f"{_EMOJI.get(mp, mp)}: {agg['orders']} заказов — {agg['revenue']:,.0f} ₽")
-        else:
-            lines.append("Нет данных за вчера")
+            date_str = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y")
+            _EMOJI   = {"wb": "🟣 Wildberries", "ozon": "🔵 Ozon"}
+            _SHORT   = {"wb": "🟣 WB", "ozon": "🔵 Ozon"}
 
-        # Выручка за 7 дней
-        lines.append("\n📈 *Выручка за 7 дней*")
-        if totals_week:
-            for row in totals_week:
-                mp = row["marketplace"]
-                lines.append(f"{_SHORT.get(mp, mp)}: {float(row['revenue'] or 0):,.0f} ₽")
-        else:
-            lines.append("Нет данных")
+            lines = [f"📦 *Сводка магазина — {date_str}*\n"]
 
-        # Остатки
-        lines.append("\n⚠️ *Заканчиваются остатки* (< 20 шт)")
-        if low_stocks:
-            for s in low_stocks[:10]:
-                mp_short = "WB" if s["marketplace"] == "wb" else "Ozon"
-                wh = s.get("warehouse_name") or "?"
-                lines.append(f"• {s.get('product_name') or s['product_id']} — {mp_short}/{wh}: {s['stock']} шт")
-        else:
-            lines.append("✅ Остатки в норме")
+            # Продажи вчера
+            lines.append("💰 *Продажи вчера*")
+            if summary_day:
+                by_mp: dict = {}
+                for row in summary_day:
+                    mp = row["marketplace"]
+                    agg = by_mp.setdefault(mp, {"orders": 0, "revenue": 0.0})
+                    agg["orders"]  += int(row["orders"] or 0)
+                    agg["revenue"] += float(row["revenue"] or 0)
+                for mp, agg in by_mp.items():
+                    lines.append(f"{_EMOJI.get(mp, mp)}: {agg['orders']} заказов — {agg['revenue']:,.0f} ₽")
+            else:
+                lines.append("Нет данных за вчера")
 
-        text = "\n".join(lines)
-        target = config.PARTNERS_GROUP_ID if config.PARTNERS_GROUP_ID else chat_id
-        await self._notify_user(target, text)
+            # Выручка за 7 дней
+            lines.append("\n📈 *Выручка за 7 дней*")
+            if totals_week:
+                for row in totals_week:
+                    mp = row["marketplace"]
+                    lines.append(f"{_SHORT.get(mp, mp)}: {float(row['revenue'] or 0):,.0f} ₽")
+            else:
+                lines.append("Нет данных")
+
+            # Остатки
+            lines.append("\n⚠️ *Заканчиваются остатки* (< 20 шт)")
+            if low_stocks:
+                for s in low_stocks[:10]:
+                    mp_short = "WB" if s["marketplace"] == "wb" else "Ozon"
+                    wh = s.get("warehouse_name") or "?"
+                    lines.append(f"• {s.get('product_name') or s['product_id']} — {mp_short}/{wh}: {s['stock']} шт")
+            else:
+                lines.append("✅ Остатки в норме")
+
+            text = "\n".join(lines)
+            target = config.PARTNERS_GROUP_ID if config.PARTNERS_GROUP_ID else chat_id
+            logger.info("[Макс/sync] отправляю сообщение")
+            await self._notify_user(target, text)
+            logger.info("[Макс/sync] сообщение отправлено")
+
+        except Exception as e:
+            logger.error(f"[Макс/sync] ошибка: {e}", exc_info=True)
 
     async def check_negative_reviews(self, chat_id: int) -> None:
         """Быстрый polling: только 1-2★, использует last_checked_negative."""
@@ -1089,6 +1101,7 @@ class MaxAgent(BaseAgent):
         chat_id = update.effective_user.id
         await update.message.reply_text("⏳ Синхронизирую данные…")
         await self.send_daily_summary(chat_id)
+        logger.info("[Макс/sync] send_daily_summary завершён")
 
     # ------------------------------------------------------------------ #
     #  ИИ-агент в группе                                                  #
