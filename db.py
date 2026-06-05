@@ -104,7 +104,19 @@ async def _create_schema() -> None:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_chat_name
                 ON projects(chat_id, name_lower);
         """)
-        logger.info("[db] Схема tasks + projects готова ✓")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS digest_channels (
+                id               BIGSERIAL PRIMARY KEY,
+                chat_id          TEXT        NOT NULL,
+                username         TEXT,
+                title            TEXT,
+                added_by         BIGINT,
+                last_checked_at  TIMESTAMPTZ,
+                created_at       TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE (chat_id, added_by)
+            );
+        """)
+        logger.info("[db] Схема tasks + projects + digest_channels готова ✓")
 
 async def save_project(
     chat_id: int,
@@ -168,3 +180,76 @@ async def close_db() -> None:
         await _pool.close()
         _pool = None
         logger.info("[db] Pool закрыт")
+
+
+# ── digest_channels ───────────────────────────────────────────────────────────
+
+async def add_digest_channel(
+    chat_id: str,
+    username: str | None,
+    title: str | None,
+    added_by: int,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO digest_channels (chat_id, username, title, added_by)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (chat_id, added_by) DO UPDATE
+                SET username = EXCLUDED.username,
+                    title    = EXCLUDED.title
+            """,
+            chat_id, username, title, added_by,
+        )
+
+
+async def remove_digest_channel(username: str, added_by: int) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM digest_channels WHERE username = $1 AND added_by = $2",
+            username.lstrip("@"), added_by,
+        )
+        return result.split()[-1] != "0"
+
+
+async def list_digest_channels(added_by: int) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT chat_id, username, title, last_checked_at
+            FROM digest_channels
+            WHERE added_by = $1
+            ORDER BY created_at
+            """,
+            added_by,
+        )
+        return [dict(r) for r in rows]
+
+
+async def update_channel_last_checked(
+    chat_id: str,
+    added_by: int,
+    checked_at,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE digest_channels
+               SET last_checked_at = $3
+             WHERE chat_id = $1 AND added_by = $2
+            """,
+            chat_id, added_by, checked_at,
+        )
+
+
+async def get_distinct_digest_users() -> list[int]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT DISTINCT added_by FROM digest_channels WHERE added_by IS NOT NULL"
+        )
+        return [r["added_by"] for r in rows]

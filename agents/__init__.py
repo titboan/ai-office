@@ -5,6 +5,7 @@ from .peter import PeterAgent
 from .elina import ElinaAgent
 from .alex import AlexAgent
 from .dan import DanAgent
+from .eva import EvaAgent
 
 __all__ = [
     "MartaAgent",
@@ -14,4 +15,5 @@ __all__ = [
     "ElinaAgent",
     "AlexAgent",
     "DanAgent",
+    "EvaAgent",
 ]

@@ -28,3 +28,6 @@ groq>=0.11.0                       # AsyncGroq — транскрипция voic
 
 # ── Notion (setup_notion.py + будущая интеграция агентов) ─────────────────────
 requests==2.32.3                   # HTTP-клиент для setup_notion.py (sync, stdlib-style)
+
+# ── Ева — чтение Telegram-каналов через MTProto ───────────────────────────────
+telethon>=1.36.0                   # MTProto клиент; StringSession совместим с asyncio

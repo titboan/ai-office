@@ -61,6 +61,12 @@ class Config:
     GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
     GITHUB_USERNAME: str = os.getenv("GITHUB_USERNAME", "")
 
+    # Ева — Telethon MTProto + бот
+    EVA_BOT_TOKEN: str = os.getenv("EVA_BOT_TOKEN", "")
+    TELEGRAM_API_ID: str = os.getenv("TELEGRAM_API_ID", "")
+    TELEGRAM_API_HASH: str = os.getenv("TELEGRAM_API_HASH", "")
+    TELETHON_SESSION: str = os.getenv("TELETHON_SESSION", "")
+
     # Лимиты
     MAX_TOKENS: int = 2048
     TEMPERATURE: float = 0.7

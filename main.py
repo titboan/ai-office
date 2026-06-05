@@ -30,6 +30,7 @@ from agents import (
     ElinaAgent,
     AlexAgent,
     DanAgent,
+    EvaAgent,
 )
 
 # Реестр: ключ → (класс агента, webhook-суффикс)
@@ -41,6 +42,7 @@ AGENTS: dict[str, tuple] = {
     "elina":  (ElinaAgent,  "elina"),
     "alex":   (AlexAgent,   "alex"),
     "dan":    (DanAgent,    "dan"),
+    "eva":    (EvaAgent,    "eva"),
 }
 
 
@@ -116,17 +118,55 @@ async def run_all_async() -> None:
     status_task = asyncio.create_task(_status_page_loop())
     logger.info("[main] Фоновая задача обновления статуса запущена")
 
+    # Ищем Еву среди запущенных агентов для scheduled digest
+    eva_agent = next((a for a in started if isinstance(a, EvaAgent)), None)
+
+    async def _scheduled_digest_loop():
+        """Каждый день в 06:30 UTC (09:30 МСК) запускает дайджест для всех пользователей."""
+        from datetime import datetime, timezone, timedelta
+        from db import get_distinct_digest_users
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                target = now.replace(hour=6, minute=30, second=0, microsecond=0)
+                if target <= now:
+                    target += timedelta(days=1)
+                wait_seconds = (target - now).total_seconds()
+                logger.info(f"[digest_scheduler] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
+                await asyncio.sleep(wait_seconds)
+
+                if eva_agent is None or not eva_agent._telethon_ready:
+                    logger.warning("[digest_scheduler] Ева не готова, пропускаем")
+                    continue
+
+                users = await get_distinct_digest_users()
+                logger.info(f"[digest_scheduler] запуск дайджеста для {len(users)} пользователей")
+                for user_chat_id in users:
+                    try:
+                        await eva_agent.run_digest(user_chat_id, since=None)
+                    except Exception as e:
+                        logger.error(f"[digest_scheduler] user={user_chat_id} error: {e}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[digest_scheduler] ошибка: {e}")
+                await asyncio.sleep(60)
+
+    digest_task = asyncio.create_task(_scheduled_digest_loop())
+    logger.info("[main] Scheduled digest task запущен (каждый день 06:30 UTC)")
+
     try:
         await stop_event.wait()
     except asyncio.CancelledError:
         pass
 
     # Graceful shutdown
-    status_task.cancel()
-    try:
-        await status_task
-    except asyncio.CancelledError:
-        pass
+    for task in (status_task, digest_task):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     logger.info("Получен сигнал остановки — завершаем агентов...")
     for agent in reversed(started):
