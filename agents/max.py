@@ -900,25 +900,46 @@ class MaxAgent(BaseAgent):
         msk = ZoneInfo("Europe/Moscow")
         now_msk = datetime.now(msk)
         now_utc = datetime.now(_UTC)
-        today = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
+        today     = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
         yesterday     = today - timedelta(days=1)
         yesterday_end = today
         week_ago      = today - timedelta(days=7)
         week_ago_end  = week_ago + timedelta(days=1)
+        prev_week_start = today - timedelta(days=14)
 
         def _fmt_date(dt) -> str:
             return dt.strftime("%d.%m")
 
-        ord_today = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, today, now_utc)}
-        sal_today = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, today, now_utc)}
-        ord_yday  = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, yesterday, yesterday_end)}
-        sal_yday  = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, yesterday, yesterday_end)}
-        ord_wago  = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, week_ago, week_ago_end)}
-        sal_wago  = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, week_ago, week_ago_end)}
-        ord_week  = {r["marketplace"]: r for r in await get_orders_total(owner_chat_id, days=7)}
-        sal_week  = {r["marketplace"]: r for r in await get_sales_total(owner_chat_id, days=7)}
+        ord_today     = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, today, now_utc)}
+        sal_today     = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, today, now_utc)}
+        ord_yday      = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, yesterday, yesterday_end)}
+        sal_yday      = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, yesterday, yesterday_end)}
+        ord_wago      = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, week_ago, week_ago_end)}
+        sal_wago      = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, week_ago, week_ago_end)}
+        ord_week      = {r["marketplace"]: r for r in await get_orders_total(owner_chat_id, days=7)}
+        sal_week      = {r["marketplace"]: r for r in await get_sales_total(owner_chat_id, days=7)}
+        ord_prev_week = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, prev_week_start, week_ago)}
+        sal_prev_week = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, prev_week_start, week_ago)}
 
-        def _mp_line(mp: str, orders_map: dict, sales_map: dict) -> str:
+        def _format_delta(cur_cnt: int, cur_rev: float, prev_cnt: int, prev_rev: float, vs_label: str) -> str | None:
+            if prev_cnt == 0 and prev_rev == 0:
+                return None
+            d_cnt = cur_cnt - prev_cnt
+            d_rev = cur_rev - prev_rev
+            parts = []
+            if d_cnt != 0:
+                sign = "▲+" if d_cnt > 0 else "▼"
+                parts.append(f"{sign}{d_cnt} зак.")
+            if abs(d_rev) >= 1:
+                sign = "▲+" if d_rev > 0 else "▼"
+                parts.append(f"{sign}{d_rev:,.0f} ₽")
+            if not parts:
+                return None
+            return f"({' '.join(parts)} к {vs_label})"
+
+        def _mp_line(mp: str, orders_map: dict, sales_map: dict,
+                     cmp_orders: dict | None = None, cmp_sales: dict | None = None,
+                     cmp_label: str = "") -> str:
             label = _SHORT.get(mp, mp)
             o = orders_map.get(mp)
             s = sales_map.get(mp)
@@ -929,14 +950,24 @@ class MaxAgent(BaseAgent):
                 parts.append(f"📥 {int(o['orders'])} зак. — {float(o['revenue'] or 0):,.0f} ₽")
             if s:
                 parts.append(f"✅ {int(s['orders'])} выкуп. — {float(s['revenue'] or 0):,.0f} ₽")
-            return f"{label}: " + " | ".join(parts)
+            line = f"{label}: " + " | ".join(parts)
+            if cmp_orders is not None and cmp_label:
+                cur_cnt = int(o["orders"]) if o else 0
+                cur_rev = float(o["revenue"] or 0) if o else 0.0
+                prev    = cmp_orders.get(mp)
+                prev_cnt = int(prev["orders"]) if prev else 0
+                prev_rev = float(prev["revenue"] or 0) if prev else 0.0
+                delta = _format_delta(cur_cnt, cur_rev, prev_cnt, prev_rev, cmp_label)
+                if delta:
+                    line += f" {delta}"
+            return line
 
         date_str = now_msk.strftime("%d.%m.%Y")
         lines = [f"💰 *Статистика — {date_str}*\n"]
 
         lines.append(f"📅 *Сегодня ({_fmt_date(today)})*")
         for mp in ("wb", "ozon"):
-            lines.append(_mp_line(mp, ord_today, sal_today))
+            lines.append(_mp_line(mp, ord_today, sal_today, cmp_orders=ord_yday, cmp_label="вчера"))
 
         lines.append(f"\n📅 *Вчера ({_fmt_date(yesterday)})*")
         for mp in ("wb", "ozon"):
@@ -948,7 +979,7 @@ class MaxAgent(BaseAgent):
 
         lines.append("\n📈 *За 7 дней*")
         for mp in ("wb", "ozon"):
-            lines.append(_mp_line(mp, ord_week, sal_week))
+            lines.append(_mp_line(mp, ord_week, sal_week, cmp_orders=ord_prev_week, cmp_label="пред. неделе"))
 
         await _bot.send_message(chat_id=target_chat_id, text="\n".join(lines), parse_mode="Markdown")
 
