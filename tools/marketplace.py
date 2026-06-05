@@ -189,17 +189,21 @@ class OzonClient:
         return data is not None
 
     async def check_connection(self) -> bool:
-        """Проверить валидность токена (тестовый запрос)."""
+        """Проверить валидность токена (тестовый запрос).
+        200/400 → credentials верны; 401/403 → неверные.
+        """
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{self._BASE}/v1/review/list",
                     headers=self._headers(),
-                    json={"page": 1, "page_size": 1},
+                    json={"sort": {"order": "DESC"}, "filter": {}, "limit": 1, "offset": 0},
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
-                    return resp.status == 200
-        except Exception:
+                    logger.debug(f"[Ozon.check_connection] status={resp.status}")
+                    return resp.status in (200, 400)
+        except Exception as e:
+            logger.warning(f"[Ozon.check_connection] exception: {e}")
             return False
 
 

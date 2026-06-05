@@ -64,6 +64,18 @@ class MaxAgent(BaseAgent):
         return await self.think(task, chat_id=0, is_task=True)
 
     # ------------------------------------------------------------------ #
+    #  handle_message — блокируем Claude во время онбординга              #
+    # ------------------------------------------------------------------ #
+
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat_id = update.effective_chat.id
+        state = await self._get_onboard(chat_id)
+        if state and state.get("step") not in (None, "done"):
+            # Онбординг в процессе — group=2 (_handle_onboard_text) сам обработает
+            return
+        await super().handle_message(update, context)
+
+    # ------------------------------------------------------------------ #
     #  Онбординг — управление состоянием                                   #
     # ------------------------------------------------------------------ #
 
