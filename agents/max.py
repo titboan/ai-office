@@ -111,6 +111,27 @@ def _get_cluster(warehouse_name: str) -> str:
             return cluster
     return "Прочие"
 
+
+OZON_CLUSTERS: dict[str, list[str]] = {
+    "Москва и МО": ["Москва", "МО", "Жуковский", "Ногинск", "Пушкино", "Тверь", "Хоругвино"],
+    "Северо-Западный": ["Санкт-Петербург", "СПб", "Петербург", "Шушары", "Калининград", "Мурманск", "Архангельск"],
+    "Центральный": ["Воронеж", "Белгород", "Курск", "Тула", "Рязань", "Ярославль", "Иваново"],
+    "Южный": ["Краснодар", "Ростов", "Астрахань", "Волгоград"],
+    "Кавказский": ["Ставрополь", "Махачкала", "Владикавказ", "Нальчик"],
+    "Приволжский": ["Казань", "Нижний", "Самара", "Уфа", "Пермь", "Саратов", "Ульяновск", "Оренбург"],
+    "Уральский": ["Екатеринбург", "Челябинск", "Тюмень"],
+    "Сибирский": ["Новосибирск", "Омск", "Красноярск", "Иркутск", "Кемерово", "Барнаул"],
+    "Дальневосточный": ["Хабаровск", "Владивосток", "Якутск"],
+}
+
+
+def _get_ozon_cluster(warehouse_name: str) -> str:
+    wh = warehouse_name or ""
+    for cluster, keywords in OZON_CLUSTERS.items():
+        if any(kw.lower() in wh.lower() for kw in keywords):
+            return cluster
+    return "Прочие"
+
 # Клавиатура с двумя постоянными кнопками действий
 def _static_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура без pending-кнопки (fallback когда chat_id недоступен)."""
@@ -790,13 +811,13 @@ class MaxAgent(BaseAgent):
             oz_low   = [s for s in low_stocks if s["marketplace"] == "ozon" and 0 < s["stock"] <= 20]
             oz_zero  = [s for s in low_stocks if s["marketplace"] == "ozon" and s["stock"] == 0]
 
-            def _group_by_sku(rows: list[dict], use_cluster: bool) -> dict:
+            def _group_by_sku(rows: list[dict], cluster_fn) -> dict:
                 """product_id → {name, region → stock}"""
                 grouped: dict = {}
                 for s in rows:
                     pid  = s["product_id"]
                     name = s.get("product_name") or pid
-                    region = _get_cluster(s.get("warehouse_name", "")) if use_cluster else (s.get("warehouse_name") or "?")
+                    region = cluster_fn(s.get("warehouse_name", ""))
                     entry = grouped.setdefault(pid, {"name": name, "regions": {}})
                     entry["regions"][region] = entry["regions"].get(region, 0) + s["stock"]
                 return grouped
@@ -827,19 +848,19 @@ class MaxAgent(BaseAgent):
                     lines.append("\n🟣 *WB — остатки*")
                     if wb_low:
                         lines.append("⚠️ *Заканчиваются* (0 < stock ≤ 20)")
-                        lines.extend(_render_low(_group_by_sku(wb_low, use_cluster=True)))
+                        lines.extend(_render_low(_group_by_sku(wb_low, _get_cluster)))
                     if wb_zero:
                         lines.append("❌ *Закончились на складах*")
-                        lines.extend(_render_zero(_group_by_sku(wb_zero, use_cluster=True)))
+                        lines.extend(_render_zero(_group_by_sku(wb_zero, _get_cluster)))
                 # Ozon
                 if oz_low or oz_zero:
                     lines.append("\n🔵 *Ozon — остатки*")
                     if oz_low:
                         lines.append("⚠️ *Заканчиваются* (0 < stock ≤ 20)")
-                        lines.extend(_render_low(_group_by_sku(oz_low, use_cluster=False)))
+                        lines.extend(_render_low(_group_by_sku(oz_low, _get_ozon_cluster)))
                     if oz_zero:
                         lines.append("❌ *Закончились на складах*")
-                        lines.extend(_render_zero(_group_by_sku(oz_zero, use_cluster=False)))
+                        lines.extend(_render_zero(_group_by_sku(oz_zero, _get_ozon_cluster)))
 
             text = "\n".join(lines)
             _bot = bot if bot is not None else self.app.bot
