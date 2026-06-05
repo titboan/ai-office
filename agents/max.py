@@ -964,6 +964,15 @@ class MaxAgent(BaseAgent):
         ord_prev_week = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, prev_week_start, prev_week_end)}
         sal_prev_week = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, prev_week_start, prev_week_end)}
 
+        tw_wb  = ord_week.get("wb",   {})
+        tw_oz  = ord_week.get("ozon", {})
+        pw_wb  = ord_prev_week.get("wb",   {})
+        pw_oz  = ord_prev_week.get("ozon", {})
+        logger.info(f"[sales_summary] this_week WB: orders={int(tw_wb.get('orders') or 0)}, revenue={float(tw_wb.get('revenue') or 0):.2f}")
+        logger.info(f"[sales_summary] prev_week WB: orders={int(pw_wb.get('orders') or 0)}, revenue={float(pw_wb.get('revenue') or 0):.2f}")
+        logger.info(f"[sales_summary] this_week Ozon: orders={int(tw_oz.get('orders') or 0)}, revenue={float(tw_oz.get('revenue') or 0):.2f}")
+        logger.info(f"[sales_summary] prev_week Ozon: orders={int(pw_oz.get('orders') or 0)}, revenue={float(pw_oz.get('revenue') or 0):.2f}")
+
         def _format_delta(cur_cnt: int, cur_rev: float, prev_cnt: int, prev_rev: float, vs_label: str) -> str | None:
             if prev_cnt == 0 and prev_rev == 0:
                 return None
