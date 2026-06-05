@@ -395,6 +395,86 @@ async def reset_last_checked(chat_id: int) -> None:
         )
 
 
+async def get_reviews_stats(owner_chat_id: int, days: int = 7) -> list[dict]:
+    """Статистика по отзывам за N дней, сгруппированная по площадке."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                marketplace,
+                COUNT(*)                                              AS total,
+                ROUND(AVG(rating)::numeric, 2)                        AS avg_rating,
+                COUNT(*) FILTER (WHERE status = 'auto_replied')       AS auto_replied,
+                COUNT(*) FILTER (WHERE status = 'pending_approval')   AS pending,
+                COUNT(*) FILTER (WHERE status = 'replied')            AS replied,
+                COUNT(*) FILTER (WHERE status = 'skipped')            AS skipped
+            FROM marketplace_reviews
+            WHERE chat_id = $1
+              AND created_at >= NOW() - ($2 || ' days')::interval
+            GROUP BY marketplace
+            ORDER BY marketplace
+            """,
+            owner_chat_id, str(days),
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_reviews_by_filter(
+    owner_chat_id: int,
+    marketplace: str | None = None,
+    min_rating: int | None = None,
+    max_rating: int | None = None,
+    days: int = 7,
+    limit: int = 20,
+) -> list[dict]:
+    """Список отзывов с опциональными фильтрами."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT marketplace, product_name, rating, text, status, created_at
+            FROM marketplace_reviews
+            WHERE chat_id = $1
+              AND created_at >= NOW() - ($2 || ' days')::interval
+              AND ($3::text IS NULL OR marketplace = $3)
+              AND ($4::int  IS NULL OR rating >= $4)
+              AND ($5::int  IS NULL OR rating <= $5)
+            ORDER BY created_at DESC
+            LIMIT $6
+            """,
+            owner_chat_id, str(days), marketplace, min_rating, max_rating, limit,
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_top_negative_products(
+    owner_chat_id: int,
+    days: int = 30,
+    limit: int = 5,
+) -> list[dict]:
+    """Товары с наибольшим количеством отзывов 1-2★."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                product_name,
+                COUNT(*)                       AS count,
+                ROUND(AVG(rating)::numeric, 2) AS avg_rating
+            FROM marketplace_reviews
+            WHERE chat_id = $1
+              AND rating <= 2
+              AND created_at >= NOW() - ($2 || ' days')::interval
+            GROUP BY product_name
+            ORDER BY count DESC
+            LIMIT $3
+            """,
+            owner_chat_id, str(days), limit,
+        )
+        return [dict(r) for r in rows]
+
+
 async def get_distinct_digest_users() -> list[int]:
     pool = await get_pool()
     async with pool.acquire() as conn:

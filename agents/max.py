@@ -769,6 +769,181 @@ class MaxAgent(BaseAgent):
             )
         await update.message.reply_text("✅ last_checked_at сброшен для всех магазинов.")
 
+    # ------------------------------------------------------------------ #
+    #  ИИ-агент в группе                                                  #
+    # ------------------------------------------------------------------ #
+
+    _AGENT_TOOLS = [
+        {
+            "name": "get_stats",
+            "description": "Статистика по отзывам за N дней, по каждой площадке",
+            "input_schema": {
+                "type": "object",
+                "properties": {"days": {"type": "integer", "default": 7}},
+            },
+        },
+        {
+            "name": "get_reviews",
+            "description": "Список отзывов с фильтрами по площадке, рейтингу, периоду",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "marketplace": {"type": "string", "description": "wb или ozon"},
+                    "min_rating":  {"type": "integer"},
+                    "max_rating":  {"type": "integer"},
+                    "days":        {"type": "integer", "default": 7},
+                    "limit":       {"type": "integer", "default": 20},
+                },
+            },
+        },
+        {
+            "name": "get_top_negative",
+            "description": "Товары с наибольшим количеством отзывов 1-2★",
+            "input_schema": {
+                "type": "object",
+                "properties": {"days": {"type": "integer", "default": 30}},
+            },
+        },
+    ]
+
+    async def _run_agent_tool(self, tool_name: str, tool_input: dict, owner_chat_id: int) -> str:
+        """Выполнить инструмент агента и вернуть строку результата."""
+        import json as _json
+        from db import get_reviews_stats, get_reviews_by_filter, get_top_negative_products
+
+        try:
+            if tool_name == "get_stats":
+                rows = await get_reviews_stats(owner_chat_id, days=tool_input.get("days", 7))
+                return _json.dumps(rows, default=str, ensure_ascii=False) if rows else "Данных нет"
+
+            if tool_name == "get_reviews":
+                rows = await get_reviews_by_filter(
+                    owner_chat_id,
+                    marketplace=tool_input.get("marketplace"),
+                    min_rating=tool_input.get("min_rating"),
+                    max_rating=tool_input.get("max_rating"),
+                    days=tool_input.get("days", 7),
+                    limit=tool_input.get("limit", 20),
+                )
+                return _json.dumps(rows, default=str, ensure_ascii=False) if rows else "Данных нет"
+
+            if tool_name == "get_top_negative":
+                rows = await get_top_negative_products(
+                    owner_chat_id, days=tool_input.get("days", 30)
+                )
+                return _json.dumps(rows, default=str, ensure_ascii=False) if rows else "Данных нет"
+
+        except Exception as e:
+            logger.error(f"[Макс/tool] {tool_name}: {e}")
+            return f"Ошибка: {e}"
+
+        return "Неизвестный инструмент"
+
+    async def _handle_group_message(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Реагировать на упоминание в группе — agentic loop с Claude."""
+        msg = update.message
+        if not msg or not msg.text:
+            return
+        if msg.from_user and msg.from_user.is_bot:
+            return
+
+        # Триггер: упоминание бота или слово "макс"
+        bot_username = (context.bot.username or "").lower()
+        mentioned = any(
+            e.type == "mention" and msg.text[e.offset:e.offset + e.length].lstrip("@").lower() == bot_username
+            for e in (msg.entities or [])
+        )
+        has_keyword = "макс" in msg.text.lower()
+        if not mentioned and not has_keyword:
+            return
+
+        chat_id = msg.chat_id
+        user_name = (msg.from_user.first_name if msg.from_user else None) or "Участник"
+        user_text = msg.text.strip()
+
+        await context.bot.send_chat_action(chat_id, "typing")
+
+        # История Redis
+        import json as _json
+        history_key = f"max_chat:{chat_id}"
+        raw_hist = await self._redis_get(history_key)
+        history: list[dict] = []
+        try:
+            history = _json.loads(raw_hist) if raw_hist else []
+        except Exception:
+            history = []
+
+        history.append({"role": "user", "content": user_text, "name": user_name})
+        history = history[-10:]
+
+        # owner_chat_id — первый активный магазин
+        from db import get_all_active_shops
+        shops = await get_all_active_shops()
+        owner_chat_id = shops[0]["chat_id"] if shops else chat_id
+
+        # System prompt
+        from datetime import date
+        system = (
+            "Ты — Макс, ИИ-ассистент по управлению отзывами на маркетплейсах Wildberries и Ozon.\n"
+            "Ты работаешь в команде продавца. Отвечай по-русски, кратко и по делу.\n"
+            "Можешь получать данные об отзывах через инструменты.\n"
+            f"Текущая дата: {date.today().isoformat()}"
+        )
+
+        # Claude messages (без поля name — API его не принимает)
+        messages = [{"role": m["role"], "content": m["content"]} for m in history]
+
+        reply_text = ""
+        try:
+            for _ in range(3):  # максимум 3 итерации
+                response = await self.claude.messages.create(
+                    model=config.CLAUDE_MODEL,
+                    max_tokens=1024,
+                    system=system,
+                    tools=self._AGENT_TOOLS,
+                    messages=messages,
+                )
+
+                if response.stop_reason == "end_turn":
+                    for block in response.content:
+                        if hasattr(block, "text"):
+                            reply_text = block.text
+                    break
+
+                if response.stop_reason == "tool_use":
+                    tool_results = []
+                    for block in response.content:
+                        if block.type == "tool_use":
+                            result = await self._run_agent_tool(block.name, block.input, owner_chat_id)
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": result,
+                            })
+                    messages.append({"role": "assistant", "content": response.content})
+                    messages.append({"role": "user", "content": tool_results})
+                else:
+                    break
+        except Exception as e:
+            logger.error(f"[Макс/agent] Claude error: {e}")
+            reply_text = "⚠️ Не удалось получить ответ."
+
+        if not reply_text:
+            reply_text = "⚠️ Не удалось получить ответ."
+
+        # Отправляем reply на сообщение пользователя
+        try:
+            await msg.reply_text(reply_text)
+        except Exception:
+            await context.bot.send_message(chat_id, reply_text)
+
+        # Обновляем историю
+        history.append({"role": "assistant", "content": reply_text, "name": "Макс"})
+        history = history[-10:]
+        await self._redis_set(history_key, _json.dumps(history, ensure_ascii=False), ttl=3600)
+
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("start",         self.cmd_start))
         self.app.add_handler(CommandHandler("add_shop",      self.cmd_add_shop))
@@ -789,4 +964,12 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_onboard_text),
             group=2,
+        )
+        # group=3: ИИ-агент в группе (ниже всех личных хендлеров)
+        self.app.add_handler(
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS,
+                self._handle_group_message,
+            ),
+            group=3,
         )
