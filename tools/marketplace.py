@@ -292,8 +292,12 @@ class WBClient:
                     break
         if not data:
             return []
+        orders_raw = data if isinstance(data, list) else []
+        if orders_raw:
+            logger.info(f"[WB.get_orders_all] first order keys: {list(orders_raw[0].keys())}")
+            logger.info(f"[WB.get_orders_all] first order sample: {orders_raw[0]}")
         results = []
-        for item in (data if isinstance(data, list) else []):
+        for item in orders_raw:
             if item.get("isCancel"):
                 continue
             supplier_article = str(item.get("supplierArticle") or "").strip()
