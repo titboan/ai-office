@@ -788,8 +788,8 @@ class MaxAgent(BaseAgent):
 
             await self.sync_marketplace_data(owner_chat_id)
 
-            summary_day = await get_sales_summary(owner_chat_id, days=1)
-            logger.info(f"[Макс/sync] sales_summary получен: {summary_day}")
+            summary_week = await get_sales_summary(owner_chat_id, days=7)
+            logger.info(f"[Макс/sync] sales_summary получен: {summary_week}")
 
             totals_week = await get_sales_total(owner_chat_id, days=7)
             logger.info(f"[Макс/sync] sales_total получен: {totals_week}")
@@ -803,22 +803,32 @@ class MaxAgent(BaseAgent):
 
             lines = [f"📦 *Сводка магазина — {date_str}*\n"]
 
-            # Продажи вчера
-            lines.append("💰 *Продажи вчера*")
-            if summary_day:
-                by_mp: dict = {}
-                for row in summary_day:
-                    mp = row["marketplace"]
-                    agg = by_mp.setdefault(mp, {"orders": 0, "revenue": 0.0})
-                    agg["orders"]  += int(row["orders"] or 0)
-                    agg["revenue"] += float(row["revenue"] or 0)
-                for mp, agg in by_mp.items():
-                    lines.append(f"{_EMOJI.get(mp, mp)}: {agg['orders']} заказов — {agg['revenue']:,.0f} ₽")
-            else:
-                lines.append("Нет данных за вчера")
+            # Продажи за 7 дней с разбивкой по товарам
+            lines.append("💰 *Продажи за 7 дней*\n")
+            by_mp: dict = {}
+            for row in (summary_week or []):
+                mp = row["marketplace"]
+                entry = by_mp.setdefault(mp, {"orders": 0, "revenue": 0.0, "items": []})
+                qty    = int(row["orders"] or 0)
+                rev    = float(row["revenue"] or 0)
+                entry["orders"]  += qty
+                entry["revenue"] += rev
+                name = row.get("product_name") or "—"
+                entry["items"].append((name, qty, rev))
 
-            # Выручка за 7 дней
-            lines.append("\n📈 *Выручка за 7 дней*")
+            for mp in ("wb", "ozon"):
+                label = _EMOJI.get(mp, mp)
+                if mp not in by_mp:
+                    lines.append(f"{label} — нет данных")
+                    continue
+                agg = by_mp[mp]
+                lines.append(f"{label} — {agg['orders']} заказов, {agg['revenue']:,.0f} ₽")
+                for name, qty, rev in agg["items"]:
+                    lines.append(f"  • {name}: {qty} шт — {rev:,.0f} ₽")
+                lines.append("")
+
+            # Итог — общая выручка за 7 дней
+            lines.append("📈 *Итог за 7 дней*")
             if totals_week:
                 for row in totals_week:
                     mp = row["marketplace"]
