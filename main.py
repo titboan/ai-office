@@ -242,6 +242,7 @@ async def run_all_async() -> None:
 
     async def _negative_reviews_loop():
         """Каждые 15 минут проверяет негативные отзывы (1-2★)."""
+        from datetime import datetime, timezone
         from db import get_all_active_shops
 
         while True:

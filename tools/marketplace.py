@@ -328,14 +328,28 @@ class OzonClient:
 
     async def get_stocks(self, **_) -> list[dict]:
         """Остатки по складам через analytics API."""
-        async with aiohttp.ClientSession() as session:
-            data = await _request(
-                session, "POST",
-                f"{self._BASE}/v1/analytics/stock_on_warehouses",
-                headers=self._headers(),
-                json={"limit": 100, "offset": 0},
-                label="Ozon.get_stocks",
-            )
+        url = f"{self._BASE}/v1/analytics/stock_on_warehouses"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    headers=self._headers(),
+                    json={"limit": 100, "offset": 0},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    logger.debug(f"[Ozon.get_stocks] POST {url} → {resp.status}: {raw[:200]!r}")
+                    if resp.status != 200:
+                        logger.error(f"[Ozon.get_stocks] HTTP {resp.status}: {raw[:200]}")
+                        return []
+                    import json as _json
+                    data = _json.loads(raw)
+        except asyncio.TimeoutError:
+            logger.error(f"[marketplace] timeout: POST {url}")
+            return []
+        except Exception as e:
+            logger.error(f"[Ozon.get_stocks] exception: {e}")
+            return []
         if not data:
             return []
         results = []
@@ -350,28 +364,48 @@ class OzonClient:
         return results
 
     async def get_sales(self, date_from: datetime, **_) -> list[dict]:
-        """Выкупленные заказы через finance/realization."""
-        async with aiohttp.ClientSession() as session:
-            data = await _request(
-                session, "POST",
-                f"{self._BASE}/v1/finance/realization",
-                headers=self._headers(),
-                json={"month": date_from.month, "year": date_from.year},
-                label="Ozon.get_sales",
-            )
-        if not data:
+        """Выкупленные заказы через cash-flow-statement."""
+        url  = f"{self._BASE}/v1/finance/cash-flow-statement/list"
+        now  = datetime.now(timezone.utc)
+        body = {
+            "date": {
+                "from": date_from.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "to":   now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+            "page":      1,
+            "page_size": 100,
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    headers=self._headers(),
+                    json=body,
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    logger.debug(f"[Ozon.get_sales] POST {url} → {resp.status}: {raw[:200]!r}")
+                    if resp.status != 200:
+                        logger.error(f"[Ozon.get_sales] HTTP {resp.status}: {raw[:200]}")
+                        return []
+                    import json as _json
+                    data = _json.loads(raw)
+        except asyncio.TimeoutError:
+            logger.error(f"[marketplace] timeout: POST {url}")
+            return []
+        except Exception as e:
+            logger.error(f"[Ozon.get_sales] exception: {e}")
             return []
         results = []
-        for item in data.get("result", {}).get("rows", []):
-            price = float(item.get("sale_commission", 0) or 0)
+        for item in (data.get("items") or data.get("result", {}).get("rows", [])):
             results.append({
                 "order_id":    str(item.get("posting_number", "") or item.get("order_id", "")),
                 "product_id":  str(item.get("offer_id", "")),
-                "product_name": item.get("item_name", ""),
+                "product_name": item.get("item_name", "") or item.get("product_name", ""),
                 "quantity":    int(item.get("quantity", 1) or 1),
-                "price":       float(item.get("price", 0) or 0),
-                "commission":  price,
-                "sale_date":   item.get("accepted_date", ""),
+                "price":       float(item.get("amount", 0) or item.get("price", 0) or 0),
+                "commission":  float(item.get("commission_amount", 0) or 0),
+                "sale_date":   item.get("accepted_date", "") or item.get("date", ""),
             })
         return results
 
