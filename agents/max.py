@@ -1348,6 +1348,16 @@ class MaxAgent(BaseAgent):
             )
         await update.message.reply_text("✅ last_checked_at сброшен для всех магазинов.")
 
+    async def cmd_reset_orders(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/reset_orders — очистить и пересинхронизировать заказы."""
+        chat_id = update.effective_user.id
+        from db import clear_orders
+        await clear_orders(chat_id, "wb")
+        await clear_orders(chat_id, "ozon")
+        logger.info(f"[Макс/reset_orders] заказы очищены для chat_id={chat_id}")
+        await self.sync_marketplace_data(chat_id)
+        await update.message.reply_text("✅ Данные по заказам пересинхронизированы")
+
     async def cmd_sync(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/sync — вручную запустить синхронизацию данных и отправить сводку."""
         chat_id = update.effective_user.id
@@ -1581,6 +1591,7 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("pending",       self.cmd_pending))
         self.app.add_handler(CommandHandler("reviews",       self.cmd_reviews))
         self.app.add_handler(CommandHandler("reset_checked", self.cmd_reset_checked))
+        self.app.add_handler(CommandHandler("reset_orders",  self.cmd_reset_orders))
         self.app.add_handler(CommandHandler("sync",          self.cmd_sync))
         self.app.add_handler(
             CallbackQueryHandler(self._handle_onboard_callback, pattern=r"^onboard:")
