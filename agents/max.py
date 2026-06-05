@@ -430,8 +430,8 @@ class MaxAgent(BaseAgent):
             owner_chat_id = owner_shops[0]["chat_id"] if owner_shops else query.from_user.id
             await self.send_daily_summary(
                 owner_chat_id=owner_chat_id,
-                target_chat_id=query.message.chat_id,
-                bot=query.bot,
+                target_chat_id=query.message.chat.id,
+                bot=context.bot,
             )
             return
 
