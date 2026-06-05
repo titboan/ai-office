@@ -824,10 +824,11 @@ class MaxAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[Макс/sync] get_sales {mp_label}: {e}")
 
-            # Заказы: WB — get_orders_all (flag=0, все за период); Ozon — get_orders
+            # Заказы: WB — get_orders_all всегда за 7 дней (ON CONFLICT DO NOTHING); Ozon — get_orders
             try:
                 if mp == "wb":
-                    orders = await client.get_orders_all(date_from=since, statistics_token=stats_token)
+                    since_orders = datetime.now(_UTC) - timedelta(days=7)
+                    orders = await client.get_orders_all(date_from=since_orders, statistics_token=stats_token)
                 else:
                     orders = await client.get_orders(date_from=since, statistics_token=stats_token)
                 new_count = 0
