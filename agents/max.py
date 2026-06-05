@@ -196,15 +196,28 @@ class MaxAgent(BaseAgent):
 
     async def _build_keyboard(self, chat_id: int) -> InlineKeyboardMarkup:
         """Динамическая клавиатура: кнопка pending появляется только если есть ожидающие."""
-        from db import get_pending_reviews
+        from db import get_pending_reviews, get_marketplace_shops
         pending = await get_pending_reviews(chat_id)
         count = len(pending)
+        shops = await get_marketplace_shops(chat_id)
+        connected = {s["marketplace"] for s in shops}
+
         row1 = [InlineKeyboardButton("▶️ Проверить отзывы сейчас", callback_data="onboard:run_now")]
         if count > 0:
             row1.append(InlineKeyboardButton(f"📬 Отзывы ({count})", callback_data="onboard:show_pending"))
         row2 = [InlineKeyboardButton("📊 Статистика", callback_data="onboard:stats")]
         row3 = [InlineKeyboardButton("❓ Что я умею",  callback_data="onboard:help")]
-        return InlineKeyboardMarkup([row1, row2, row3])
+
+        rows = [row1, row2]
+        update_row = []
+        if "wb" in connected:
+            update_row.append(InlineKeyboardButton("🔄 Обновить токен WB",   callback_data="onboard:update_wb"))
+        if "ozon" in connected:
+            update_row.append(InlineKeyboardButton("🔄 Обновить токен Ozon", callback_data="onboard:update_ozon"))
+        if update_row:
+            rows.append(update_row)
+        rows.append(row3)
+        return InlineKeyboardMarkup(rows)
 
     async def _send_status_with_buttons(
         self, chat_id: int, shops: list[dict], message_method
@@ -365,6 +378,18 @@ class MaxAgent(BaseAgent):
             await query.answer()
             from telegram.constants import ParseMode
             await query.message.reply_text(_HELP_TEXT, parse_mode=ParseMode.MARKDOWN)
+            return
+
+        if action == "update_wb":
+            await query.answer()
+            await self._set_onboard(chat_id, {"step": "wb_token", "data": {"updating": True}})
+            await query.edit_message_text("Отправь новый API токен Wildberries:")
+            return
+
+        if action == "update_ozon":
+            await query.answer()
+            await self._set_onboard(chat_id, {"step": "ozon_client_id", "data": {"updating": True}})
+            await query.edit_message_text("Отправь Client-Id магазина Ozon:")
             return
 
         if action == "add_wb":
