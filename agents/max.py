@@ -854,7 +854,7 @@ class MaxAgent(BaseAgent):
                     from zoneinfo import ZoneInfo
                     msk = ZoneInfo("Europe/Moscow")
                     today_msk = datetime.now(msk).replace(hour=0, minute=0, second=0, microsecond=0)
-                    rt_orders = await client.get_orders_realtime(date_from=today_msk)
+                    rt_orders = await client.get_orders_today(date_from=today_msk, statistics_token=stats_token)
                     new_count = 0
                     for o in rt_orders:
                         order_date = None
@@ -874,7 +874,7 @@ class MaxAgent(BaseAgent):
                             new_count += 1
                     logger.info(f"[Макс/sync] WB realtime: {new_count} новых заказов сегодня")
                 except Exception as e:
-                    logger.error(f"[Макс/sync] get_orders_realtime WB: {e}")
+                    logger.error(f"[Макс/sync] get_orders_today WB: {e}")
 
     # ------------------------------------------------------------------ #
     #  Вспомогательные методы для сводки                                  #

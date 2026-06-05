@@ -263,49 +263,49 @@ class WBClient:
         logger.info(f"[WB.get_orders] итого не отменённых: {len(results)}")
         return results
 
-    async def get_orders_realtime(self, date_from: datetime) -> list[dict]:
-        """Заказы в реальном времени через основной API (не Statistics)."""
-        headers = {"Authorization": self._token, "Content-Type": "application/json"}
-        date_from_ts = int(date_from.timestamp())
-        url = "https://marketplace-api.wildberries.ru/api/v3/orders"
-        logger.info(f"[WB.get_orders_realtime] GET {url} dateFrom={date_from_ts} ({date_from.isoformat()})")
-        try:
+    async def get_orders_today(self, date_from: datetime, statistics_token: str) -> list[dict]:
+        """Заказы сегодня через Statistics API (flag=0 — все изменения включая сегодняшние)."""
+        _STATS_BASE = "https://statistics-api.wildberries.ru"
+        stats_headers = {"Authorization": f"Bearer {statistics_token}", "Content-Type": "application/json"}
+        df_str = date_from.strftime("%Y-%m-%dT%H:%M:%S")
+        url = f"{_STATS_BASE}/api/v1/supplier/orders"
+        logger.info(f"[WB.get_orders_today] GET {url} dateFrom={df_str}")
+        data = None
+        for attempt in range(2):
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    url,
-                    headers=headers,
-                    params={"dateFrom": date_from_ts, "limit": 1000},
+                    url, headers=stats_headers,
+                    params={"dateFrom": df_str, "flag": 0},
                     timeout=_TIMEOUT,
                 ) as resp:
+                    if resp.status == 429:
+                        logger.warning("[WB.get_orders_today] rate limit, жду 60 сек")
+                        await asyncio.sleep(60)
+                        continue
                     raw = await resp.text()
-                    logger.info(f"[WB.get_orders_realtime] HTTP {resp.status}, тело: {raw[:200]}")
+                    logger.info(f"[WB.get_orders_today] HTTP {resp.status}, тело: {raw[:200]}")
                     if resp.status != 200:
-                        logger.error(f"[WB.get_orders_realtime] HTTP {resp.status}: {raw[:200]}")
+                        logger.error(f"[WB.get_orders_today] HTTP {resp.status}: {raw[:200]}")
                         return []
                     import json as _json
                     data = _json.loads(raw)
-        except asyncio.TimeoutError:
-            logger.error(f"[marketplace] timeout: GET {url}")
+                    break
+        if not data:
             return []
-        except Exception as e:
-            logger.error(f"[WB.get_orders_realtime] exception: {e}")
-            return []
-
         results = []
-        for item in (data.get("orders") or []):
-            if item.get("cancelledAt") or item.get("wbStatus") == "cancelled":
+        for item in (data if isinstance(data, list) else []):
+            if item.get("isCancel"):
                 continue
-            article = str(item.get("article") or "")
-            skus = item.get("skus") or []
+            supplier_article = str(item.get("supplierArticle") or "").strip()
             results.append({
-                "order_id":    str(item.get("id", "")),
-                "product_id":  article,
-                "product_name": skus[0] if skus else article,
-                "quantity":    1,
-                "price":       float(item.get("convertedPrice", 0) or 0) / 100,
-                "order_date":  item.get("createdAt", ""),
+                "order_id":    str(item.get("srid", "") or item.get("orderId", "")),
+                "product_id":  supplier_article or str(item.get("nmId", "")),
+                "product_name": item.get("subject", "") or supplier_article,
+                "quantity":    int(item.get("quantity", 1) or 1),
+                "price":       float(item.get("totalPrice", 0) or item.get("finishedPrice", 0) or 0),
+                "order_date":  item.get("lastChangeDate", ""),
             })
-        logger.info(f"[WB.get_orders_realtime] итого не отменённых: {len(results)}")
+        logger.info(f"[WB.get_orders_today] итого не отменённых: {len(results)}")
         return results
 
     async def get_sales(self, date_from: datetime, statistics_token: str) -> list[dict]:
