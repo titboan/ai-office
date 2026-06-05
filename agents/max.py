@@ -895,6 +895,7 @@ class MaxAgent(BaseAgent):
 
         msk = ZoneInfo("Europe/Moscow")
         now_msk = datetime.now(msk)
+        now_utc = datetime.now(_UTC)
         today = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
         yesterday     = today - timedelta(days=1)
         yesterday_end = today
@@ -904,6 +905,8 @@ class MaxAgent(BaseAgent):
         def _fmt_date(dt) -> str:
             return dt.strftime("%d.%m")
 
+        ord_today = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, today, now_utc)}
+        sal_today = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, today, now_utc)}
         ord_yday  = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, yesterday, yesterday_end)}
         sal_yday  = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, yesterday, yesterday_end)}
         ord_wago  = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, week_ago, week_ago_end)}
@@ -927,7 +930,11 @@ class MaxAgent(BaseAgent):
         date_str = now_msk.strftime("%d.%m.%Y")
         lines = [f"💰 *Статистика — {date_str}*\n"]
 
-        lines.append(f"📅 *Вчера ({_fmt_date(yesterday)})*")
+        lines.append(f"📅 *Сегодня ({_fmt_date(today)})*")
+        for mp in ("wb", "ozon"):
+            lines.append(_mp_line(mp, ord_today, sal_today))
+
+        lines.append(f"\n📅 *Вчера ({_fmt_date(yesterday)})*")
         for mp in ("wb", "ozon"):
             lines.append(_mp_line(mp, ord_yday, sal_yday))
 
