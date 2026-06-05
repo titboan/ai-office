@@ -118,12 +118,18 @@ class WBClient:
             except Exception:
                 pass
 
+            parts = []
+            if item.get("text"): parts.append(item["text"])
+            if item.get("pros"): parts.append(f"Плюсы: {item['pros']}")
+            if item.get("cons"): parts.append(f"Минусы: {item['cons']}")
+            full_text = "\n".join(parts) if parts else ""
+
             reviews.append({
                 "review_id":    item.get("id", ""),
                 "product_id":   str(item.get("subjectId", "") or ""),
                 "product_name": item.get("subjectName", ""),
                 "rating":       item.get("productValuation", 0),
-                "text":         item.get("text", ""),
+                "text":         full_text,
                 "author":       item.get("userName", ""),
             })
         return reviews
