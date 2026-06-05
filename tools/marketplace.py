@@ -555,11 +555,20 @@ class OzonClient:
             "to":     now.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "status": "delivered",
         }
-        results = []
+        raw_results: list[dict] = []
         async with aiohttp.ClientSession() as session:
-            results.extend(await _fetch_all(session, f"{self._BASE}/v3/posting/fbo/list", base_filter, "fbo"))
-            results.extend(await _fetch_all(session, f"{self._BASE}/v3/posting/fbs/list", base_filter, "fbs"))
-        logger.info(f"[Ozon.get_sales] итого: {len(results)}")
+            raw_results.extend(await _fetch_all(session, f"{self._BASE}/v3/posting/fbo/list", base_filter, "fbo"))
+            raw_results.extend(await _fetch_all(session, f"{self._BASE}/v3/posting/fbs/list", base_filter, "fbs"))
+
+        # Дедупликация по order_id (posting_number)
+        seen: set = set()
+        results: list[dict] = []
+        for r in raw_results:
+            oid = r.get("order_id")
+            if oid not in seen:
+                seen.add(oid)
+                results.append(r)
+        logger.info(f"[Ozon.get_sales] до дедупликации: {len(raw_results)}, после: {len(results)}")
         return results
 
 
@@ -588,12 +597,12 @@ class OzonClient:
                     })
             return rows
 
-        results = []
+        all_postings: list[dict] = []
         url = f"{self._BASE}/v3/posting/fbo/list"
         async with aiohttp.ClientSession() as session:
             for status in ("awaiting_packaging", "awaiting_deliver", "delivering"):
                 offset = 0
-                status_total = 0
+                status_raw = 0
                 while True:
                     body = {
                         "dir": "DESC",
@@ -626,14 +635,25 @@ class OzonClient:
                         break
                     postings = data.get("postings") or []
                     logger.debug(f"[Ozon.get_orders/{status}] offset={offset}, postings_count={len(postings)}")
-                    batch = _parse_postings(postings)
-                    results.extend(batch)
-                    status_total += len(batch)
+                    all_postings.extend(postings)
+                    status_raw += len(postings)
                     if not data.get("has_next") or offset >= 2000:
                         break
                     offset += len(postings)
-                logger.info(f"[Ozon.get_orders/{status}] итого: {status_total}")
-        logger.info(f"[Ozon.get_orders] итого: {len(results)}")
+                logger.info(f"[Ozon.get_orders/{status}] сырых: {status_raw}")
+
+        # Дедупликация по posting_number
+        seen: set = set()
+        unique_postings: list[dict] = []
+        for p in all_postings:
+            pn = p.get("posting_number")
+            if pn not in seen:
+                seen.add(pn)
+                unique_postings.append(p)
+        logger.info(f"[Ozon.get_orders] до дедупликации: {len(all_postings)}, после: {len(unique_postings)}")
+
+        results = _parse_postings(unique_postings)
+        logger.info(f"[Ozon.get_orders] итого позиций: {len(results)}")
         return results
 
 
