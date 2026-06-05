@@ -149,35 +149,50 @@ class MaxAgent(BaseAgent):
     #  /start — переопределяем базовый                                     #
     # ------------------------------------------------------------------ #
 
+    async def _send_status_with_buttons(
+        self, chat_id: int, shops: list[dict], message_method
+    ) -> None:
+        """Показать статус подключённых площадок с кнопками действий."""
+        connected = {s["marketplace"] for s in shops}
+        wb_ok   = "wb"   in connected
+        ozon_ok = "ozon" in connected
+
+        lines = ["👋 Привет! Вот твои магазины:"]
+        lines.append(f"{'🟣 Wildberries — подключён' if wb_ok   else '🟣 Wildberries — не подключён'}")
+        lines.append(f"{'🔵 Ozon — подключён'        if ozon_ok else '🔵 Ozon — не подключён'}")
+        lines.append("\nЧто сделать?")
+
+        buttons: list[InlineKeyboardButton] = []
+        if not wb_ok:
+            buttons.append(InlineKeyboardButton("🟣 Подключить WB",   callback_data="onboard:add_wb"))
+        if not ozon_ok:
+            buttons.append(InlineKeyboardButton("🔵 Подключить Ozon", callback_data="onboard:add_ozon"))
+
+        keyboard_rows = []
+        if buttons:
+            keyboard_rows.append(buttons)
+        keyboard_rows.append([
+            InlineKeyboardButton("▶️ Проверить отзывы сейчас", callback_data="onboard:run_now"),
+            InlineKeyboardButton("📊 Статистика",               callback_data="onboard:stats"),
+        ])
+
+        await message_method(
+            "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(keyboard_rows),
+        )
+
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_user.id
 
         from db import get_marketplace_shops
         shops = await get_marketplace_shops(chat_id)
         if shops:
-            names = ", ".join(_MP_LABELS.get(s["marketplace"], s["marketplace"]) for s in shops)
-            await update.message.reply_text(
-                f"👋 Привет! Подключены: {names}.\n"
-                "Используй /shops, /pending, /reviews"
-            )
+            # Сбрасываем незавершённый онбординг если был
+            await self._clear_onboard(chat_id)
+            await self._send_status_with_buttons(chat_id, shops, update.message.reply_text)
             return
 
-        # Проверяем — может онбординг уже в процессе
-        state = await self._get_onboard(chat_id)
-        if state and state.get("step") not in (None, "done"):
-            # Продолжаем с текущего шага
-            step = state["step"]
-            if step == "choose_platform":
-                await self._send_platform_choice(chat_id)
-            elif step == "wb_token":
-                await self._send_wb_prompt(chat_id)
-            elif step == "ozon_client_id":
-                await self._send_ozon_client_id_prompt(chat_id)
-            elif step == "ozon_api_key":
-                await self._notify_user(chat_id, "Теперь отправь Api-Key")
-            return
-
-        # Новый пользователь — начинаем онбординг
+        # Новый пользователь или сброс незавершённого онбординга — начинаем заново
         await self._set_onboard(chat_id, {"step": "choose_platform", "data": {}})
         await self._send_platform_choice(chat_id)
 
@@ -202,7 +217,53 @@ class MaxAgent(BaseAgent):
             await query.edit_message_text(query.message.text + "\n\n👍 Хорошо, проверю по расписанию.")
             return
 
-        # Выбор площадки
+        if action == "stats":
+            from db import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT
+                        COUNT(*) FILTER (WHERE status = 'auto_replied')    AS auto_replied,
+                        COUNT(*) FILTER (WHERE status = 'replied')          AS replied,
+                        COUNT(*) FILTER (WHERE status = 'pending_approval') AS pending,
+                        COUNT(*) FILTER (WHERE status = 'skipped')          AS skipped,
+                        COUNT(*)                                             AS total
+                    FROM marketplace_reviews
+                    WHERE chat_id = $1
+                      AND created_at >= CURRENT_DATE::timestamptz
+                    """,
+                    chat_id,
+                )
+            await query.answer(
+                f"За сегодня: авто={row['auto_replied']} ручных={row['replied']} "
+                f"pending={row['pending']} пропущено={row['skipped']}",
+                show_alert=True,
+            )
+            return
+
+        if action == "add_wb":
+            await self._set_onboard(chat_id, {"step": "wb_token", "data": {}})
+            await query.edit_message_text(
+                "🟣 Подключаем Wildberries.\n\n"
+                "Отправь API токен Wildberries.\n\n"
+                "📌 Где взять:\n"
+                "seller.wildberries.ru → Настройки → Доступ к API → "
+                "создать токен с категорией Отзывы"
+            )
+            return
+
+        if action == "add_ozon":
+            await self._set_onboard(chat_id, {"step": "ozon_client_id", "data": {}})
+            await query.edit_message_text(
+                "🔵 Подключаем Ozon.\n\n"
+                "Отправь Client-Id магазина Ozon.\n\n"
+                "📌 Где взять:\n"
+                "seller.ozon.ru → Настройки → API ключи"
+            )
+            return
+
+        # Выбор площадки (choose_platform — для новых пользователей)
         state = await self._get_onboard(chat_id) or {"step": "choose_platform", "data": {}}
         if state.get("step") != "choose_platform":
             return
