@@ -46,10 +46,12 @@ _MP_LABELS = {"wb": "Wildberries", "ozon": "Ozon"}
 _ONBOARD_TTL = 60 * 60 * 24  # 24 часа
 
 # Клавиатура с двумя постоянными кнопками действий
-_ACTION_KEYBOARD = InlineKeyboardMarkup([[
-    InlineKeyboardButton("▶️ Проверить отзывы сейчас", callback_data="onboard:run_now"),
-    InlineKeyboardButton("📊 Статистика",               callback_data="onboard:stats"),
-]])
+def _static_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура без pending-кнопки (fallback когда chat_id недоступен)."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("▶️ Проверить отзывы сейчас", callback_data="onboard:run_now"),
+        InlineKeyboardButton("📊 Статистика",               callback_data="onboard:stats"),
+    ]])
 
 
 class MaxAgent(BaseAgent):
@@ -130,12 +132,24 @@ class MaxAgent(BaseAgent):
         ]
         return "\n".join(lines)
 
+    async def _build_keyboard(self, chat_id: int) -> InlineKeyboardMarkup:
+        """Динамическая клавиатура: кнопка pending появляется только если есть ожидающие."""
+        from db import get_pending_reviews
+        pending = await get_pending_reviews(chat_id)
+        count = len(pending)
+        row1 = [InlineKeyboardButton("▶️ Проверить отзывы сейчас", callback_data="onboard:run_now")]
+        if count > 0:
+            row1.append(InlineKeyboardButton(f"📬 Отзывы ({count})", callback_data="onboard:show_pending"))
+        row2 = [InlineKeyboardButton("📊 Статистика", callback_data="onboard:stats")]
+        return InlineKeyboardMarkup([row1, row2])
+
     async def _send_status_with_buttons(
         self, chat_id: int, shops: list[dict], message_method
     ) -> None:
-        """Показать статус площадок + две кнопки действий."""
+        """Показать статус площадок + динамические кнопки действий."""
         text = "👋 Вот твои магазины:\n" + self._status_text(shops)
-        await message_method(text, reply_markup=_ACTION_KEYBOARD)
+        keyboard = await self._build_keyboard(chat_id)
+        await message_method(text, reply_markup=keyboard)
 
     # ------------------------------------------------------------------ #
     #  Онбординг — вспомогательные отправки                               #
@@ -164,7 +178,7 @@ class MaxAgent(BaseAgent):
         await self._notify_user(
             chat_id,
             intro + status,
-            reply_markup=_ACTION_KEYBOARD,
+            reply_markup=await self._build_keyboard(chat_id),
         )
 
     # ------------------------------------------------------------------ #
@@ -225,7 +239,7 @@ class MaxAgent(BaseAgent):
                     lines.append("📬 Отзывы ожидающие ответа отправлены выше ↑")
                 summary = "\n".join(lines).rstrip()
 
-            await self._notify_user(chat_id, summary, reply_markup=_ACTION_KEYBOARD)
+            await self._notify_user(chat_id, summary, reply_markup=await self._build_keyboard(chat_id))
             return
 
         if action == "stats":
@@ -261,8 +275,24 @@ class MaxAgent(BaseAgent):
             await query.edit_message_text(
                 stats_text + ("\n\n" + status if status else ""),
                 parse_mode="Markdown",
-                reply_markup=_ACTION_KEYBOARD,
+                reply_markup=await self._build_keyboard(chat_id),
             )
+            return
+
+        if action == "show_pending":
+            await query.answer()
+            from db import get_pending_reviews
+            reviews = await get_pending_reviews(chat_id)
+            if not reviews:
+                await query.answer("Нет отзывов, ожидающих одобрения", show_alert=True)
+                return
+            for rv in reviews[:5]:
+                await self._notify_pending(
+                    chat_id,
+                    {"marketplace": rv["marketplace"]},
+                    rv,
+                    rv.get("generated_reply", ""),
+                )
             return
 
         if action == "add_wb":
