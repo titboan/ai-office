@@ -824,30 +824,29 @@ class MaxAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[Макс/sync] get_sales {mp_label}: {e}")
 
-            # Заказы (только WB)
-            if mp == "wb":
-                try:
-                    orders = await client.get_orders(date_from=since, statistics_token=stats_token)
-                    new_count = 0
-                    for o in orders:
-                        order_date = None
-                        if o.get("order_date"):
-                            try:
-                                from datetime import datetime as _dt
-                                order_date = _dt.fromisoformat(str(o["order_date"]).rstrip("Z")).replace(tzinfo=_UTC)
-                            except Exception:
-                                pass
-                        is_new = await save_order(
-                            chat_id=chat_id, marketplace=mp,
-                            order_id=o["order_id"], product_id=o.get("product_id"),
-                            product_name=o.get("product_name"), quantity=o.get("quantity", 1),
-                            price=o.get("price"), order_date=order_date,
-                        )
-                        if is_new:
-                            new_count += 1
-                    logger.info(f"[Макс/sync] {mp_label}: {new_count} новых заказов")
-                except Exception as e:
-                    logger.error(f"[Макс/sync] get_orders {mp_label}: {e}")
+            # Заказы (WB и Ozon)
+            try:
+                orders = await client.get_orders(date_from=since, statistics_token=stats_token)
+                new_count = 0
+                for o in orders:
+                    order_date = None
+                    if o.get("order_date"):
+                        try:
+                            from datetime import datetime as _dt
+                            order_date = _dt.fromisoformat(str(o["order_date"]).rstrip("Z")).replace(tzinfo=_UTC)
+                        except Exception:
+                            pass
+                    is_new = await save_order(
+                        chat_id=chat_id, marketplace=mp,
+                        order_id=o["order_id"], product_id=o.get("product_id"),
+                        product_name=o.get("product_name"), quantity=o.get("quantity", 1),
+                        price=o.get("price"), order_date=order_date,
+                    )
+                    if is_new:
+                        new_count += 1
+                logger.info(f"[Макс/sync] {mp_label}: {new_count} новых заказов")
+            except Exception as e:
+                logger.error(f"[Макс/sync] get_orders {mp_label}: {e}")
 
     # ------------------------------------------------------------------ #
     #  Вспомогательные методы для сводки                                  #

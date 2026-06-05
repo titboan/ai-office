@@ -511,6 +511,73 @@ class OzonClient:
         return results
 
 
+    async def get_orders(self, date_from: datetime, **_) -> list[dict]:
+        """Активные заказы FBO (awaiting_deliver + delivering)."""
+        import json as _json
+
+        now = datetime.now(timezone.utc)
+
+        def _parse_postings(postings: list) -> list[dict]:
+            rows = []
+            for posting in postings:
+                posting_number = posting.get("posting_number", "")
+                products       = posting.get("products") or []
+                fin_products   = (posting.get("financial_data") or {}).get("products") or []
+                order_date     = posting.get("in_process_at", "")
+                for i, prod in enumerate(products):
+                    fin = fin_products[i] if i < len(fin_products) else {}
+                    rows.append({
+                        "order_id":    f"{posting_number}_{i}" if i > 0 else posting_number,
+                        "product_id":  str(prod.get("offer_id", "")),
+                        "product_name": prod.get("name", ""),
+                        "quantity":    int(prod.get("quantity", 1) or 1),
+                        "price":       float(fin.get("price", 0) or prod.get("price", 0) or 0),
+                        "order_date":  order_date,
+                    })
+            return rows
+
+        results = []
+        async with aiohttp.ClientSession() as session:
+            for status in ("awaiting_deliver", "delivering"):
+                body = {
+                    "dir": "DESC",
+                    "filter": {
+                        "since":  date_from.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "to":     now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "status": status,
+                    },
+                    "limit":  100,
+                    "offset": 0,
+                    "with":   {"financial_data": True},
+                }
+                url = f"{self._BASE}/v3/posting/fbo/list"
+                try:
+                    async with session.post(
+                        url,
+                        headers=self._headers(),
+                        json=body,
+                        timeout=_TIMEOUT,
+                    ) as resp:
+                        raw = await resp.text()
+                        if resp.status != 200:
+                            logger.error(f"[Ozon.get_orders/{status}] HTTP {resp.status}: {raw[:200]}")
+                            continue
+                        data = _json.loads(raw)
+                except asyncio.TimeoutError:
+                    logger.error(f"[marketplace] timeout: POST {url} status={status}")
+                    continue
+                except Exception as e:
+                    logger.error(f"[Ozon.get_orders/{status}] exception: {e}")
+                    continue
+                raw_result = data.get("result") or []
+                postings = raw_result if isinstance(raw_result, list) else (raw_result.get("postings") or [])
+                batch = _parse_postings(postings)
+                logger.info(f"[Ozon.get_orders/{status}] {len(batch)} позиций")
+                results.extend(batch)
+        logger.info(f"[Ozon.get_orders] итого: {len(results)}")
+        return results
+
+
 def make_client(shop: dict):
     """Фабрика: dict из marketplace_shops → WBClient или OzonClient."""
     mp    = shop["marketplace"]
