@@ -430,7 +430,7 @@ class BaseAgent(ABC):
     #  Голосовые сообщения — Groq Whisper                                  #
     # ------------------------------------------------------------------ #
 
-    async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> str | None:
         """Транскрибирует голосовое через Groq Whisper, затем передаёт в handle_message().
 
         Работает для всех агентов: Касперу достанется транскрипция → он сделает
@@ -506,11 +506,8 @@ class BaseAgent(ABC):
 
         # ── Показываем транскрипцию и передаём в handle_message ───────────
         await update.message.reply_text(f"🎤 Распознано: {user_text}")
-
-        # Подставляем текст в объект update — handle_message любого агента
-        # (base / Kasper / Marta) получит его через update.message.text как обычно
-        update.message.text = user_text
         await self.handle_message(update, context)
+        return user_text
 
     @abstractmethod
     async def handle_task(self, task: str, from_agent: str = "user") -> str:

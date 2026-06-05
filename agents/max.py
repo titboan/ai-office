@@ -112,17 +112,16 @@ class MaxAgent(BaseAgent):
     #  handle_message — блокируем Claude во время онбординга              #
     # ------------------------------------------------------------------ #
 
-    async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> str | None:
         from telegram import Chat
-        if not (update.effective_chat and update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP)):
-            await super().handle_voice(update, context)
-            return
-        # Группа: базовый класс транскрибирует и выставляет update.message.text,
-        # но вызывает handle_message который для групп ничего не делает.
-        # После возврата подхватываем транскрипцию и проверяем триггер.
-        await super().handle_voice(update, context)
-        if update.message and update.message.text:
-            await self._handle_group_message(update, context)
+        transcribed = await super().handle_voice(update, context)
+        if (
+            transcribed
+            and update.effective_chat
+            and update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP)
+        ):
+            await self._handle_group_message(update, context, override_text=transcribed)
+        return transcribed
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         from telegram import Chat
@@ -909,32 +908,41 @@ class MaxAgent(BaseAgent):
         return "Неизвестный инструмент"
 
     async def _handle_group_message(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+        override_text: str | None = None,
     ) -> None:
-        """Реагировать на упоминание в группе — agentic loop с Claude."""
+        """Реагировать на упоминание в группе — agentic loop с Claude.
+
+        override_text — транскрибированный текст голосового (msg.text недоступен для voice).
+        """
         msg = update.message
-        if not msg or not msg.text:
+        if not msg:
             return
         if msg.from_user and msg.from_user.is_bot:
             return
 
+        # Текст: явный override (голосовое) или msg.text
+        text_to_use = override_text or msg.text or ""
+        if not text_to_use:
+            return
+
         logger.debug(
-            f"[max:group] msg='{msg.text[:50] if msg.text else ''}' "
+            f"[max:group] msg='{text_to_use[:50]}' "
             f"from={msg.from_user.first_name if msg.from_user else '?'}"
         )
 
         # Триггер — хотя бы одно из трёх условий:
         bot_username = (context.bot.username or "").lower()
 
-        # 1. @mention бота в entities
+        # 1. @mention бота в entities (только для текстовых — у voice entities нет)
         has_mention = any(
             e.type == "mention"
-            and msg.text[e.offset:e.offset + e.length].lstrip("@").lower() == bot_username
+            and (msg.text or "")[e.offset:e.offset + e.length].lstrip("@").lower() == bot_username
             for e in (msg.entities or [])
         )
 
         # 2. Текст начинается с "макс" / "макс," / "макс!" / "@макс"
-        stripped = msg.text.strip().lower()
+        stripped = text_to_use.strip().lower()
         starts_with_max = any(
             stripped.startswith(prefix)
             for prefix in ("макс ", "макс,", "макс!", "макс\n", "@макс")
@@ -946,20 +954,24 @@ class MaxAgent(BaseAgent):
             reply and reply.from_user and reply.from_user.id == context.bot.id
         )
 
+        # Голосовое с override_text считается уже прошедшим проверку триггера
+        triggered = bool(override_text) or has_mention or starts_with_max or is_reply_to_bot
+
         logger.debug(
-            f"[max:group] trigger check: mention={has_mention}, starts_with={starts_with_max}, reply={is_reply_to_bot}"
+            f"[max:group] trigger check: mention={has_mention}, starts_with={starts_with_max}, "
+            f"reply={is_reply_to_bot}, voice_override={bool(override_text)}"
         )
 
-        if not (has_mention or starts_with_max or is_reply_to_bot):
+        if not triggered:
             logger.debug("[max:group] no trigger — ignoring")
             return
 
         first_name = msg.from_user.first_name if msg.from_user else "?"
-        logger.info(f"[max:group] triggered by {first_name}: {msg.text[:50] if msg.text else ''}")
+        logger.info(f"[max:group] triggered by {first_name}: {text_to_use[:50]}")
 
         chat_id = msg.chat_id
         user_name = (msg.from_user.first_name if msg.from_user else None) or "Участник"
-        user_text = msg.text.strip()
+        user_text = text_to_use.strip()
 
         await context.bot.send_chat_action(chat_id, "typing")
 
