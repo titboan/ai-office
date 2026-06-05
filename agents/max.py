@@ -198,16 +198,34 @@ class MaxAgent(BaseAgent):
         if action == "run_now":
             await query.answer()
             await query.edit_message_text("▶️ Запускаю проверку…")
-            await self.process_reviews(chat_id)
-            # После проверки снова показываем статус с кнопками
-            from db import get_marketplace_shops
-            shops = await get_marketplace_shops(chat_id)
-            if shops:
-                await self._notify_user(
-                    chat_id,
-                    "✅ Проверка завершена.\n\n" + self._status_text(shops),
-                    reply_markup=_ACTION_KEYBOARD,
-                )
+            results = await self.process_reviews(chat_id)
+
+            # Формируем итоговое сообщение
+            _EMOJI = {"wb": "🟣 Wildberries", "ozon": "🔵 Ozon"}
+            total_found = sum(s.get("found", 0) for s in results.values())
+
+            if not results or total_found == 0:
+                summary = "✅ Новых отзывов нет."
+            else:
+                lines = ["✅ Проверка завершена.\n"]
+                any_pending = False
+                for mp, s in results.items():
+                    label = _EMOJI.get(mp, mp)
+                    lines.append(f"{label}: найдено {s['found']}")
+                    if s["found"]:
+                        if s["auto_replied"]:
+                            lines.append(f"  └ отвечено автоматически: {s['auto_replied']}")
+                        if s["pending"]:
+                            lines.append(f"  └ ждут одобрения: {s['pending']}")
+                            any_pending = True
+                        if s["errors"]:
+                            lines.append(f"  └ ошибок: {s['errors']}")
+                    lines.append("")
+                if any_pending:
+                    lines.append("📬 Отзывы ожидающие ответа отправлены выше ↑")
+                summary = "\n".join(lines).rstrip()
+
+            await self._notify_user(chat_id, summary, reply_markup=_ACTION_KEYBOARD)
             return
 
         if action == "stats":
@@ -407,28 +425,35 @@ class MaxAgent(BaseAgent):
     #  Основная логика обработки отзывов                                   #
     # ------------------------------------------------------------------ #
 
-    async def process_reviews(self, chat_id: int) -> None:
+    async def process_reviews(self, chat_id: int) -> dict:
+        """Обработать отзывы. Возвращает итоги по каждой площадке."""
         from db import get_marketplace_shops, save_review, update_review_status
         from tools.marketplace import make_client
 
         shops = await get_marketplace_shops(chat_id)
+        results: dict = {}
         if not shops:
-            return
+            return results
 
         since = datetime.now(_UTC) - timedelta(hours=8)
 
         for shop in shops:
-            mp_label = _MP_LABELS.get(shop["marketplace"], shop["marketplace"])
+            mp = shop["marketplace"]
+            mp_label = _MP_LABELS.get(mp, mp)
+            stats = {"found": 0, "auto_replied": 0, "pending": 0, "errors": 0}
+
             try:
                 reviews = await make_client(shop).get_new_reviews(since)
                 logger.info(f"[Макс] {mp_label}: {len(reviews)} отзывов для chat={chat_id}")
             except Exception as e:
                 logger.error(f"[Макс] get_new_reviews {mp_label}: {e}")
+                stats["errors"] += 1
+                results[mp] = stats
                 continue
 
             for rv in reviews:
                 is_new = await save_review(
-                    marketplace=shop["marketplace"],
+                    marketplace=mp,
                     review_id=rv["review_id"],
                     product_id=rv.get("product_id"),
                     product_name=rv.get("product_name"),
@@ -440,6 +465,7 @@ class MaxAgent(BaseAgent):
                 if not is_new:
                     continue
 
+                stats["found"] += 1
                 rating = rv.get("rating", 0)
                 try:
                     reply = await self._generate_reply(
@@ -451,29 +477,37 @@ class MaxAgent(BaseAgent):
                 except Exception as e:
                     logger.error(f"[Макс] generate_reply error: {e}")
                     reply = ""
+                    stats["errors"] += 1
 
                 await update_review_status(
-                    shop["marketplace"], rv["review_id"],
+                    mp, rv["review_id"],
                     status="pending_approval" if rating <= 2 else "new",
                     generated_reply=reply,
                 )
 
                 if rating <= 2:
                     await self._notify_pending(chat_id, shop, rv, reply)
+                    stats["pending"] += 1
                 else:
                     ok = await self._send_to_marketplace(shop, rv["review_id"], reply)
                     if ok:
                         await update_review_status(
-                            shop["marketplace"], rv["review_id"],
+                            mp, rv["review_id"],
                             status="auto_replied",
                             final_reply=reply,
                         )
+                        stats["auto_replied"] += 1
                         logger.info(f"[Макс] review={rv['review_id'][:8]} rating={rating} → auto_replied")
                     else:
+                        stats["errors"] += 1
                         logger.error(
-                            f"[Макс] send_reply failed: mp={shop['marketplace']} "
+                            f"[Макс] send_reply failed: mp={mp} "
                             f"review={rv['review_id'][:8]} rating={rating} — статус остаётся 'new'"
                         )
+
+            results[mp] = stats
+
+        return results
 
     async def _notify_pending(self, chat_id: int, shop: dict, rv: dict, generated_reply: str) -> None:
         mp = shop["marketplace"]
