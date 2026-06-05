@@ -942,6 +942,12 @@ class MaxAgent(BaseAgent):
         def _fmt_date(dt) -> str:
             return dt.strftime("%d.%m")
 
+        logger.info(f"[sales_summary] today: {today} - {now_utc}")
+        logger.info(f"[sales_summary] yesterday: {yesterday} - {yesterday_end}")
+        logger.info(f"[sales_summary] week_ago_day: {week_ago} - {week_ago_end}")
+        logger.info(f"[sales_summary] this_week: {today - timedelta(days=7)} - {now_utc}")
+        logger.info(f"[sales_summary] prev_week: {prev_week_start} - {week_ago}")
+
         ord_today     = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, today, now_utc)}
         sal_today     = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, today, now_utc)}
         ord_yday      = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, yesterday, yesterday_end)}
