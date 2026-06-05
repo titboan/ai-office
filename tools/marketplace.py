@@ -512,7 +512,7 @@ class OzonClient:
 
 
     async def get_orders(self, date_from: datetime, **_) -> list[dict]:
-        """Активные заказы FBO (awaiting_deliver + delivering)."""
+        """Активные заказы FBO (awaiting_packaging + awaiting_deliver + delivering)."""
         import json as _json
 
         now = datetime.now(timezone.utc)
@@ -537,8 +537,9 @@ class OzonClient:
             return rows
 
         results = []
+        url = f"{self._BASE}/v3/posting/fbo/list"
         async with aiohttp.ClientSession() as session:
-            for status in ("awaiting_deliver", "delivering"):
+            for status in ("awaiting_packaging", "awaiting_deliver", "delivering"):
                 body = {
                     "dir": "DESC",
                     "filter": {
@@ -550,7 +551,6 @@ class OzonClient:
                     "offset": 0,
                     "with":   {"financial_data": True},
                 }
-                url = f"{self._BASE}/v3/posting/fbo/list"
                 try:
                     async with session.post(
                         url,
@@ -569,8 +569,9 @@ class OzonClient:
                 except Exception as e:
                     logger.error(f"[Ozon.get_orders/{status}] exception: {e}")
                     continue
-                raw_result = data.get("result") or []
-                postings = raw_result if isinstance(raw_result, list) else (raw_result.get("postings") or [])
+                # FBO ответ: {"postings": [...], "has_next": false, "cursor": ""}
+                postings = data.get("postings") or []
+                logger.debug(f"[Ozon.get_orders/{status}] keys={list(data.keys())}, postings_count={len(postings)}")
                 batch = _parse_postings(postings)
                 logger.info(f"[Ozon.get_orders/{status}] {len(batch)} позиций")
                 results.extend(batch)
