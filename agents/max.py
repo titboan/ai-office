@@ -90,6 +90,9 @@ class MaxAgent(BaseAgent):
     # ------------------------------------------------------------------ #
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from telegram import Chat
+        if update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
+            return
         chat_id = update.effective_chat.id
         state = await self._get_onboard(chat_id)
         if state and state.get("step") not in (None, "done"):
