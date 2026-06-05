@@ -719,7 +719,7 @@ class MaxAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[Макс/sync] get_sales {mp_label}: {e}")
 
-    async def send_daily_summary(self, chat_id: int) -> None:
+    async def send_daily_summary(self, chat_id: int, bot=None) -> None:
         """Синхронизировать данные и отправить ежедневную сводку."""
         logger.info(f"[Макс/sync] send_daily_summary старт для chat_id={chat_id}")
         try:
@@ -778,8 +778,9 @@ class MaxAgent(BaseAgent):
 
             text = "\n".join(lines)
             target = config.PARTNERS_GROUP_ID if config.PARTNERS_GROUP_ID else chat_id
+            _bot = bot if bot is not None else self.app.bot
             logger.info("[Макс/sync] отправляю сообщение")
-            await self._notify_user(target, text)
+            await _bot.send_message(chat_id=target, text=text, parse_mode="Markdown")
             logger.info("[Макс/sync] сообщение отправлено")
 
         except Exception as e:
@@ -1101,7 +1102,7 @@ class MaxAgent(BaseAgent):
         chat_id = update.effective_user.id
         logger.info(f"[Макс/sync] команда получена от {update.effective_user.id}")
         await update.message.reply_text("⏳ Синхронизирую данные…")
-        await self.send_daily_summary(chat_id)
+        await self.send_daily_summary(chat_id, bot=context.bot)
         logger.info("[Макс/sync] send_daily_summary завершён")
 
     # ------------------------------------------------------------------ #
