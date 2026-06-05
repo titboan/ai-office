@@ -853,9 +853,15 @@ class MaxAgent(BaseAgent):
                     logger.error(f"[Макс/sync] get_orders WB: {e}")
 
             # Ozon аналитика — агрегат заказов по SKU за каждый из последних 14 дней → marketplace_orders
-            # Запрос per-day чтобы order_date соответствовал реальной дате заказа
+            # Перед сохранением чистим старые аналитические записи за тот же период чтобы избежать дублей
             # Delivered постинги идут в marketplace_sales через get_sales (выше)
             if mp == "ozon":
+                from db import clear_ozon_analytics
+                analytics_date_from = datetime.now(_UTC) - timedelta(days=14)
+                analytics_date_to   = datetime.now(_UTC)
+                deleted = await clear_ozon_analytics(chat_id, analytics_date_from, analytics_date_to)
+                if deleted:
+                    logger.info(f"[Макс/sync] Ozon analytics: удалено {deleted} старых записей перед обновлением")
                 total_new = 0
                 for day_offset in range(14):
                     day = datetime.now(_UTC) - timedelta(days=day_offset)
