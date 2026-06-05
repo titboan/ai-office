@@ -465,12 +465,19 @@ class MaxAgent(BaseAgent):
         if not shops:
             return results
 
-        since = datetime.now(_UTC) - timedelta(hours=8)
-
         for shop in shops:
             mp = shop["marketplace"]
             mp_label = _MP_LABELS.get(mp, mp)
             stats = {"found": 0, "auto_replied": 0, "pending": 0, "errors": 0}
+
+            last_checked = shop.get("last_checked_at")
+            if last_checked is None:
+                since = datetime.now(_UTC) - timedelta(days=7)
+            else:
+                since = last_checked if last_checked.tzinfo else last_checked.replace(tzinfo=_UTC)
+            logger.info(
+                f"[Макс] {mp_label} since={since} (last_checked_at={last_checked})"
+            )
 
             try:
                 reviews = await make_client(shop).get_new_reviews(since)

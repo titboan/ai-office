@@ -7,7 +7,7 @@ asyncio.TimeoutError не ретраится — сразу None + лог.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import aiohttp
@@ -74,8 +74,10 @@ class WBClient:
     def _headers(self) -> dict:
         return {"Authorization": self._token, "Content-Type": "application/json"}
 
-    async def get_new_reviews(self, since: datetime) -> list[dict]:
+    async def get_new_reviews(self, since: datetime | None = None) -> list[dict]:
         """Вернуть неотвеченные отзывы."""
+        if since is None:
+            since = datetime.now(timezone.utc) - timedelta(days=7)
         reviews: list[dict] = []
         url    = f"{self._BASE}/api/v1/feedbacks"
         params = {"isAnswered": "false", "take": 100, "skip": 0}
