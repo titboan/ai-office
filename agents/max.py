@@ -849,14 +849,30 @@ class MaxAgent(BaseAgent):
         if msg.from_user and msg.from_user.is_bot:
             return
 
-        # Триггер: упоминание бота или слово "макс"
+        # Триггер — хотя бы одно из трёх условий:
         bot_username = (context.bot.username or "").lower()
+
+        # 1. @mention бота в entities
         mentioned = any(
-            e.type == "mention" and msg.text[e.offset:e.offset + e.length].lstrip("@").lower() == bot_username
+            e.type == "mention"
+            and msg.text[e.offset:e.offset + e.length].lstrip("@").lower() == bot_username
             for e in (msg.entities or [])
         )
-        has_keyword = "макс" in msg.text.lower()
-        if not mentioned and not has_keyword:
+
+        # 2. Текст начинается с "макс" / "макс," / "макс!" / "@макс"
+        stripped = msg.text.strip().lower()
+        starts_with_max = any(
+            stripped.startswith(prefix)
+            for prefix in ("макс ", "макс,", "макс!", "макс\n", "@макс")
+        ) or stripped == "макс"
+
+        # 3. Reply на сообщение самого бота
+        reply = msg.reply_to_message
+        is_reply_to_bot = bool(
+            reply and reply.from_user and reply.from_user.id == context.bot.id
+        )
+
+        if not (mentioned or starts_with_max or is_reply_to_bot):
             return
 
         chat_id = msg.chat_id
