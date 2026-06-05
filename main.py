@@ -232,6 +232,37 @@ async def run_all_async() -> None:
                 await asyncio.sleep(60)
 
     reviews_task = asyncio.create_task(_scheduled_reviews_loop())
+
+    async def _negative_reviews_loop():
+        """Каждые 15 минут проверяет негативные отзывы (1-2★)."""
+        from db import get_all_active_shops
+
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                # Следующий момент кратный 15 минутам
+                minutes_to_next = 15 - (now.minute % 15)
+                wait_seconds = minutes_to_next * 60 - now.second
+                await asyncio.sleep(wait_seconds)
+
+                if max_agent is None:
+                    continue
+
+                shops = await get_all_active_shops()
+                unique_chats = list({s["chat_id"] for s in shops})
+                for chat_id in unique_chats:
+                    try:
+                        await max_agent.check_negative_reviews(chat_id)
+                    except Exception as e:
+                        logger.error(f"[neg_scheduler] chat={chat_id} error: {e}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[neg_scheduler] ошибка: {e}")
+                await asyncio.sleep(60)
+
+    negative_task = asyncio.create_task(_negative_reviews_loop())
+    logger.info("[main] Negative reviews task запущен (каждые 15 минут)")
     logger.info("[main] Scheduled reviews task запущен (06:00, 11:00, 17:00 UTC)")
 
     try:
@@ -240,7 +271,7 @@ async def run_all_async() -> None:
         pass
 
     # Graceful shutdown
-    for task in (status_task, digest_task, reviews_task):
+    for task in (status_task, digest_task, reviews_task, negative_task):
         task.cancel()
         try:
             await task

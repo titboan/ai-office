@@ -140,6 +140,10 @@ async def _create_schema() -> None:
                 ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ;
         """)
         await conn.execute("""
+            ALTER TABLE marketplace_shops
+                ADD COLUMN IF NOT EXISTS last_checked_negative TIMESTAMPTZ;
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS digest_channels (
                 id               BIGSERIAL PRIMARY KEY,
                 chat_id          TEXT        NOT NULL,

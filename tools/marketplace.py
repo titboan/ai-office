@@ -74,8 +74,8 @@ class WBClient:
     def _headers(self) -> dict:
         return {"Authorization": self._token, "Content-Type": "application/json"}
 
-    async def get_new_reviews(self, since: datetime | None = None) -> list[dict]:
-        """Вернуть неотвеченные отзывы."""
+    async def get_new_reviews(self, since: datetime | None = None, max_rating: int = 5) -> list[dict]:
+        """Вернуть неотвеченные отзывы. max_rating фильтрует по рейтингу ≤ N."""
         if since is None:
             since = datetime.now(timezone.utc) - timedelta(days=7)
         reviews: list[dict] = []
@@ -124,11 +124,15 @@ class WBClient:
             if item.get("cons"): parts.append(f"Минусы: {item['cons']}")
             full_text = "\n".join(parts) if parts else ""
 
+            rating = item.get("productValuation", 0)
+            if rating > max_rating:
+                continue
+
             reviews.append({
                 "review_id":    item.get("id", ""),
                 "product_id":   str(item.get("subjectId", "") or ""),
                 "product_name": item.get("subjectName", ""),
-                "rating":       item.get("productValuation", 0),
+                "rating":       rating,
                 "text":         full_text,
                 "author":       item.get("userName", ""),
             })

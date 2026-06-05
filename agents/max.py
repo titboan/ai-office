@@ -621,6 +621,76 @@ class MaxAgent(BaseAgent):
 
         return results
 
+    async def check_negative_reviews(self, chat_id: int) -> None:
+        """Быстрый polling: только 1-2★, использует last_checked_negative."""
+        from db import get_marketplace_shops, save_review, update_review_status
+        from tools.marketplace import make_client
+
+        shops = await get_marketplace_shops(chat_id)
+        if not shops:
+            return
+
+        now = datetime.now(_UTC)
+
+        for shop in shops:
+            mp = shop["marketplace"]
+            mp_label = _MP_LABELS.get(mp, mp)
+
+            last = shop.get("last_checked_negative")
+            since = (
+                last if last and last.tzinfo else
+                (last.replace(tzinfo=_UTC) if last else now - timedelta(hours=1))
+            )
+
+            try:
+                client = make_client(shop)
+                if mp == "wb":
+                    reviews = await client.get_new_reviews(since=since, max_rating=2)
+                else:
+                    reviews = await client.get_new_reviews(since=since)
+                    reviews = [r for r in reviews if r.get("rating", 5) <= 2]
+                logger.info(f"[Макс/neg] {mp_label}: {len(reviews)} neg отзывов для chat={chat_id}")
+            except Exception as e:
+                logger.error(f"[Макс/neg] get_new_reviews {mp_label}: {e}")
+                continue
+
+            for rv in reviews:
+                is_new = await save_review(
+                    marketplace=mp,
+                    review_id=rv["review_id"],
+                    product_id=rv.get("product_id"),
+                    product_name=rv.get("product_name"),
+                    rating=rv.get("rating", 0),
+                    text=rv.get("text"),
+                    author=rv.get("author"),
+                    chat_id=chat_id,
+                )
+                if not is_new:
+                    continue
+
+                try:
+                    reply = await self._generate_reply(
+                        product_name=rv.get("product_name", ""),
+                        rating=rv.get("rating", 0),
+                        text=rv.get("text", ""),
+                        author=rv.get("author", ""),
+                    )
+                except Exception as e:
+                    logger.error(f"[Макс/neg] generate_reply: {e}")
+                    reply = ""
+
+                await update_review_status(mp, rv["review_id"], "pending_approval", generated_reply=reply)
+                await self._notify_pending(chat_id, shop, rv, reply)
+
+            # Обновляем last_checked_negative
+            from db import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE marketplace_shops SET last_checked_negative = $1 WHERE chat_id = $2 AND marketplace = $3",
+                    now, chat_id, mp,
+                )
+
     async def _notify_pending(self, chat_id: int, shop: dict, rv: dict, generated_reply: str) -> None:
         mp = shop["marketplace"]
         rating = rv.get("rating", 0)
