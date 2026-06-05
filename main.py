@@ -187,11 +187,44 @@ async def run_all_async() -> None:
                 shops = await get_all_active_shops()
                 unique_chats = list({s["chat_id"] for s in shops})
                 logger.info(f"[reviews_scheduler] обработка отзывов для {len(unique_chats)} пользователей")
+
+                all_results: dict = {}
                 for chat_id in unique_chats:
                     try:
-                        await max_agent.process_reviews(chat_id)
+                        r = await max_agent.process_reviews(chat_id)
+                        for mp, stats in r.items():
+                            agg = all_results.setdefault(mp, {"found": 0, "auto_replied": 0, "pending": 0, "errors": 0})
+                            for k in agg:
+                                agg[k] += stats.get(k, 0)
                     except Exception as e:
                         logger.error(f"[reviews_scheduler] chat={chat_id} error: {e}")
+
+                # Сводка в группу партнёров если задана
+                if config.PARTNERS_GROUP_ID:
+                    from zoneinfo import ZoneInfo
+                    msk_now = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%d.%m %H:%M МСК")
+                    _EMOJI = {"wb": "🟣 Wildberries", "ozon": "🔵 Ozon"}
+                    total_found = sum(s["found"] for s in all_results.values())
+                    if total_found == 0:
+                        summary = f"📊 Сводка отзывов — {msk_now}\n\n✅ Новых отзывов нет."
+                    else:
+                        lines = [f"📊 Сводка отзывов — {msk_now}\n"]
+                        for mp, s in all_results.items():
+                            label = _EMOJI.get(mp, mp)
+                            lines.append(f"{label}: найдено {s['found']}")
+                            if s["found"]:
+                                if s["auto_replied"]:
+                                    lines.append(f"  └ автоответ: {s['auto_replied']}")
+                                if s["pending"]:
+                                    lines.append(f"  └ ожидают: {s['pending']}")
+                        summary = "\n".join(lines)
+                    try:
+                        await max_agent.app.bot.send_message(
+                            chat_id=config.PARTNERS_GROUP_ID,
+                            text=summary,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[reviews_scheduler] group summary error: {e}")
             except asyncio.CancelledError:
                 break
             except Exception as e:

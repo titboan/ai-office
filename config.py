@@ -63,6 +63,7 @@ class Config:
 
     # Макс — отзывы на маркетплейсах
     MAX_BOT_TOKEN: str = os.getenv("MAX_BOT_TOKEN", "")
+    PARTNERS_GROUP_ID: int = int(os.getenv("PARTNERS_GROUP_ID", "0"))
 
     # Ева — Telethon MTProto + бот
     EVA_BOT_TOKEN: str = os.getenv("EVA_BOT_TOKEN", "")

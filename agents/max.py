@@ -561,7 +561,9 @@ class MaxAgent(BaseAgent):
             InlineKeyboardButton("✏️ Редактировать", callback_data=f"{cb_base}:edit"),
             InlineKeyboardButton("🚫 Пропустить",    callback_data=f"{cb_base}:skip"),
         ]])
-        await self._notify_user(chat_id, text, reply_markup=keyboard)
+        # Если группа партнёров задана — отправляем только туда
+        target = config.PARTNERS_GROUP_ID if config.PARTNERS_GROUP_ID else chat_id
+        await self._notify_user(target, text, reply_markup=keyboard)
 
     # ------------------------------------------------------------------ #
     #  Callback — отзывы                                                   #
@@ -571,39 +573,75 @@ class MaxAgent(BaseAgent):
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         query = update.callback_query
-        await query.answer()
 
         parts = query.data.split(":", 3)
         if len(parts) != 4:
+            await query.answer()
             return
         _, mp, review_id, action = parts
-        chat_id = query.message.chat_id
 
-        from db import get_pending_reviews, update_review_status
+        # Защита от двойного нажатия
+        lock_key = f"review_lock:{review_id}"
+        locked = await self._redis_get(lock_key)
+        if locked:
+            await query.answer("✅ Уже обработано", show_alert=True)
+            return
+
+        user = query.from_user
+        first_name = (user.first_name if user else None) or "Участник"
+        await self._redis_set(lock_key, first_name, ttl=300)
+        await query.answer()
+
+        # Если кнопка нажата в группе — pending_edit ставим на group_id
+        msg_chat_id = query.message.chat_id
+        # Для получения магазина используем chat_id владельца из БД (marketplace_reviews)
+        from db import get_pending_reviews, update_review_status, get_marketplace_shops
+        from db import get_pool
+
+        # Ищем владельца отзыва
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT chat_id FROM marketplace_reviews WHERE marketplace=$1 AND review_id=$2",
+                mp, review_id,
+            )
+        owner_chat_id = row["chat_id"] if row else msg_chat_id
 
         if action == "approve":
-            reviews = await get_pending_reviews(chat_id)
+            reviews = await get_pending_reviews(owner_chat_id)
             rv = next((r for r in reviews if r["review_id"] == review_id), None)
             reply_text = (rv or {}).get("generated_reply", "")
             if rv and reply_text:
-                from db import get_marketplace_shops
                 shop = next(
-                    (s for s in await get_marketplace_shops(chat_id) if s["marketplace"] == mp),
+                    (s for s in await get_marketplace_shops(owner_chat_id) if s["marketplace"] == mp),
                     None,
                 )
                 if shop and await self._send_to_marketplace(shop, review_id, reply_text):
                     await update_review_status(mp, review_id, "replied", final_reply=reply_text)
-                    await query.edit_message_text(query.message.text + "\n\n✅ Ответ отправлен.")
+                    await query.edit_message_text(
+                        query.message.text + f"\n\n✅ Ответ отправлен — {first_name}",
+                        reply_markup=None,
+                    )
                     return
-            await query.edit_message_text(query.message.text + "\n\n❌ Не удалось отправить ответ.")
+            await query.edit_message_text(
+                query.message.text + "\n\n❌ Не удалось отправить ответ.",
+                reply_markup=None,
+            )
 
         elif action == "edit":
-            await query.edit_message_text(query.message.text + "\n\n✏️ Напишите ваш вариант ответа:")
-            await self._redis_set(f"pending_edit:{chat_id}", f"{mp}:{review_id}", ttl=600)
+            await query.edit_message_text(
+                query.message.text + "\n\n✏️ Напишите ваш вариант ответа:",
+                reply_markup=None,
+            )
+            # pending_edit привязан к чату где нажали кнопку (личка или группа)
+            await self._redis_set(f"pending_edit:{msg_chat_id}", f"{mp}:{review_id}:{owner_chat_id}", ttl=600)
 
         elif action == "skip":
             await update_review_status(mp, review_id, "skipped")
-            await query.edit_message_text(query.message.text + "\n\n🚫 Пропущено.")
+            await query.edit_message_text(
+                query.message.text + f"\n\n🚫 Пропущено — {first_name}",
+                reply_markup=None,
+            )
 
     async def _handle_edit_reply(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -614,20 +652,23 @@ class MaxAgent(BaseAgent):
             return
 
         await self._redis_set(f"pending_edit:{chat_id}", "", ttl=1)
-        parts = pending.split(":", 1)
-        if len(parts) != 2:
+        # Формат: mp:review_id или mp:review_id:owner_chat_id (новый формат для группы)
+        parts = pending.split(":", 2)
+        if len(parts) < 2:
             return
-        mp, review_id = parts
+        mp, review_id = parts[0], parts[1]
+        owner_chat_id = int(parts[2]) if len(parts) == 3 else chat_id
         reply_text = update.message.text.strip()
 
         from db import get_marketplace_shops, update_review_status
         shop = next(
-            (s for s in await get_marketplace_shops(chat_id) if s["marketplace"] == mp),
+            (s for s in await get_marketplace_shops(owner_chat_id) if s["marketplace"] == mp),
             None,
         )
         if shop and await self._send_to_marketplace(shop, review_id, reply_text):
             await update_review_status(mp, review_id, "replied", final_reply=reply_text)
-            await update.message.reply_text("✅ Ваш ответ отправлен на площадку.")
+            first_name = (update.effective_user.first_name if update.effective_user else None) or "Участник"
+            await update.message.reply_text(f"✅ Ответ отредактирован и отправлен — {first_name}")
             return
         await update.message.reply_text("❌ Не удалось отправить ответ.")
 
