@@ -136,6 +136,10 @@ async def _create_schema() -> None:
             );
         """)
         await conn.execute("""
+            ALTER TABLE marketplace_shops
+                ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ;
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS digest_channels (
                 id               BIGSERIAL PRIMARY KEY,
                 chat_id          TEXT        NOT NULL,
@@ -379,6 +383,16 @@ async def get_pending_reviews(chat_id: int) -> list[dict]:
             chat_id,
         )
         return [dict(r) for r in rows]
+
+
+async def reset_last_checked(chat_id: int) -> None:
+    """Сбросить last_checked_at для всех магазинов пользователя (принудительная полная проверка)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE marketplace_shops SET last_checked_at = NULL WHERE chat_id = $1",
+            chat_id,
+        )
 
 
 async def get_distinct_digest_users() -> list[int]:
