@@ -266,15 +266,15 @@ class WBClient:
     async def get_orders_realtime(self, date_from: datetime) -> list[dict]:
         """Заказы в реальном времени через основной API (не Statistics)."""
         headers = {"Authorization": self._token, "Content-Type": "application/json"}
-        date_from_ts = int(date_from.timestamp())
+        date_from_str = date_from.strftime("%Y-%m-%dT%H:%M:%S")
         url = "https://marketplace-api.wildberries.ru/api/v3/orders"
-        logger.info(f"[WB.get_orders_realtime] GET {url} dateFrom={date_from_ts}")
+        logger.info(f"[WB.get_orders_realtime] GET {url} dateFrom={date_from_str}")
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     url,
                     headers=headers,
-                    params={"dateFrom": date_from_ts, "limit": 1000},
+                    params={"dateFrom": date_from_str, "limit": 1000},
                     timeout=_TIMEOUT,
                 ) as resp:
                     raw = await resp.text()
