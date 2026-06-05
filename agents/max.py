@@ -829,7 +829,7 @@ class MaxAgent(BaseAgent):
             #   get_orders (активные постинги) НЕ сохраняем в marketplace_orders во избежание двойного счёта
             if mp == "wb":
                 try:
-                    since_orders = datetime.now(_UTC) - timedelta(days=7)
+                    since_orders = datetime.now(_UTC) - timedelta(days=14)
                     orders = await client.get_orders_all(date_from=since_orders, statistics_token=stats_token)
                     new_count = 0
                     for o in orders:

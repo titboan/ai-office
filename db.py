@@ -590,6 +590,22 @@ async def save_order(
 async def get_orders_summary(chat_id: int, date_from, date_to) -> list[dict]:
     pool = await get_pool()
     async with pool.acquire() as conn:
+        debug_rows = await conn.fetch(
+            """
+            SELECT marketplace, COUNT(*) AS row_count, SUM(quantity) AS total_qty,
+                   MIN(order_date) AS min_date, MAX(order_date) AS max_date
+            FROM marketplace_orders
+            WHERE chat_id = $1 AND order_date >= $2 AND order_date < $3
+            GROUP BY marketplace
+            """,
+            chat_id, date_from, date_to,
+        )
+        from loguru import logger as _log
+        for r in debug_rows:
+            _log.debug(
+                f"[get_orders_summary] mp={r['marketplace']} rows={r['row_count']} "
+                f"qty={r['total_qty']} min={r['min_date']} max={r['max_date']}"
+            )
         rows = await conn.fetch(
             """
             SELECT marketplace, SUM(quantity) AS orders, SUM(price * quantity) AS revenue
