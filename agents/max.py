@@ -189,6 +189,9 @@ class MaxAgent(BaseAgent):
     # ------------------------------------------------------------------ #
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from telegram import Chat
+        if update.effective_chat and update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
+            logger.debug(f"[max:handler] cmd_start вызван из группы — текст: {update.message.text[:50] if update.message and update.message.text else '?'}")
         chat_id = update.effective_user.id
 
         from db import get_marketplace_shops
@@ -366,6 +369,9 @@ class MaxAgent(BaseAgent):
     async def _handle_onboard_text(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
+        from telegram import Chat
+        if update.effective_chat and update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
+            logger.debug(f"[max:handler] _handle_onboard_text вызван из группы — текст: {update.message.text[:50] if update.message and update.message.text else '?'}")
         chat_id = update.effective_chat.id
         state = await self._get_onboard(chat_id)
         if not state or state.get("step") in (None, "done", "choose_platform"):
@@ -649,6 +655,9 @@ class MaxAgent(BaseAgent):
     async def _handle_edit_reply(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
+        from telegram import Chat
+        if update.effective_chat and update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
+            logger.debug(f"[max:handler] _handle_edit_reply вызван из группы — текст: {update.message.text[:50] if update.message and update.message.text else '?'}")
         chat_id = update.effective_chat.id
         pending = await self._redis_get(f"pending_edit:{chat_id}")
         if not pending:
@@ -680,6 +689,9 @@ class MaxAgent(BaseAgent):
     # ------------------------------------------------------------------ #
 
     async def cmd_add_shop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from telegram import Chat
+        if update.effective_chat and update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
+            logger.debug(f"[max:handler] cmd_add_shop вызван из группы — текст: {update.message.text[:50] if update.message and update.message.text else '?'}")
         args = context.args or []
         if len(args) < 2:
             await update.message.reply_text(
@@ -702,6 +714,9 @@ class MaxAgent(BaseAgent):
         await update.message.reply_text(f"✅ Магазин {_MP_LABELS.get(mp, mp)} подключён.")
 
     async def cmd_shops(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from telegram import Chat
+        if update.effective_chat and update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
+            logger.debug(f"[max:handler] cmd_shops вызван из группы — текст: {update.message.text[:50] if update.message and update.message.text else '?'}")
         from db import get_marketplace_shops
         shops = await get_marketplace_shops(update.effective_user.id)
         if not shops:
@@ -714,6 +729,9 @@ class MaxAgent(BaseAgent):
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     async def cmd_pending(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from telegram import Chat
+        if update.effective_chat and update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
+            logger.debug(f"[max:handler] cmd_pending вызван из группы — текст: {update.message.text[:50] if update.message and update.message.text else '?'}")
         from db import get_pending_reviews
         reviews = await get_pending_reviews(update.effective_user.id)
         if not reviews:
@@ -728,6 +746,9 @@ class MaxAgent(BaseAgent):
             )
 
     async def cmd_reviews(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from telegram import Chat
+        if update.effective_chat and update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
+            logger.debug(f"[max:handler] cmd_reviews вызван из группы — текст: {update.message.text[:50] if update.message and update.message.text else '?'}")
         from db import get_pool
         chat_id = update.effective_user.id
         pool = await get_pool()
@@ -762,6 +783,9 @@ class MaxAgent(BaseAgent):
 
     async def cmd_reset_checked(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/reset_checked — сбросить last_checked_at для всех магазинов (для отладки)."""
+        from telegram import Chat
+        if update.effective_chat and update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
+            logger.debug(f"[max:handler] cmd_reset_checked вызван из группы — текст: {update.message.text[:50] if update.message and update.message.text else '?'}")
         from db import reset_last_checked, get_marketplace_shops
         chat_id = update.effective_user.id
         await reset_last_checked(chat_id)
