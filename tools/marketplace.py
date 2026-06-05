@@ -110,35 +110,26 @@ class WBClient:
         return reviews
 
     async def send_reply(self, review_id: str, text: str) -> bool:
-        url = f"{self._BASE}/api/v1/feedbacks"
-        body = {"id": review_id, "text": text}
-        async with aiohttp.ClientSession() as session:
-            # Пробуем PATCH; если 405 — пробуем POST
-            for method in ("PATCH", "POST"):
-                try:
-                    async with session.request(
-                        method, url,
-                        headers=self._headers(),
-                        json=body,
-                        timeout=_TIMEOUT,
-                    ) as resp:
-                        raw = await resp.text()
-                        if resp.status == 200:
-                            return True
-                        if resp.status == 405 and method == "PATCH":
-                            logger.warning(f"[WB.send_reply] PATCH→405 body={raw[:300]!r}, пробую POST")
-                            continue
-                        logger.error(
-                            f"[WB.send_reply({review_id[:8]})] {method} {resp.status}: {raw[:300]}"
-                        )
-                        return False
-                except asyncio.TimeoutError:
-                    logger.error(f"[marketplace] timeout: {method} {url}")
+        url = f"{self._BASE}/api/v1/feedbacks/answer"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    headers=self._headers(),
+                    json={"id": review_id, "text": text},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status == 200:
+                        return True
+                    logger.error(f"[WB.send_reply({review_id[:8]})] POST {resp.status}: {raw[:300]}")
                     return False
-                except Exception as e:
-                    logger.error(f"[WB.send_reply] {method} exception: {e}")
-                    return False
-        return False
+        except asyncio.TimeoutError:
+            logger.error(f"[marketplace] timeout: POST {url}")
+            return False
+        except Exception as e:
+            logger.error(f"[WB.send_reply] exception: {e}")
+            return False
 
     async def check_connection(self) -> bool:
         """Проверить валидность токена (тестовый запрос)."""
