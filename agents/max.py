@@ -929,35 +929,40 @@ class MaxAgent(BaseAgent):
         _bot = bot if bot is not None else self.app.bot
         _SHORT = {"wb": "🟣 WB", "ozon": "🔵 Ozon"}
 
-        msk = ZoneInfo("Europe/Moscow")
+        from zoneinfo import ZoneInfo as _ZI
+        now_utc       = datetime.now(_UTC)
+        today_start   = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        yesterday_start = today_start - timedelta(days=1)
+        yesterday_end   = today_start
+        week_ago_start  = today_start - timedelta(days=7)
+        week_ago_end    = week_ago_start + timedelta(days=1)
+        this_week_start = today_start - timedelta(days=7)
+        prev_week_start = today_start - timedelta(days=14)
+        prev_week_end   = today_start - timedelta(days=7)
+
+        # Для отображения дат в МСК
+        msk = _ZI("Europe/Moscow")
         now_msk = datetime.now(msk)
-        now_utc = datetime.now(_UTC)
-        today     = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
-        yesterday     = today - timedelta(days=1)
-        yesterday_end = today
-        week_ago      = today - timedelta(days=7)
-        week_ago_end  = week_ago + timedelta(days=1)
-        prev_week_start = today - timedelta(days=14)
 
         def _fmt_date(dt) -> str:
-            return dt.strftime("%d.%m")
+            return dt.astimezone(msk).strftime("%d.%m")
 
-        logger.info(f"[sales_summary] today: {today} - {now_utc}")
-        logger.info(f"[sales_summary] yesterday: {yesterday} - {yesterday_end}")
-        logger.info(f"[sales_summary] week_ago_day: {week_ago} - {week_ago_end}")
-        logger.info(f"[sales_summary] this_week: {today - timedelta(days=7)} - {now_utc}")
-        logger.info(f"[sales_summary] prev_week: {prev_week_start} - {week_ago}")
+        logger.info(f"[sales_summary] today: {today_start} - {now_utc}")
+        logger.info(f"[sales_summary] yesterday: {yesterday_start} - {yesterday_end}")
+        logger.info(f"[sales_summary] week_ago_day: {week_ago_start} - {week_ago_end}")
+        logger.info(f"[sales_summary] this_week: {this_week_start} - {now_utc}")
+        logger.info(f"[sales_summary] prev_week: {prev_week_start} - {prev_week_end}")
 
-        ord_today     = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, today, now_utc)}
-        sal_today     = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, today, now_utc)}
-        ord_yday      = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, yesterday, yesterday_end)}
-        sal_yday      = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, yesterday, yesterday_end)}
-        ord_wago      = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, week_ago, week_ago_end)}
-        sal_wago      = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, week_ago, week_ago_end)}
+        ord_today     = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, today_start, now_utc)}
+        sal_today     = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, today_start, now_utc)}
+        ord_yday      = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, yesterday_start, yesterday_end)}
+        sal_yday      = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, yesterday_start, yesterday_end)}
+        ord_wago      = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, week_ago_start, week_ago_end)}
+        sal_wago      = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, week_ago_start, week_ago_end)}
         ord_week      = {r["marketplace"]: r for r in await get_orders_total(owner_chat_id, days=7)}
         sal_week      = {r["marketplace"]: r for r in await get_sales_total(owner_chat_id, days=7)}
-        ord_prev_week = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, prev_week_start, week_ago)}
-        sal_prev_week = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, prev_week_start, week_ago)}
+        ord_prev_week = {r["marketplace"]: r for r in await get_orders_summary(owner_chat_id, prev_week_start, prev_week_end)}
+        sal_prev_week = {r["marketplace"]: r for r in await get_sales_period(owner_chat_id, prev_week_start, prev_week_end)}
 
         def _format_delta(cur_cnt: int, cur_rev: float, prev_cnt: int, prev_rev: float, vs_label: str) -> str | None:
             if prev_cnt == 0 and prev_rev == 0:
@@ -1004,21 +1009,30 @@ class MaxAgent(BaseAgent):
         date_str = now_msk.strftime("%d.%m.%Y")
         lines = [f"💰 *Статистика — {date_str}*\n"]
 
-        lines.append(f"📅 *Сегодня ({_fmt_date(today)})*")
+        lines.append(f"📅 *Сегодня ({_fmt_date(today_start)})*")
         for mp in ("wb", "ozon"):
             lines.append(_mp_line(mp, ord_today, sal_today, cmp_orders=ord_yday, cmp_label="вчера"))
 
-        lines.append(f"\n📅 *Вчера ({_fmt_date(yesterday)})*")
+        lines.append(f"\n📅 *Вчера ({_fmt_date(yesterday_start)})*")
         for mp in ("wb", "ozon"):
             lines.append(_mp_line(mp, ord_yday, sal_yday))
 
-        lines.append(f"\n📅 *Неделю назад ({_fmt_date(week_ago)})*")
+        lines.append(f"\n📅 *Неделю назад ({_fmt_date(week_ago_start)})*")
         for mp in ("wb", "ozon"):
             lines.append(_mp_line(mp, ord_wago, sal_wago))
 
+        # Показывать динамику за 7 дней только если есть данные за предыдущую неделю
+        prev_week_has_data = any(
+            (int(r.get("orders") or 0) > 0 or float(r.get("revenue") or 0) > 0)
+            for r in list(ord_prev_week.values()) + list(sal_prev_week.values())
+        )
         lines.append("\n📈 *За 7 дней*")
         for mp in ("wb", "ozon"):
-            lines.append(_mp_line(mp, ord_week, sal_week, cmp_orders=ord_prev_week, cmp_label="пред. неделе"))
+            lines.append(_mp_line(
+                mp, ord_week, sal_week,
+                cmp_orders=ord_prev_week if prev_week_has_data else None,
+                cmp_label="пред. неделе" if prev_week_has_data else "",
+            ))
 
         await _bot.send_message(chat_id=target_chat_id, text="\n".join(lines), parse_mode="Markdown")
 
