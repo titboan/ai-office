@@ -657,6 +657,57 @@ class OzonClient:
         return results
 
 
+    async def get_orders_analytics(self, date_from: datetime, date_to: datetime) -> list[dict]:
+        """Аналитика заказов Ozon по SKU за период через /v1/analytics/data."""
+        import json as _json
+        url = f"{self._BASE}/v1/analytics/data"
+        df_str = date_from.strftime("%Y-%m-%d")
+        dt_str = date_to.strftime("%Y-%m-%d")
+        results = []
+        offset = 0
+        while True:
+            body = {
+                "date_from": df_str,
+                "date_to":   dt_str,
+                "dimension": ["sku"],
+                "metrics":   ["ordered_units", "revenue"],
+                "limit":     1000,
+                "offset":    offset,
+            }
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, headers=self._headers(), json=body, timeout=_TIMEOUT) as resp:
+                        raw = await resp.text()
+                        if resp.status != 200:
+                            logger.error(f"[Ozon.get_orders_analytics] HTTP {resp.status}: {raw[:200]}")
+                            break
+                        data = _json.loads(raw)
+            except asyncio.TimeoutError:
+                logger.error(f"[marketplace] timeout: POST {url}")
+                break
+            except Exception as e:
+                logger.error(f"[Ozon.get_orders_analytics] exception: {e}")
+                break
+            rows = (data.get("result") or {}).get("data") or []
+            for row in rows:
+                dims    = row.get("dimensions") or [{}]
+                metrics = row.get("metrics") or [0, 0]
+                qty     = int(metrics[0] or 0)
+                rev     = float(metrics[1] or 0)
+                results.append({
+                    "product_id":   str((dims[0] if dims else {}).get("id", "")),
+                    "product_name": str((dims[0] if dims else {}).get("name", "")),
+                    "quantity":     qty,
+                    "price":        round(rev / qty, 2) if qty else 0.0,
+                    "order_date":   df_str,
+                })
+            if len(rows) < 1000 or offset >= 10000:
+                break
+            offset += len(rows)
+        logger.info(f"[Ozon.get_orders_analytics] {df_str}–{dt_str}: {len(results)} записей")
+        return results
+
+
 def make_client(shop: dict):
     """Фабрика: dict из marketplace_shops → WBClient или OzonClient."""
     mp    = shop["marketplace"]

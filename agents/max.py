@@ -852,6 +852,36 @@ class MaxAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[Макс/sync] get_orders {mp_label}: {e}")
 
+            # Аналитика заказов Ozon (исторические данные по SKU)
+            if mp == "ozon":
+                try:
+                    analytics_since = shop.get("last_checked_at") or (datetime.now(_UTC) - timedelta(days=14))
+                    if analytics_since.tzinfo is None:
+                        analytics_since = analytics_since.replace(tzinfo=_UTC)
+                    analytics_rows = await client.get_orders_analytics(
+                        date_from=analytics_since,
+                        date_to=datetime.now(_UTC),
+                    )
+                    new_count = 0
+                    for row in analytics_rows:
+                        df_str = row["order_date"]
+                        order_id = f"ozon_analytics_{row['product_id']}_{df_str}"
+                        try:
+                            order_date = datetime.strptime(df_str, "%Y-%m-%d").replace(tzinfo=_UTC)
+                        except Exception:
+                            order_date = None
+                        is_new = await save_order(
+                            chat_id=chat_id, marketplace="ozon",
+                            order_id=order_id, product_id=row.get("product_id"),
+                            product_name=row.get("product_name"), quantity=row.get("quantity", 1),
+                            price=row.get("price"), order_date=order_date,
+                        )
+                        if is_new:
+                            new_count += 1
+                    logger.info(f"[Макс/sync] Ozon analytics: {new_count} новых аналитических записей")
+                except Exception as e:
+                    logger.error(f"[Макс/sync] get_orders_analytics Ozon: {e}")
+
     # ------------------------------------------------------------------ #
     #  Вспомогательные методы для сводки                                  #
     # ------------------------------------------------------------------ #
