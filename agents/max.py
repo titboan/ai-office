@@ -38,9 +38,32 @@ _REPLY_PROMPT = """\
 
 Ответь только текстом ответа, без кавычек и пояснений."""
 
+_HELP_TEXT = """\
+🤖 *Что я умею:*
+
+📊 *Статистика и аналитика*
+— "Макс, сколько отзывов за неделю?"
+— "Макс, какие товары чаще всего ругают?"
+— "Макс, средний рейтинг за месяц?"
+
+📝 *Работа с отзывами*
+— "Макс, покажи негативные отзывы за 7 дней"
+— "Макс, есть неотвеченные отзывы?"
+— "Макс, перепиши этот ответ более извиняющимся тоном: [текст]"
+
+⚙️ *Управление*
+— /start — статус магазинов и меню
+— /reset\_checked — сбросить дату последней проверки\
+"""
+
 MAX_SYSTEM = """Ты — Макс, менеджер по работе с отзывами на маркетплейсах.
 Помогаешь продавцам на Wildberries и Ozon автоматически отвечать на отзывы.
-Отвечай по-русски, кратко и по делу."""
+Отвечай по-русски, кратко и по делу.
+
+Если пользователь спрашивает что ты умеешь, какие команды, помощь — \
+отвечай следующим текстом без использования инструментов:
+
+""" + _HELP_TEXT + '"""'
 
 _MP_LABELS = {"wb": "Wildberries", "ozon": "Ozon"}
 _ONBOARD_TTL = 60 * 60 * 24  # 24 часа
@@ -144,7 +167,8 @@ class MaxAgent(BaseAgent):
         if count > 0:
             row1.append(InlineKeyboardButton(f"📬 Отзывы ({count})", callback_data="onboard:show_pending"))
         row2 = [InlineKeyboardButton("📊 Статистика", callback_data="onboard:stats")]
-        return InlineKeyboardMarkup([row1, row2])
+        row3 = [InlineKeyboardButton("❓ Что я умею",  callback_data="onboard:help")]
+        return InlineKeyboardMarkup([row1, row2, row3])
 
     async def _send_status_with_buttons(
         self, chat_id: int, shops: list[dict], message_method
@@ -299,6 +323,12 @@ class MaxAgent(BaseAgent):
                     rv,
                     rv.get("generated_reply", ""),
                 )
+            return
+
+        if action == "help":
+            await query.answer()
+            from telegram.constants import ParseMode
+            await query.message.reply_text(_HELP_TEXT, parse_mode=ParseMode.MARKDOWN)
             return
 
         if action == "add_wb":
