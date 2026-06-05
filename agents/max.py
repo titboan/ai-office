@@ -719,22 +719,22 @@ class MaxAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[Макс/sync] get_sales {mp_label}: {e}")
 
-    async def send_daily_summary(self, chat_id: int, bot=None) -> None:
+    async def send_daily_summary(self, owner_chat_id: int, target_chat_id: int, bot=None) -> None:
         """Синхронизировать данные и отправить ежедневную сводку."""
-        logger.info(f"[Макс/sync] send_daily_summary старт для chat_id={chat_id}")
+        logger.info(f"[Макс/sync] send_daily_summary старт для owner={owner_chat_id} target={target_chat_id}")
         try:
             from db import get_sales_summary, get_sales_total, get_low_stocks
             from zoneinfo import ZoneInfo
 
-            await self.sync_marketplace_data(chat_id)
+            await self.sync_marketplace_data(owner_chat_id)
 
-            summary_day = await get_sales_summary(chat_id, days=1)
+            summary_day = await get_sales_summary(owner_chat_id, days=1)
             logger.info(f"[Макс/sync] sales_summary получен: {summary_day}")
 
-            totals_week = await get_sales_total(chat_id, days=7)
+            totals_week = await get_sales_total(owner_chat_id, days=7)
             logger.info(f"[Макс/sync] sales_total получен: {totals_week}")
 
-            low_stocks = await get_low_stocks(chat_id, threshold=20)
+            low_stocks = await get_low_stocks(owner_chat_id, threshold=20)
             logger.info(f"[Макс/sync] low_stocks получен: {len(low_stocks)} позиций")
 
             date_str = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y")
@@ -777,10 +777,9 @@ class MaxAgent(BaseAgent):
                 lines.append("✅ Остатки в норме")
 
             text = "\n".join(lines)
-            target = config.PARTNERS_GROUP_ID if config.PARTNERS_GROUP_ID else chat_id
             _bot = bot if bot is not None else self.app.bot
-            logger.info("[Макс/sync] отправляю сообщение")
-            await _bot.send_message(chat_id=target, text=text, parse_mode="Markdown")
+            logger.info(f"[sync] отправляю в {target_chat_id}")
+            await _bot.send_message(chat_id=target_chat_id, text=text, parse_mode="Markdown")
             logger.info("[Макс/sync] сообщение отправлено")
 
         except Exception as e:
@@ -1100,9 +1099,10 @@ class MaxAgent(BaseAgent):
     async def cmd_sync(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/sync — вручную запустить синхронизацию данных и отправить сводку."""
         chat_id = update.effective_user.id
+        target = update.effective_chat.id
         logger.info(f"[Макс/sync] команда получена от {update.effective_user.id}")
         await update.message.reply_text("⏳ Синхронизирую данные…")
-        await self.send_daily_summary(chat_id, bot=context.bot)
+        await self.send_daily_summary(owner_chat_id=chat_id, target_chat_id=target, bot=context.bot)
         logger.info("[Макс/sync] send_daily_summary завершён")
 
     # ------------------------------------------------------------------ #
