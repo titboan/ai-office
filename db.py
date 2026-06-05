@@ -636,13 +636,14 @@ async def get_orders_total(chat_id: int, days: int = 7) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-async def clear_orders(chat_id: int, marketplace: str) -> None:
+async def clear_orders(chat_id: int, marketplace: str) -> int:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
+        result = await conn.execute(
             "DELETE FROM marketplace_orders WHERE chat_id = $1 AND marketplace = $2",
             chat_id, marketplace,
         )
+    return int(result.split()[-1]) if result else 0
 
 
 async def reset_last_checked(chat_id: int) -> None:

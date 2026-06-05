@@ -1382,9 +1382,9 @@ class MaxAgent(BaseAgent):
         """/reset_orders — очистить и пересинхронизировать заказы."""
         chat_id = update.effective_user.id
         from db import clear_orders
-        await clear_orders(chat_id, "wb")
-        await clear_orders(chat_id, "ozon")
-        logger.info(f"[Макс/reset_orders] заказы очищены для chat_id={chat_id}")
+        wb_count   = await clear_orders(chat_id, "wb")
+        ozon_count = await clear_orders(chat_id, "ozon")
+        logger.info(f"[reset_orders] удалено WB: {wb_count}, Ozon: {ozon_count}")
         await self.sync_marketplace_data(chat_id)
         await update.message.reply_text("✅ Данные по заказам пересинхронизированы")
 

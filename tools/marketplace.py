@@ -705,6 +705,8 @@ class OzonClient:
                 break
             offset += len(rows)
         logger.info(f"[Ozon.get_orders_analytics] {df_str}–{dt_str}: {len(results)} записей")
+        sample_ids = [f"ozon_analytics_{r['product_id']}_{df_str}" for r in results[:3]]
+        logger.info(f"[Ozon.get_orders_analytics] sample order_ids: {sample_ids}")
         return results
 
 
