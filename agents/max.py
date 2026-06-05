@@ -452,15 +452,32 @@ class MaxAgent(BaseAgent):
 
         if action == "daily_summary":
             await query.answer()
-            await query.message.reply_text("⏳ Собираю сводку…")
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("📊 Продажи",        callback_data="onboard:summary_sales"),
+                InlineKeyboardButton("🟣 Остатки WB",     callback_data="onboard:summary_wb_stocks"),
+            ], [
+                InlineKeyboardButton("🔵 Остатки Ozon",   callback_data="onboard:summary_ozon_stocks"),
+                InlineKeyboardButton("📋 Всё сразу",      callback_data="onboard:summary_all"),
+            ]])
+            await query.message.reply_text("📦 *Сводка магазина*\nЧто показать?", parse_mode="Markdown", reply_markup=keyboard)
+            return
+
+        if action in ("summary_sales", "summary_wb_stocks", "summary_ozon_stocks", "summary_all"):
+            await query.answer()
             from db import get_marketplace_shops
             owner_shops = await get_marketplace_shops(query.from_user.id)
             owner_chat_id = owner_shops[0]["chat_id"] if owner_shops else query.from_user.id
-            await self.send_daily_summary(
-                owner_chat_id=owner_chat_id,
-                target_chat_id=query.message.chat.id,
-                bot=context.bot,
-            )
+            target_chat_id = query.message.chat.id
+
+            await query.message.reply_text("⏳ Собираю данные…")
+            await self.sync_marketplace_data(owner_chat_id)
+
+            if action in ("summary_sales", "summary_all"):
+                await self._send_sales_summary(owner_chat_id, target_chat_id, context.bot)
+            if action in ("summary_wb_stocks", "summary_all"):
+                await self._send_wb_stocks(owner_chat_id, target_chat_id, context.bot)
+            if action in ("summary_ozon_stocks", "summary_all"):
+                await self._send_ozon_stocks(owner_chat_id, target_chat_id, context.bot)
             return
 
         if action == "update_wb":
@@ -807,133 +824,138 @@ class MaxAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[Макс/sync] get_sales {mp_label}: {e}")
 
+    # ------------------------------------------------------------------ #
+    #  Вспомогательные методы для сводки                                  #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _group_by_sku(rows: list[dict], cluster_fn) -> dict:
+        grouped: dict = {}
+        for s in rows:
+            pid  = s["product_id"]
+            name = s.get("product_name") or pid
+            region = cluster_fn(s.get("warehouse_name", ""))
+            entry = grouped.setdefault(pid, {"name": name, "regions": {}})
+            entry["regions"][region] = entry["regions"].get(region, 0) + s["stock"]
+        name_counts: dict[str, int] = {}
+        for info in grouped.values():
+            name_counts[info["name"]] = name_counts.get(info["name"], 0) + 1
+        for pid, info in grouped.items():
+            if name_counts[info["name"]] > 1:
+                info["name"] = f"{info['name']} ({pid})"
+        return grouped
+
+    @staticmethod
+    def _render_low(grouped: dict) -> list[str]:
+        out = []
+        for info in grouped.values():
+            out.append(f"📦 *{info['name']}*")
+            for region, qty in info["regions"].items():
+                out.append(f"  • {region}: {qty} шт")
+        return out
+
+    @staticmethod
+    def _render_zero(grouped: dict) -> list[str]:
+        out = []
+        for info in grouped.values():
+            regions = ", ".join(info["regions"].keys())
+            out.append(f"📦 *{info['name']}*")
+            out.append(f"  • {regions}")
+        return out
+
+    async def _send_sales_summary(self, owner_chat_id: int, target_chat_id: int, bot=None) -> None:
+        from db import get_sales_summary, get_sales_total
+        from zoneinfo import ZoneInfo
+        _bot = bot if bot is not None else self.app.bot
+        _EMOJI = {"wb": "🟣 Wildberries", "ozon": "🔵 Ozon"}
+        _SHORT = {"wb": "🟣 WB", "ozon": "🔵 Ozon"}
+
+        summary_week = await get_sales_summary(owner_chat_id, days=7)
+        totals_week  = await get_sales_total(owner_chat_id, days=7)
+        date_str = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y")
+
+        lines = [f"💰 *Продажи за 7 дней — {date_str}*\n"]
+        by_mp: dict = {}
+        for row in (summary_week or []):
+            mp = row["marketplace"]
+            entry = by_mp.setdefault(mp, {"orders": 0, "revenue": 0.0, "items": []})
+            qty = int(row["orders"] or 0)
+            rev = float(row["revenue"] or 0)
+            entry["orders"]  += qty
+            entry["revenue"] += rev
+            entry["items"].append((row.get("product_name") or "—", qty, rev))
+
+        for mp in ("wb", "ozon"):
+            label = _EMOJI.get(mp, mp)
+            if mp not in by_mp:
+                lines.append(f"{label} — нет данных")
+                continue
+            agg = by_mp[mp]
+            lines.append(f"{label} — {agg['orders']} заказов, {agg['revenue']:,.0f} ₽")
+            for name, qty, rev in agg["items"]:
+                lines.append(f"  • {name}: {qty} шт — {rev:,.0f} ₽")
+            lines.append("")
+
+        lines.append("📈 *Итог за 7 дней*")
+        if totals_week:
+            for row in totals_week:
+                lines.append(f"{_SHORT.get(row['marketplace'], row['marketplace'])}: {float(row['revenue'] or 0):,.0f} ₽")
+        else:
+            lines.append("Нет данных")
+
+        await _bot.send_message(chat_id=target_chat_id, text="\n".join(lines), parse_mode="Markdown")
+
+    async def _send_wb_stocks(self, owner_chat_id: int, target_chat_id: int, bot=None) -> None:
+        from db import get_low_stocks
+        _bot = bot if bot is not None else self.app.bot
+
+        low_stocks = await get_low_stocks(owner_chat_id, threshold=20)
+        wb_low  = [s for s in low_stocks if s["marketplace"] == "wb" and 0 < s["stock"] <= 20]
+        wb_zero = [s for s in low_stocks if s["marketplace"] == "wb" and s["stock"] == 0]
+
+        lines = ["🟣 *WB — остатки*\n"]
+        if not wb_low and not wb_zero:
+            lines.append("✅ Остатки в норме")
+        else:
+            if wb_low:
+                lines.append("⚠️ *Заканчиваются* (0 < stock ≤ 20)")
+                lines.extend(self._render_low(self._group_by_sku(wb_low, _get_cluster)))
+            if wb_zero:
+                lines.append("\n❌ *Закончились на складах*")
+                lines.extend(self._render_zero(self._group_by_sku(wb_zero, _get_cluster)))
+
+        await _bot.send_message(chat_id=target_chat_id, text="\n".join(lines), parse_mode="Markdown")
+
+    async def _send_ozon_stocks(self, owner_chat_id: int, target_chat_id: int, bot=None) -> None:
+        from db import get_low_stocks
+        _bot = bot if bot is not None else self.app.bot
+
+        low_stocks = await get_low_stocks(owner_chat_id, threshold=20)
+        oz_low  = [s for s in low_stocks if s["marketplace"] == "ozon" and 0 < s["stock"] <= 20]
+        oz_zero = [s for s in low_stocks if s["marketplace"] == "ozon" and s["stock"] == 0]
+
+        lines = ["🔵 *Ozon — остатки*\n"]
+        if not oz_low and not oz_zero:
+            lines.append("✅ Остатки в норме")
+        else:
+            if oz_low:
+                lines.append("⚠️ *Заканчиваются* (0 < stock ≤ 20)")
+                lines.extend(self._render_low(self._group_by_sku(oz_low, _get_ozon_cluster)))
+            if oz_zero:
+                lines.append("\n❌ *Закончились на складах*")
+                lines.extend(self._render_zero(self._group_by_sku(oz_zero, _get_ozon_cluster)))
+
+        await _bot.send_message(chat_id=target_chat_id, text="\n".join(lines), parse_mode="Markdown")
+
     async def send_daily_summary(self, owner_chat_id: int, target_chat_id: int, bot=None) -> None:
-        """Синхронизировать данные и отправить ежедневную сводку."""
+        """Синхронизировать данные и отправить ежедневную сводку тремя сообщениями."""
         logger.info(f"[Макс/sync] send_daily_summary старт для owner={owner_chat_id} target={target_chat_id}")
         try:
-            from db import get_sales_summary, get_sales_total, get_low_stocks
-            from zoneinfo import ZoneInfo
-
             await self.sync_marketplace_data(owner_chat_id)
-
-            summary_week = await get_sales_summary(owner_chat_id, days=7)
-            logger.info(f"[Макс/sync] sales_summary получен: {summary_week}")
-
-            totals_week = await get_sales_total(owner_chat_id, days=7)
-            logger.info(f"[Макс/sync] sales_total получен: {totals_week}")
-
-            low_stocks = await get_low_stocks(owner_chat_id, threshold=20)
-            logger.info(f"[Макс/sync] low_stocks получен: {len(low_stocks)} позиций")
-
-            date_str = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y")
-            _EMOJI   = {"wb": "🟣 Wildberries", "ozon": "🔵 Ozon"}
-            _SHORT   = {"wb": "🟣 WB", "ozon": "🔵 Ozon"}
-
-            lines = [f"📦 *Сводка магазина — {date_str}*\n"]
-
-            # Продажи за 7 дней с разбивкой по товарам
-            lines.append("💰 *Продажи за 7 дней*\n")
-            by_mp: dict = {}
-            for row in (summary_week or []):
-                mp = row["marketplace"]
-                entry = by_mp.setdefault(mp, {"orders": 0, "revenue": 0.0, "items": []})
-                qty    = int(row["orders"] or 0)
-                rev    = float(row["revenue"] or 0)
-                entry["orders"]  += qty
-                entry["revenue"] += rev
-                name = row.get("product_name") or "—"
-                entry["items"].append((name, qty, rev))
-
-            for mp in ("wb", "ozon"):
-                label = _EMOJI.get(mp, mp)
-                if mp not in by_mp:
-                    lines.append(f"{label} — нет данных")
-                    continue
-                agg = by_mp[mp]
-                lines.append(f"{label} — {agg['orders']} заказов, {agg['revenue']:,.0f} ₽")
-                for name, qty, rev in agg["items"]:
-                    lines.append(f"  • {name}: {qty} шт — {rev:,.0f} ₽")
-                lines.append("")
-
-            # Итог — общая выручка за 7 дней
-            lines.append("📈 *Итог за 7 дней*")
-            if totals_week:
-                for row in totals_week:
-                    mp = row["marketplace"]
-                    lines.append(f"{_SHORT.get(mp, mp)}: {float(row['revenue'] or 0):,.0f} ₽")
-            else:
-                lines.append("Нет данных")
-
-            # Остатки — группировка по артикулу и кластеру/складу
-            wb_low   = [s for s in low_stocks if s["marketplace"] == "wb" and 0 < s["stock"] <= 20]
-            wb_zero  = [s for s in low_stocks if s["marketplace"] == "wb" and s["stock"] == 0]
-            oz_low   = [s for s in low_stocks if s["marketplace"] == "ozon" and 0 < s["stock"] <= 20]
-            oz_zero  = [s for s in low_stocks if s["marketplace"] == "ozon" and s["stock"] == 0]
-
-            def _group_by_sku(rows: list[dict], cluster_fn) -> dict:
-                """product_id → {name, regions → stock}"""
-                grouped: dict = {}
-                for s in rows:
-                    pid  = s["product_id"]
-                    name = s.get("product_name") or pid
-                    region = cluster_fn(s.get("warehouse_name", ""))
-                    entry = grouped.setdefault(pid, {"name": name, "regions": {}})
-                    entry["regions"][region] = entry["regions"].get(region, 0) + s["stock"]
-                # Если одно название у нескольких артикулов — добавить артикул в скобках
-                name_counts: dict[str, int] = {}
-                for info in grouped.values():
-                    name_counts[info["name"]] = name_counts.get(info["name"], 0) + 1
-                for pid, info in grouped.items():
-                    if name_counts[info["name"]] > 1:
-                        info["name"] = f"{info['name']} ({pid})"
-                return grouped
-
-            def _render_low(grouped: dict) -> list[str]:
-                out = []
-                for info in grouped.values():
-                    out.append(f"📦 *{info['name']}*")
-                    for region, qty in info["regions"].items():
-                        out.append(f"  • {region}: {qty} шт")
-                return out
-
-            def _render_zero(grouped: dict) -> list[str]:
-                out = []
-                for info in grouped.values():
-                    regions = ", ".join(info["regions"].keys())
-                    out.append(f"📦 *{info['name']}*")
-                    out.append(f"  • {regions}")
-                return out
-
-            any_stocks = wb_low or wb_zero or oz_low or oz_zero
-
-            if not any_stocks:
-                lines.append("\n✅ Остатки в норме")
-            else:
-                # WB
-                if wb_low or wb_zero:
-                    lines.append("\n🟣 *WB — остатки*")
-                    if wb_low:
-                        lines.append("⚠️ *Заканчиваются* (0 < stock ≤ 20)")
-                        lines.extend(_render_low(_group_by_sku(wb_low, _get_cluster)))
-                    if wb_zero:
-                        lines.append("❌ *Закончились на складах*")
-                        lines.extend(_render_zero(_group_by_sku(wb_zero, _get_cluster)))
-                # Ozon
-                if oz_low or oz_zero:
-                    lines.append("\n🔵 *Ozon — остатки*")
-                    if oz_low:
-                        lines.append("⚠️ *Заканчиваются* (0 < stock ≤ 20)")
-                        lines.extend(_render_low(_group_by_sku(oz_low, _get_ozon_cluster)))
-                    if oz_zero:
-                        lines.append("❌ *Закончились на складах*")
-                        lines.extend(_render_zero(_group_by_sku(oz_zero, _get_ozon_cluster)))
-
-            text = "\n".join(lines)
-            _bot = bot if bot is not None else self.app.bot
-            logger.info(f"[sync] отправляю в {target_chat_id}")
-            await _bot.send_message(chat_id=target_chat_id, text=text, parse_mode="Markdown")
-            logger.info("[Макс/sync] сообщение отправлено")
-
+            await self._send_sales_summary(owner_chat_id, target_chat_id, bot)
+            await self._send_wb_stocks(owner_chat_id, target_chat_id, bot)
+            await self._send_ozon_stocks(owner_chat_id, target_chat_id, bot)
+            logger.info("[Макс/sync] сводка отправлена")
         except Exception as e:
             logger.error(f"[Макс/sync] ошибка: {e}", exc_info=True)
 
