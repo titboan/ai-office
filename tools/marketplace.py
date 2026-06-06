@@ -360,12 +360,12 @@ class WBClient:
         return results
 
     async def get_ad_stats(self, date_from: str, date_to: str) -> list[dict]:
-        """Статистика рекламных кампаний WB за период."""
+        """Статистика рекламных кампаний WB за период через /adv/v3/fullstats."""
         import json as _json
         _ADV_BASE = "https://advert-api.wildberries.ru"
         adv_headers = {"Authorization": self._token, "Content-Type": "application/json"}
 
-        # Шаг 1: получить список ID кампаний через /adv/v1/promotion/count
+        # Шаг 1: получить ID активных кампаний через /adv/v1/promotion/count
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 f"{_ADV_BASE}/adv/v1/promotion/count",
@@ -378,65 +378,58 @@ class WBClient:
                     return []
                 count_data = _json.loads(raw)
 
-        # Собираем ID только активных кампаний (status=9)
+        # Статусы 7 (пауза), 9 (активна), 11 (на паузе без бюджета) — fullstats поддерживает все три
         campaign_ids = []
         for group in (count_data.get("adverts") or []):
-            if group.get("status") == 9:
+            if group.get("status") in (7, 9, 11):
                 for adv in (group.get("advert_list") or []):
                     cid = adv.get("advertId")
                     if cid:
                         campaign_ids.append(cid)
 
         if not campaign_ids:
-            logger.info("[WB.get_ad_stats] нет активных кампаний (status=9)")
+            logger.info("[WB.get_ad_stats] нет кампаний")
             return []
-        logger.info(f"[WB.get_ad_stats] активных кампаний: {len(campaign_ids)}")
+        logger.info(f"[WB.get_ad_stats] кампаний для статистики: {len(campaign_ids)}")
 
-        # Шаг 2: получить инфо о кампаниях (имена) через POST /adv/v1/promotion/adverts
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{_ADV_BASE}/adv/v1/promotion/adverts",
-                headers=adv_headers,
-                json=campaign_ids[:50],  # максимум 50
-                timeout=_TIMEOUT,
-            ) as resp:
-                raw = await resp.text()
-                if resp.status != 200:
-                    logger.warning(f"[WB.get_ad_stats] adverts info HTTP {resp.status}: {raw[:200]}")
-                    campaign_names = {}
-                else:
-                    adverts_info = _json.loads(raw)
-                    campaign_names = {
-                        a["advertId"]: a.get("name", "")
-                        for a in (adverts_info if isinstance(adverts_info, list) else [])
-                    }
-
-        # Шаг 3: получить статистику через POST /adv/v2/fullstats
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{_ADV_BASE}/adv/v2/fullstats",
-                headers=adv_headers,
-                json=[{"id": cid, "dates": [date_from, date_to]} for cid in campaign_ids],
-                timeout=_TIMEOUT,
-            ) as resp:
-                raw = await resp.text()
-                if resp.status != 200:
-                    logger.error(f"[WB.get_ad_stats] fullstats HTTP {resp.status}: {raw[:200]}")
-                    return []
-                stats = _json.loads(raw)
-
+        # Шаг 2: GET /adv/v3/fullstats — агрегированная статистика за период
+        # Максимум 50 ID за раз, лимит 3 запроса/мин
         results = []
-        for item in (stats if isinstance(stats, list) else []):
-            cid = item.get("advertId")
-            for day in (item.get("days") or []):
-                views  = int(day.get("views", 0) or 0)
-                clicks = int(day.get("clicks", 0) or 0)
-                spend  = float(day.get("sum", 0) or 0)
-                ctr    = round(clicks / views * 100, 2) if views else 0.0
+        for i in range(0, len(campaign_ids), 50):
+            batch = campaign_ids[i:i+50]
+            if i > 0:
+                await asyncio.sleep(20)  # соблюдаем rate limit: 3 запроса/мин, интервал 20 сек
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{_ADV_BASE}/adv/v3/fullstats",
+                    headers=adv_headers,
+                    params={
+                        "ids":       ",".join(str(cid) for cid in batch),
+                        "beginDate": date_from,
+                        "endDate":   date_to,
+                    },
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status == 429:
+                        logger.warning("[WB.get_ad_stats] rate limit, жду 60 сек")
+                        await asyncio.sleep(60)
+                        continue
+                    if resp.status != 200:
+                        logger.error(f"[WB.get_ad_stats] fullstats HTTP {resp.status}: {raw[:200]}")
+                        continue
+                    stats = _json.loads(raw)
+
+            for item in (stats if isinstance(stats, list) else []):
+                cid = item.get("advertId")
+                views  = int(item.get("views", 0) or 0)
+                clicks = int(item.get("clicks", 0) or 0)
+                spend  = float(item.get("sum", 0) or 0)
+                ctr    = round(float(item.get("ctr", 0) or 0), 2)
                 results.append({
                     "campaign_id":   str(cid),
-                    "campaign_name": campaign_names.get(cid, str(cid)),
-                    "stat_date":     day.get("date", "")[:10],
+                    "campaign_name": str(cid),  # имя получим отдельно если нужно
+                    "stat_date":     date_from,  # агрегат за период, берём дату начала
                     "views":         views,
                     "clicks":        clicks,
                     "ctr":           ctr,
