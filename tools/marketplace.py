@@ -378,10 +378,10 @@ class WBClient:
                     return []
                 count_data = _json.loads(raw)
 
-        # Статусы 7 (пауза), 9 (активна), 11 (на паузе без бюджета) — fullstats поддерживает все три
+        # Только активные кампании (status=9) — у завершённых нет свежей статистики
         campaign_ids = []
         for group in (count_data.get("adverts") or []):
-            if group.get("status") in (7, 9, 11):
+            if group.get("status") == 9:
                 for adv in (group.get("advert_list") or []):
                     cid = adv.get("advertId")
                     if cid:
@@ -422,19 +422,21 @@ class WBClient:
 
             for item in (stats if isinstance(stats, list) else []):
                 cid = item.get("advertId")
-                views  = int(item.get("views", 0) or 0)
-                clicks = int(item.get("clicks", 0) or 0)
-                spend  = float(item.get("sum", 0) or 0)
-                ctr    = round(float(item.get("ctr", 0) or 0), 2)
-                results.append({
-                    "campaign_id":   str(cid),
-                    "campaign_name": str(cid),  # имя получим отдельно если нужно
-                    "stat_date":     date_from,  # агрегат за период, берём дату начала
-                    "views":         views,
-                    "clicks":        clicks,
-                    "ctr":           ctr,
-                    "spend":         spend,
-                })
+                for day in (item.get("days") or []):
+                    views  = int(day.get("views", 0) or 0)
+                    clicks = int(day.get("clicks", 0) or 0)
+                    spend  = float(day.get("sum", 0) or 0)
+                    ctr    = round(float(day.get("ctr", 0) or 0), 2)
+                    stat_date = day.get("date", "")[:10]
+                    results.append({
+                        "campaign_id":   str(cid),
+                        "campaign_name": str(cid),
+                        "stat_date":     stat_date,
+                        "views":         views,
+                        "clicks":        clicks,
+                        "ctr":           ctr,
+                        "spend":         spend,
+                    })
 
         logger.info(f"[WB.get_ad_stats] итого записей: {len(results)}")
         return results
