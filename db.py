@@ -464,6 +464,32 @@ async def upsert_stock(
         )
 
 
+async def upsert_ad_stat(
+    chat_id: int, marketplace: str, campaign_id: str, campaign_name: str,
+    stat_date: str, views: int, clicks: int, ctr: float, spend: float,
+) -> None:
+    """Сохранить/обновить статистику рекламной кампании за день."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO marketplace_adv_stats
+                (chat_id, marketplace, campaign_id, campaign_name, stat_date,
+                 views, clicks, ctr, spend, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+            ON CONFLICT (chat_id, marketplace, campaign_id, stat_date) DO UPDATE
+                SET campaign_name = EXCLUDED.campaign_name,
+                    views         = EXCLUDED.views,
+                    clicks        = EXCLUDED.clicks,
+                    ctr           = EXCLUDED.ctr,
+                    spend         = EXCLUDED.spend,
+                    updated_at    = NOW()
+            """,
+            chat_id, marketplace, campaign_id, campaign_name,
+            stat_date, views, clicks, ctr, spend,
+        )
+
+
 async def cleanup_old_stocks(chat_id: int, marketplace: str) -> int:
     """Удалить записи где product_id состоит только из цифр (старые nmId)."""
     pool = await get_pool()
