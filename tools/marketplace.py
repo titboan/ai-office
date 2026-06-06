@@ -526,7 +526,7 @@ class OzonClient:
                 continue
             results.append({
                 "product_id":    offer_id,
-                "product_name":  item.get("item_name", "") or item.get("title", ""),
+                "product_name":  item.get("item_name") or item.get("title") or offer_id,
                 "warehouse_name": item.get("warehouse_name", ""),
                 "stock":         int(item.get("free_to_sell_amount", 0) or item.get("for_sale", 0)),
                 "reserved":      int(item.get("reserved_amount", 0)),
