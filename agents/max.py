@@ -929,6 +929,23 @@ class MaxAgent(BaseAgent):
             out.append(f"  • {regions}")
         return out
 
+    @staticmethod
+    def _split_message(text: str, max_len: int = 4000) -> list[str]:
+        parts: list[str] = []
+        current = ""
+        for line in text.split("\n"):
+            if len(current) + len(line) + 1 > max_len and current:
+                if line.startswith("📦") or line.startswith("⚠️") or line.startswith("❌"):
+                    parts.append(current.rstrip("\n"))
+                    current = line + "\n"
+                else:
+                    current += line + "\n"
+            else:
+                current += line + "\n"
+        if current.strip():
+            parts.append(current.rstrip("\n"))
+        return parts or [text]
+
     async def _send_sales_summary(self, owner_chat_id: int, target_chat_id: int, bot=None) -> None:
         from db import get_orders_summary, get_orders_total, get_orders_days_count, get_sales_period, get_sales_total
         from zoneinfo import ZoneInfo
@@ -1069,7 +1086,8 @@ class MaxAgent(BaseAgent):
                 lines.append("\n❌ *Закончились на складах*")
                 lines.extend(self._render_zero(self._group_by_sku(wb_zero, _get_cluster)))
 
-        await _bot.send_message(chat_id=target_chat_id, text="\n".join(lines), parse_mode="Markdown")
+        for part in self._split_message("\n".join(lines)):
+            await _bot.send_message(chat_id=target_chat_id, text=part, parse_mode="Markdown")
 
     async def _send_ozon_stocks(self, owner_chat_id: int, target_chat_id: int, bot=None) -> None:
         from db import get_low_stocks
@@ -1090,7 +1108,8 @@ class MaxAgent(BaseAgent):
                 lines.append("\n❌ *Закончились на складах*")
                 lines.extend(self._render_zero(self._group_by_sku(oz_zero, _get_ozon_cluster)))
 
-        await _bot.send_message(chat_id=target_chat_id, text="\n".join(lines), parse_mode="Markdown")
+        for part in self._split_message("\n".join(lines)):
+            await _bot.send_message(chat_id=target_chat_id, text=part, parse_mode="Markdown")
 
     async def send_daily_summary(self, owner_chat_id: int, target_chat_id: int, bot=None) -> None:
         """Синхронизировать данные и отправить ежедневную сводку тремя сообщениями."""
