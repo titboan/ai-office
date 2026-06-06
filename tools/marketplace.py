@@ -359,6 +359,68 @@ class WBClient:
         logger.info(f"[WB.get_sales] продаж: {len(results)}, возвратов пропущено: {skipped_returns}")
         return results
 
+    async def get_ad_stats(self, date_from: str, date_to: str) -> list[dict]:
+        """Статистика рекламных кампаний WB за период."""
+        import json as _json
+        _ADV_BASE = "https://advert-api.wildberries.ru"
+        adv_headers = {"Authorization": self._token, "Content-Type": "application/json"}
+
+        # Шаг 1: получить список кампаний
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{_ADV_BASE}/adv/v1/promotion/adverts",
+                headers=adv_headers,
+                params={"status": 9},  # 9 = активные
+                timeout=_TIMEOUT,
+            ) as resp:
+                raw = await resp.text()
+                if resp.status != 200:
+                    logger.error(f"[WB.get_ad_stats] adverts HTTP {resp.status}: {raw[:200]}")
+                    return []
+                campaigns = _json.loads(raw)
+
+        if not campaigns:
+            logger.info("[WB.get_ad_stats] нет активных кампаний")
+            return []
+
+        campaign_ids = [c["advertId"] for c in campaigns if c.get("advertId")]
+        campaign_names = {c["advertId"]: c.get("name", "") for c in campaigns}
+
+        # Шаг 2: получить статистику
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{_ADV_BASE}/adv/v2/fullstats",
+                headers=adv_headers,
+                json=[{"id": cid, "dates": [date_from, date_to]} for cid in campaign_ids],
+                timeout=_TIMEOUT,
+            ) as resp:
+                raw = await resp.text()
+                if resp.status != 200:
+                    logger.error(f"[WB.get_ad_stats] fullstats HTTP {resp.status}: {raw[:200]}")
+                    return []
+                stats = _json.loads(raw)
+
+        results = []
+        for item in (stats if isinstance(stats, list) else []):
+            cid = item.get("advertId")
+            for day in (item.get("days") or []):
+                views  = int(day.get("views", 0) or 0)
+                clicks = int(day.get("clicks", 0) or 0)
+                spend  = float(day.get("sum", 0) or 0)
+                ctr    = round(clicks / views * 100, 2) if views else 0.0
+                results.append({
+                    "campaign_id":   str(cid),
+                    "campaign_name": campaign_names.get(cid, ""),
+                    "stat_date":     day.get("date", "")[:10],
+                    "views":         views,
+                    "clicks":        clicks,
+                    "ctr":           ctr,
+                    "spend":         spend,
+                })
+
+        logger.info(f"[WB.get_ad_stats] кампаний: {len(campaign_ids)}, записей: {len(results)}")
+        return results
+
 
 # ── Ozon ──────────────────────────────────────────────────────────────────────
 
