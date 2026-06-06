@@ -365,28 +365,53 @@ class WBClient:
         _ADV_BASE = "https://advert-api.wildberries.ru"
         adv_headers = {"Authorization": self._token, "Content-Type": "application/json"}
 
-        # Шаг 1: получить список кампаний
+        # Шаг 1: получить список ID кампаний через /adv/v1/promotion/count
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{_ADV_BASE}/adv/v1/promotion/adverts",
+                f"{_ADV_BASE}/adv/v1/promotion/count",
                 headers=adv_headers,
-                params={"status": 9},  # 9 = активные
                 timeout=_TIMEOUT,
             ) as resp:
                 raw = await resp.text()
                 if resp.status != 200:
-                    logger.error(f"[WB.get_ad_stats] adverts HTTP {resp.status}: {raw[:200]}")
+                    logger.error(f"[WB.get_ad_stats] count HTTP {resp.status}: {raw[:200]}")
                     return []
-                campaigns = _json.loads(raw)
+                count_data = _json.loads(raw)
 
-        if not campaigns:
-            logger.info("[WB.get_ad_stats] нет активных кампаний")
+        # Собираем ID только активных кампаний (status=9)
+        campaign_ids = []
+        for group in (count_data.get("adverts") or []):
+            if group.get("status") == 9:
+                for adv in (group.get("advert_list") or []):
+                    cid = adv.get("advertId")
+                    if cid:
+                        campaign_ids.append(cid)
+
+        if not campaign_ids:
+            logger.info("[WB.get_ad_stats] нет активных кампаний (status=9)")
             return []
+        logger.info(f"[WB.get_ad_stats] активных кампаний: {len(campaign_ids)}")
 
-        campaign_ids = [c["advertId"] for c in campaigns if c.get("advertId")]
-        campaign_names = {c["advertId"]: c.get("name", "") for c in campaigns}
+        # Шаг 2: получить инфо о кампаниях (имена) через POST /adv/v1/promotion/adverts
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{_ADV_BASE}/adv/v1/promotion/adverts",
+                headers=adv_headers,
+                json=campaign_ids[:50],  # максимум 50
+                timeout=_TIMEOUT,
+            ) as resp:
+                raw = await resp.text()
+                if resp.status != 200:
+                    logger.warning(f"[WB.get_ad_stats] adverts info HTTP {resp.status}: {raw[:200]}")
+                    campaign_names = {}
+                else:
+                    adverts_info = _json.loads(raw)
+                    campaign_names = {
+                        a["advertId"]: a.get("name", "")
+                        for a in (adverts_info if isinstance(adverts_info, list) else [])
+                    }
 
-        # Шаг 2: получить статистику
+        # Шаг 3: получить статистику через POST /adv/v2/fullstats
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{_ADV_BASE}/adv/v2/fullstats",
@@ -410,7 +435,7 @@ class WBClient:
                 ctr    = round(clicks / views * 100, 2) if views else 0.0
                 results.append({
                     "campaign_id":   str(cid),
-                    "campaign_name": campaign_names.get(cid, ""),
+                    "campaign_name": campaign_names.get(cid, str(cid)),
                     "stat_date":     day.get("date", "")[:10],
                     "views":         views,
                     "clicks":        clicks,
@@ -418,7 +443,7 @@ class WBClient:
                     "spend":         spend,
                 })
 
-        logger.info(f"[WB.get_ad_stats] кампаний: {len(campaign_ids)}, записей: {len(results)}")
+        logger.info(f"[WB.get_ad_stats] итого записей: {len(results)}")
         return results
 
 
