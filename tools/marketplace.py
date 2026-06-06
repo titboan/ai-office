@@ -789,19 +789,28 @@ class OzonClient:
                 "limit":     1000,
                 "offset":    offset,
             }
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(url, headers=self._headers(), json=body, timeout=_TIMEOUT) as resp:
-                        raw = await resp.text()
-                        if resp.status != 200:
-                            logger.error(f"[Ozon.get_orders_analytics] HTTP {resp.status}: {raw[:200]}")
+            data = None
+            for attempt in range(3):
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(url, headers=self._headers(), json=body, timeout=_TIMEOUT) as resp:
+                            raw = await resp.text()
+                            if resp.status == 429:
+                                logger.warning(f"[Ozon.get_orders_analytics] rate limit, жду 60 сек (attempt {attempt+1})")
+                                await asyncio.sleep(60)
+                                continue
+                            if resp.status != 200:
+                                logger.error(f"[Ozon.get_orders_analytics] HTTP {resp.status}: {raw[:200]}")
+                                break
+                            data = _json.loads(raw)
                             break
-                        data = _json.loads(raw)
-            except asyncio.TimeoutError:
-                logger.error(f"[marketplace] timeout: POST {url}")
-                break
-            except Exception as e:
-                logger.error(f"[Ozon.get_orders_analytics] exception: {e}")
+                except asyncio.TimeoutError:
+                    logger.error(f"[marketplace] timeout: POST {url}")
+                    break
+                except Exception as e:
+                    logger.error(f"[Ozon.get_orders_analytics] exception: {e}")
+                    break
+            if data is None:
                 break
             rows = (data.get("result") or {}).get("data") or []
             for row in rows:
