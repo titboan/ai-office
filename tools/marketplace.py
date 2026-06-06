@@ -449,8 +449,39 @@ class OzonClient:
             return False
 
 
+    async def _get_sku_to_offer_id(self, skus: list[int]) -> dict[int, str]:
+        """Получить маппинг SKU → offer_id через /v2/product/info/list."""
+        import json as _json
+        if not skus:
+            return {}
+        url = f"{self._BASE}/v2/product/info/list"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    headers=self._headers(),
+                    json={"sku": skus},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[Ozon.get_stocks] product/info/list HTTP {resp.status}: {raw[:200]}")
+                        return {}
+                    data = _json.loads(raw)
+        except Exception as e:
+            logger.error(f"[Ozon.get_stocks] product/info/list exception: {e}")
+            return {}
+        mapping: dict[int, str] = {}
+        for item in (data.get("result") or {}).get("items") or []:
+            sku = item.get("sku")
+            offer_id = str(item.get("offer_id") or "").strip()
+            if sku and offer_id:
+                mapping[int(sku)] = offer_id
+        return mapping
+
     async def get_stocks(self, **_) -> list[dict]:
-        """Остатки по складам через v2 analytics API."""
+        """Остатки по складам: analytics API + обогащение offer_id через product/info/list."""
+        import json as _json
         url = f"{self._BASE}/v2/analytics/stock_on_warehouses"
         try:
             async with aiohttp.ClientSession() as session:
@@ -465,7 +496,6 @@ class OzonClient:
                     if resp.status != 200:
                         logger.error(f"[Ozon.get_stocks] HTTP {resp.status}: {raw[:200]}")
                         return []
-                    import json as _json
                     data = _json.loads(raw)
         except asyncio.TimeoutError:
             logger.error(f"[marketplace] timeout: POST {url}")
@@ -476,16 +506,18 @@ class OzonClient:
         if not data:
             return []
         rows = data.get("result", {}).get("rows", [])
-        if rows:
-            sample = rows[:3]
-            logger.info(
-                f"[Ozon.get_stocks] sample: "
-                + str([{"item_code": r.get("item_code"), "item_name": r.get("item_name"), "sku": r.get("sku")} for r in sample])
-            )
+
+        # Шаг 2: собрать уникальные SKU и получить маппинг → offer_id
+        skus = list({int(r["sku"]) for r in rows if r.get("sku")})
+        sku_map = await self._get_sku_to_offer_id(skus)
+        mapped = sum(1 for s in skus if s in sku_map)
+        logger.info(f"[Ozon.get_stocks] SKU всего: {len(skus)}, получили offer_id: {mapped}, без маппинга: {len(skus) - mapped}")
+
         results = []
         for item in rows:
-            item_code = str(item.get("item_code") or "").strip()
-            product_id = item_code if item_code else str(item.get("sku", ""))
+            sku = item.get("sku")
+            offer_id = sku_map.get(int(sku), "") if sku else ""
+            product_id = offer_id if offer_id else str(sku or "")
             results.append({
                 "product_id":    product_id,
                 "product_name":  item.get("item_name", "") or item.get("title", ""),
