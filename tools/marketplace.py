@@ -428,6 +428,8 @@ class WBClient:
                     spend  = float(day.get("sum", 0) or 0)
                     ctr    = round(float(day.get("ctr", 0) or 0), 2)
                     stat_date = day.get("date", "")[:10]
+                    if not stat_date:
+                        continue
                     results.append({
                         "campaign_id":   str(cid),
                         "campaign_name": str(cid),
