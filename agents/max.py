@@ -785,6 +785,8 @@ class MaxAgent(BaseAgent):
             try:
                 stocks = await client.get_stocks(statistics_token=stats_token)
                 for s in stocks:
+                    if not s.get("product_id"):  # пропускаем пустые product_id
+                        continue
                     await upsert_stock(
                         chat_id=chat_id, marketplace=mp,
                         product_id=s["product_id"], product_name=s.get("product_name"),
