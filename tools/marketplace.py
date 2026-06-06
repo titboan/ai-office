@@ -508,23 +508,31 @@ class OzonClient:
         rows = data.get("result", {}).get("rows", [])
 
         # Шаг 2: собрать уникальные SKU и получить маппинг → offer_id
-        skus = list({int(r["sku"]) for r in rows if r.get("sku")})
-        sku_map = await self._get_sku_to_offer_id(skus)
-        mapped = sum(1 for s in skus if s in sku_map)
-        logger.info(f"[Ozon.get_stocks] SKU всего: {len(skus)}, получили offer_id: {mapped}, без маппинга: {len(skus) - mapped}")
+        all_skus = list({int(r["sku"]) for r in rows if r.get("sku")})
+        sku_map = await self._get_sku_to_offer_id(all_skus)
+        mapped = sum(1 for s in all_skus if s in sku_map)
+        without_offer = [s for s in all_skus if s not in sku_map]
+        logger.info(f"[Ozon.get_stocks] SKU всего: {len(all_skus)}, получили offer_id: {mapped}, без маппинга: {len(without_offer)}")
+        if without_offer:
+            logger.warning(f"[Ozon.get_stocks] SKU без offer_id: {without_offer}")
 
         results = []
+        skipped = 0
         for item in rows:
             sku = item.get("sku")
             offer_id = sku_map.get(int(sku), "") if sku else ""
-            product_id = offer_id if offer_id else str(sku or "")
+            if not offer_id:
+                skipped += 1
+                continue
             results.append({
-                "product_id":    product_id,
+                "product_id":    offer_id,
                 "product_name":  item.get("item_name", "") or item.get("title", ""),
                 "warehouse_name": item.get("warehouse_name", ""),
                 "stock":         int(item.get("free_to_sell_amount", 0) or item.get("for_sale", 0)),
                 "reserved":      int(item.get("reserved_amount", 0)),
             })
+        if skipped:
+            logger.warning(f"[Ozon.get_stocks] пропущено записей без offer_id: {skipped}")
         return results
 
     async def get_sales(self, date_from: datetime, **_) -> list[dict]:

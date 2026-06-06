@@ -672,7 +672,7 @@ async def clear_ozon_numeric_stocks(chat_id: int) -> int:
     pool = await get_pool()
     async with pool.acquire() as conn:
         result = await conn.execute(
-            "DELETE FROM marketplace_stocks WHERE chat_id = $1 AND marketplace = 'ozon' AND product_id ~ '^\\d+$'",
+            "DELETE FROM marketplace_stocks WHERE chat_id = $1 AND marketplace = 'ozon' AND (product_id ~ '^\\d+$' OR length(product_id) > 20)",
             chat_id,
         )
     return int(result.split()[-1]) if result else 0
