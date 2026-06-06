@@ -807,6 +807,24 @@ class MaxAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[Макс/sync] get_stocks {mp_label}: {e}")
 
+            # Реклама WB
+            if mp == "wb":
+                try:
+                    from db import upsert_ad_stat
+                    date_to   = datetime.now(_UTC).strftime("%Y-%m-%d")
+                    date_from_adv = (datetime.now(_UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
+                    ad_stats  = await client.get_ad_stats(date_from=date_from_adv, date_to=date_to)
+                    for s in ad_stats:
+                        await upsert_ad_stat(
+                            chat_id=chat_id, marketplace="wb",
+                            campaign_id=s["campaign_id"], campaign_name=s["campaign_name"],
+                            stat_date=s["stat_date"], views=s["views"],
+                            clicks=s["clicks"], ctr=s["ctr"], spend=s["spend"],
+                        )
+                    logger.info(f"[Макс/sync] WB реклама: {len(ad_stats)} записей")
+                except Exception as e:
+                    logger.error(f"[Макс/sync] WB реклама: {e}")
+
             # Продажи
             try:
                 sales = await client.get_sales(date_from=since, statistics_token=stats_token)
