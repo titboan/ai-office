@@ -341,18 +341,22 @@ class WBClient:
         if not data:
             return []
         results = []
+        skipped_returns = 0
         for item in (data if isinstance(data, list) else []):
-            finished = float(item.get("finishedPrice", 0) or 0)
-            for_pay  = float(item.get("forPay", 0) or 0)
+            if item.get("saleID", "").startswith("R"):
+                skipped_returns += 1
+                continue
+            for_pay = float(item.get("forPay", 0) or 0)
             results.append({
                 "order_id":    item.get("srid", "") or item.get("odid", ""),
                 "product_id":  str(item.get("nmId", "")),
                 "product_name": item.get("subject", "") or item.get("supplierArticle", ""),
                 "quantity":    int(item.get("quantity", 1) or 1),
-                "price":       finished,
-                "commission":  round(for_pay - finished, 2),
+                "price":       for_pay,
+                "commission":  0.0,
                 "sale_date":   item.get("lastChangeDate", ""),
             })
+        logger.info(f"[WB.get_sales] продаж: {len(results)}, возвратов пропущено: {skipped_returns}")
         return results
 
 
