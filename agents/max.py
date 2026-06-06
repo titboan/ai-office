@@ -815,10 +815,12 @@ class MaxAgent(BaseAgent):
                     date_from_adv = (datetime.now(_UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
                     ad_stats  = await client.get_ad_stats(date_from=date_from_adv, date_to=date_to)
                     for s in ad_stats:
+                        from datetime import date as _date
+                        stat_date = _date.fromisoformat(s["stat_date"]) if isinstance(s["stat_date"], str) else s["stat_date"]
                         await upsert_ad_stat(
                             chat_id=chat_id, marketplace="wb",
                             campaign_id=s["campaign_id"], campaign_name=s["campaign_name"],
-                            stat_date=s["stat_date"], views=s["views"],
+                            stat_date=stat_date, views=s["views"],
                             clicks=s["clicks"], ctr=s["ctr"], spend=s["spend"],
                         )
                     logger.info(f"[Макс/sync] WB реклама: {len(ad_stats)} записей")
