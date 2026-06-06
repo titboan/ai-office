@@ -475,10 +475,19 @@ class OzonClient:
             return []
         if not data:
             return []
+        rows = data.get("result", {}).get("rows", [])
+        if rows:
+            sample = rows[:3]
+            logger.info(
+                f"[Ozon.get_stocks] sample: "
+                + str([{"item_code": r.get("item_code"), "item_name": r.get("item_name"), "sku": r.get("sku")} for r in sample])
+            )
         results = []
-        for item in data.get("result", {}).get("rows", []):
+        for item in rows:
+            item_code = str(item.get("item_code") or "").strip()
+            product_id = item_code if item_code else str(item.get("sku", ""))
             results.append({
-                "product_id":    str(item.get("offer_id", "")),
+                "product_id":    product_id,
                 "product_name":  item.get("item_name", "") or item.get("title", ""),
                 "warehouse_name": item.get("warehouse_name", ""),
                 "stock":         int(item.get("free_to_sell_amount", 0) or item.get("for_sale", 0)),
