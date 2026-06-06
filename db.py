@@ -667,6 +667,17 @@ async def get_orders_total(chat_id: int, days: int = 7) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def clear_ozon_numeric_stocks(chat_id: int) -> int:
+    """Удалить записи остатков Ozon где product_id состоит только из цифр (старые SKU)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM marketplace_stocks WHERE chat_id = $1 AND marketplace = 'ozon' AND product_id ~ '^\\d+$'",
+            chat_id,
+        )
+    return int(result.split()[-1]) if result else 0
+
+
 async def clear_ozon_analytics(chat_id: int, date_from, date_to) -> int:
     """Удалить аналитические записи Ozon за период перед пересохранением."""
     pool = await get_pool()

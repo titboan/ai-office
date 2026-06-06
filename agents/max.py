@@ -797,6 +797,11 @@ class MaxAgent(BaseAgent):
                     deleted = await cleanup_old_stocks(chat_id, "wb")
                     if deleted:
                         logger.info(f"[Макс/sync] WB: удалено {deleted} старых записей с nmId")
+                if mp == "ozon":
+                    from db import clear_ozon_numeric_stocks
+                    deleted = await clear_ozon_numeric_stocks(chat_id)
+                    if deleted:
+                        logger.info(f"[Макс/sync] Ozon: удалено {deleted} старых записей с числовым SKU")
             except Exception as e:
                 logger.error(f"[Макс/sync] get_stocks {mp_label}: {e}")
 
@@ -907,7 +912,7 @@ class MaxAgent(BaseAgent):
         for info in grouped.values():
             name_counts[info["name"]] = name_counts.get(info["name"], 0) + 1
         for pid, info in grouped.items():
-            if name_counts[info["name"]] > 1:
+            if name_counts[info["name"]] > 1 and pid:
                 info["name"] = f"{info['name']} ({pid})"
         return grouped
 
