@@ -929,7 +929,7 @@ class OzonPerformanceClient:
             logger.error(f"[OzonPerf] campaigns exception: {e}")
             return []
 
-        campaign_ids = [int(c["id"]) for c in (campaigns_data.get("list") or []) if c.get("id")]
+        campaign_ids = [str(c["id"]) for c in (campaigns_data.get("list") or []) if c.get("id")]
         campaign_names = {str(c["id"]): c.get("title") or str(c["id"]) for c in (campaigns_data.get("list") or [])}
 
         if not campaign_ids:
