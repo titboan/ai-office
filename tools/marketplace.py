@@ -856,6 +856,182 @@ class OzonClient:
         return results
 
 
+class OzonPerformanceClient:
+    _BASE = "https://api-performance.ozon.ru"
+
+    def __init__(self, client_id: str, client_secret: str, redis_client) -> None:
+        self._client_id     = client_id
+        self._client_secret = client_secret
+        self._redis         = redis_client
+
+    async def _get_token(self) -> str | None:
+        """Получить токен из Redis или запросить новый. TTL 25 минут."""
+        import json as _json
+        # Пробуем Redis
+        try:
+            cached = await self._redis.get("ozon_perf_token")
+            if cached:
+                return cached.decode()
+        except Exception as e:
+            logger.warning(f"[OzonPerf] Redis get error: {e}")
+
+        # Получаем новый токен
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self._BASE}/api/client/token",
+                    json={
+                        "client_id":     self._client_id,
+                        "client_secret": self._client_secret,
+                        "grant_type":    "client_credentials",
+                    },
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    if resp.status != 200:
+                        logger.error(f"[OzonPerf] token HTTP {resp.status}: {await resp.text()}")
+                        return None
+                    data = await resp.json()
+                    token = data.get("access_token")
+        except Exception as e:
+            logger.error(f"[OzonPerf] token exception: {e}")
+            return None
+
+        # Кешируем на 25 минут
+        try:
+            await self._redis.setex("ozon_perf_token", 1500, token)
+        except Exception as e:
+            logger.warning(f"[OzonPerf] Redis set error: {e}")
+
+        return token
+
+    async def get_ad_stats(self, date_from: str, date_to: str) -> list[dict]:
+        """Статистика рекламных кампаний Ozon Performance за период."""
+        import json as _json, csv, io
+
+        token = await self._get_token()
+        if not token:
+            return []
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Шаг 1: получить список кампаний
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self._BASE}/api/client/campaign",
+                    headers=headers,
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    if resp.status != 200:
+                        logger.error(f"[OzonPerf] campaigns HTTP {resp.status}")
+                        return []
+                    campaigns_data = await resp.json()
+        except Exception as e:
+            logger.error(f"[OzonPerf] campaigns exception: {e}")
+            return []
+
+        campaign_ids = [int(c["id"]) for c in (campaigns_data.get("list") or []) if c.get("id")]
+        campaign_names = {str(c["id"]): c.get("title") or str(c["id"]) for c in (campaigns_data.get("list") or [])}
+
+        if not campaign_ids:
+            logger.info("[OzonPerf] нет кампаний")
+            return []
+        logger.info(f"[OzonPerf] кампаний: {len(campaign_ids)}")
+
+        # Шаг 2: создать задачу статистики
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self._BASE}/api/client/statistics",
+                    headers=headers,
+                    json={"campaigns": campaign_ids, "dateFrom": date_from, "dateTo": date_to},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    if resp.status != 200:
+                        logger.error(f"[OzonPerf] statistics POST HTTP {resp.status}")
+                        return []
+                    task_data = await resp.json()
+                    uuid = task_data.get("UUID")
+        except Exception as e:
+            logger.error(f"[OzonPerf] statistics POST exception: {e}")
+            return []
+
+        if not uuid:
+            logger.error("[OzonPerf] UUID не получен")
+            return []
+
+        # Шаг 3: поллим результат (до 10 попыток, интервал 5 сек)
+        report_data = None
+        async with aiohttp.ClientSession() as session:
+            for attempt in range(10):
+                await asyncio.sleep(5)
+                try:
+                    async with session.get(
+                        f"{self._BASE}/api/client/statistics/{uuid}",
+                        headers=headers,
+                        timeout=_TIMEOUT,
+                    ) as resp:
+                        if resp.status != 200:
+                            logger.warning(f"[OzonPerf] poll attempt {attempt+1} HTTP {resp.status}")
+                            continue
+                        poll_data = await resp.json()
+                        state = poll_data.get("state") or poll_data.get("status")
+                        logger.debug(f"[OzonPerf] poll attempt {attempt+1} state={state}")
+                        if state in ("OK", "READY", "done"):
+                            report_data = poll_data
+                            break
+                except Exception as e:
+                    logger.warning(f"[OzonPerf] poll exception: {e}")
+
+        if not report_data:
+            logger.error("[OzonPerf] отчёт не готов после 10 попыток")
+            return []
+
+        # Шаг 4: скачать CSV
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self._BASE}/api/client/statistics/report",
+                    headers=headers,
+                    params={"UUID": uuid},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    if resp.status != 200:
+                        logger.error(f"[OzonPerf] report HTTP {resp.status}")
+                        return []
+                    csv_text = await resp.text()
+        except Exception as e:
+            logger.error(f"[OzonPerf] report exception: {e}")
+            return []
+
+        # Шаг 5: парсим CSV
+        results = []
+        try:
+            reader = csv.DictReader(io.StringIO(csv_text), delimiter=";")
+            for row in reader:
+                campaign_id = str(row.get("Кампания", "") or "").strip()
+                views  = int(float(row.get("Показы", 0) or 0))
+                clicks = int(float(row.get("Клики", 0) or 0))
+                spend  = float(str(row.get("Расход", 0) or 0).replace(",", "."))
+                ctr    = round(float(str(row.get("CTR", 0) or 0).replace(",", ".")), 2)
+                date   = str(row.get("Дата", date_from) or date_from).strip()[:10]
+                if not campaign_id:
+                    continue
+                results.append({
+                    "campaign_id":   campaign_id,
+                    "campaign_name": campaign_names.get(campaign_id, campaign_id),
+                    "stat_date":     date,
+                    "views":         views,
+                    "clicks":        clicks,
+                    "ctr":           ctr,
+                    "spend":         spend,
+                })
+        except Exception as e:
+            logger.error(f"[OzonPerf] CSV parse exception: {e}")
+
+        logger.info(f"[OzonPerf] итого записей: {len(results)}")
+        return results
+
+
 def make_client(shop: dict):
     """Фабрика: dict из marketplace_shops → WBClient или OzonClient."""
     mp    = shop["marketplace"]
