@@ -919,6 +919,7 @@ class OzonPerformanceClient:
                 async with session.get(
                     f"{self._BASE}/api/client/campaign",
                     headers=headers,
+                    params={"state": "CAMPAIGN_STATE_RUNNING"},
                     timeout=_TIMEOUT,
                 ) as resp:
                     if resp.status != 200:
