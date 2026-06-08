@@ -1008,17 +1008,17 @@ class OzonPerformanceClient:
                         params={"UUID": uuid},
                         timeout=_TIMEOUT,
                     ) as resp:
+                        logger.info(f"[OzonPerf] batch {batch_num} report HTTP {resp.status} content-type={resp.content_type}")
                         if resp.status != 200:
-                            logger.error(f"[OzonPerf] batch {batch_num} report HTTP {resp.status}")
+                            body = await resp.text(errors="replace")
+                            logger.error(f"[OzonPerf] batch {batch_num} report HTTP {resp.status}: {body[:200]}")
                             continue
                         raw_bytes = await resp.read()
-                        for enc in ("utf-8-sig", "windows-1251", "utf-8"):
-                            try:
-                                csv_texts.append(raw_bytes.decode(enc))
-                                logger.info(f"[OzonPerf] batch {batch_num}/{total_batches} CSV получен")
-                                break
-                            except UnicodeDecodeError:
-                                continue
+                        logger.info(f"[OzonPerf] batch {batch_num} CSV bytes={len(raw_bytes)}")
+                        if raw_bytes:
+                            csv_text_batch = raw_bytes.decode("windows-1251", errors="replace")
+                            csv_texts.append(csv_text_batch)
+                            logger.info(f"[OzonPerf] batch {batch_num}/{total_batches} CSV получен, строк: {csv_text_batch.count(chr(10))}")
                 except Exception as e:
                     logger.error(f"[OzonPerf] batch {batch_num} report exception: {e}")
 
