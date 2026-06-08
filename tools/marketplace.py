@@ -979,8 +979,8 @@ class OzonPerformanceClient:
         async with aiohttp.ClientSession() as session:
             for uuid in uuids:
                 report_ready = False
-                for attempt in range(10):
-                    await asyncio.sleep(5)
+                for attempt in range(24):
+                    await asyncio.sleep(10)
                     try:
                         async with session.get(
                             f"{self._BASE}/api/client/statistics/{uuid}",
