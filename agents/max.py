@@ -276,9 +276,10 @@ class MaxAgent(BaseAgent):
             InlineKeyboardButton("📊 Статистика",        callback_data="onboard:stats"),
             InlineKeyboardButton("📦 Сводка магазина",   callback_data="onboard:daily_summary"),
         ]
+        row2b = [InlineKeyboardButton("🔄 Синхронизировать", callback_data="onboard:sync")]
         row3 = [InlineKeyboardButton("❓ Что я умею",  callback_data="onboard:help")]
 
-        rows = [row1, row2]
+        rows = [row1, row2, row2b]
         update_row = []
         if "wb" in connected:
             update_row.append(InlineKeyboardButton("🔄 Обновить токен WB",   callback_data="onboard:update_wb"))
@@ -478,6 +479,17 @@ class MaxAgent(BaseAgent):
                 await self._send_wb_stocks(owner_chat_id, target_chat_id, context.bot)
             if action in ("summary_ozon_stocks", "summary_all"):
                 await self._send_ozon_stocks(owner_chat_id, target_chat_id, context.bot)
+            return
+
+        if action == "sync":
+            await query.answer()
+            await query.message.reply_text("🔄 Синхронизирую данные…")
+            await self.sync_marketplace_data(chat_id)
+            await self._notify_user(
+                chat_id,
+                "✅ Синхронизация завершена.",
+                reply_markup=await self._build_keyboard(chat_id),
+            )
             return
 
         if action == "update_wb":
