@@ -871,7 +871,7 @@ class OzonPerformanceClient:
         try:
             cached = await self._redis.get("ozon_perf_token")
             if cached:
-                return cached.decode()
+                return cached.decode() if isinstance(cached, bytes) else cached
         except Exception as e:
             logger.warning(f"[OzonPerf] Redis get error: {e}")
 
