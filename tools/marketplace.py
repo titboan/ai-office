@@ -937,71 +937,87 @@ class OzonPerformanceClient:
             return []
         logger.info(f"[OzonPerf] кампаний: {len(campaign_ids)}")
 
-        # Шаг 2: создать задачу статистики
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{self._BASE}/api/client/statistics",
-                    headers=headers,
-                    json={"campaigns": campaign_ids, "dateFrom": date_from, "dateTo": date_to},
-                    timeout=_TIMEOUT,
-                ) as resp:
-                    if resp.status != 200:
-                        logger.error(f"[OzonPerf] statistics POST HTTP {resp.status}")
-                        return []
-                    task_data = await resp.json()
-                    uuid = task_data.get("UUID")
-        except Exception as e:
-            logger.error(f"[OzonPerf] statistics POST exception: {e}")
-            return []
-
-        if not uuid:
-            logger.error("[OzonPerf] UUID не получен")
-            return []
-
-        # Шаг 3: поллим результат (до 10 попыток, интервал 5 сек)
-        report_data = None
+        # Шаг 2: создать задачи батчами по 10 кампаний (лимит API)
+        uuids = []
         async with aiohttp.ClientSession() as session:
-            for attempt in range(10):
-                await asyncio.sleep(5)
+            for i in range(0, len(campaign_ids), 10):
+                batch = campaign_ids[i:i+10]
+                if i > 0:
+                    await asyncio.sleep(1)  # небольшая пауза между запросами
+                try:
+                    async with session.post(
+                        f"{self._BASE}/api/client/statistics",
+                        headers=headers,
+                        json={"campaigns": batch, "dateFrom": date_from, "dateTo": date_to},
+                        timeout=_TIMEOUT,
+                    ) as resp:
+                        if resp.status == 429:
+                            logger.warning(f"[OzonPerf] statistics rate limit, жду 60 сек")
+                            await asyncio.sleep(60)
+                            continue
+                        if resp.status != 200:
+                            logger.error(f"[OzonPerf] statistics POST HTTP {resp.status}: {await resp.text()}")
+                            continue
+                        task_data = await resp.json()
+                        uuid = task_data.get("UUID")
+                        if uuid:
+                            uuids.append(uuid)
+                except Exception as e:
+                    logger.error(f"[OzonPerf] statistics POST exception: {e}")
+
+        if not uuids:
+            logger.error("[OzonPerf] ни одного UUID не получено")
+            return []
+        logger.info(f"[OzonPerf] создано задач: {len(uuids)}")
+
+        # Шаг 3: поллим все UUID и собираем CSV
+        csv_texts = []
+        async with aiohttp.ClientSession() as session:
+            for uuid in uuids:
+                report_ready = False
+                for attempt in range(10):
+                    await asyncio.sleep(5)
+                    try:
+                        async with session.get(
+                            f"{self._BASE}/api/client/statistics/{uuid}",
+                            headers=headers,
+                            timeout=_TIMEOUT,
+                        ) as resp:
+                            if resp.status != 200:
+                                logger.warning(f"[OzonPerf] poll {uuid[:8]} attempt {attempt+1} HTTP {resp.status}")
+                                continue
+                            poll_data = await resp.json()
+                            state = poll_data.get("state") or poll_data.get("status")
+                            if state in ("OK", "READY", "done"):
+                                report_ready = True
+                                break
+                    except Exception as e:
+                        logger.warning(f"[OzonPerf] poll exception: {e}")
+
+                if not report_ready:
+                    logger.error(f"[OzonPerf] отчёт {uuid[:8]} не готов после 10 попыток")
+                    continue
+
+                # Шаг 4: скачать CSV для этого UUID
                 try:
                     async with session.get(
-                        f"{self._BASE}/api/client/statistics/{uuid}",
+                        f"{self._BASE}/api/client/statistics/report",
                         headers=headers,
+                        params={"UUID": uuid},
                         timeout=_TIMEOUT,
                     ) as resp:
                         if resp.status != 200:
-                            logger.warning(f"[OzonPerf] poll attempt {attempt+1} HTTP {resp.status}")
+                            logger.error(f"[OzonPerf] report {uuid[:8]} HTTP {resp.status}")
                             continue
-                        poll_data = await resp.json()
-                        state = poll_data.get("state") or poll_data.get("status")
-                        logger.debug(f"[OzonPerf] poll attempt {attempt+1} state={state}")
-                        if state in ("OK", "READY", "done"):
-                            report_data = poll_data
-                            break
+                        csv_texts.append(await resp.text())
                 except Exception as e:
-                    logger.warning(f"[OzonPerf] poll exception: {e}")
+                    logger.error(f"[OzonPerf] report exception: {e}")
 
-        if not report_data:
-            logger.error("[OzonPerf] отчёт не готов после 10 попыток")
+        if not csv_texts:
+            logger.error("[OzonPerf] нет CSV-данных")
             return []
 
-        # Шаг 4: скачать CSV
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{self._BASE}/api/client/statistics/report",
-                    headers=headers,
-                    params={"UUID": uuid},
-                    timeout=_TIMEOUT,
-                ) as resp:
-                    if resp.status != 200:
-                        logger.error(f"[OzonPerf] report HTTP {resp.status}")
-                        return []
-                    csv_text = await resp.text()
-        except Exception as e:
-            logger.error(f"[OzonPerf] report exception: {e}")
-            return []
+        csv_text = "\n".join(csv_texts)
 
         # Шаг 5: парсим CSV
         results = []
