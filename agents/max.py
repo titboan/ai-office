@@ -819,55 +819,6 @@ class MaxAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[Макс/sync] get_stocks {mp_label}: {e}")
 
-            # Реклама Ozon Performance
-            if mp == "ozon":
-                try:
-                    from tools.marketplace import OzonPerformanceClient
-                    from db import upsert_ad_stat
-                    import os as _os
-                    ozon_perf_client_id     = _os.getenv("OZON_PERFORMANCE_CLIENT_ID")
-                    ozon_perf_client_secret = _os.getenv("OZON_PERFORMANCE_CLIENT_SECRET")
-                    if ozon_perf_client_id and ozon_perf_client_secret:
-                        redis = await self._get_redis()
-                        perf_client = OzonPerformanceClient(ozon_perf_client_id, ozon_perf_client_secret, redis)
-                        date_to_adv   = datetime.now(_UTC).strftime("%Y-%m-%d")
-                        date_from_adv = (datetime.now(_UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
-                        ad_stats = await perf_client.get_ad_stats(date_from=date_from_adv, date_to=date_to_adv)
-                        for s in ad_stats:
-                            from datetime import date as _date
-                            stat_date = _date.fromisoformat(s["stat_date"]) if isinstance(s["stat_date"], str) else s["stat_date"]
-                            await upsert_ad_stat(
-                                chat_id=chat_id, marketplace="ozon",
-                                campaign_id=s["campaign_id"], campaign_name=s["campaign_name"],
-                                stat_date=stat_date, views=s["views"],
-                                clicks=s["clicks"], ctr=s["ctr"], spend=s["spend"],
-                            )
-                        logger.info(f"[Макс/sync] Ozon реклама: {len(ad_stats)} записей")
-                    else:
-                        logger.warning("[Макс/sync] Ozon Performance credentials не настроены")
-                except Exception as e:
-                    logger.error(f"[Макс/sync] Ozon реклама: {e}")
-
-            # Реклама WB
-            if mp == "wb":
-                try:
-                    from db import upsert_ad_stat
-                    date_to   = datetime.now(_UTC).strftime("%Y-%m-%d")
-                    date_from_adv = (datetime.now(_UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
-                    ad_stats  = await client.get_ad_stats(date_from=date_from_adv, date_to=date_to)
-                    for s in ad_stats:
-                        from datetime import date as _date
-                        stat_date = _date.fromisoformat(s["stat_date"]) if isinstance(s["stat_date"], str) else s["stat_date"]
-                        await upsert_ad_stat(
-                            chat_id=chat_id, marketplace="wb",
-                            campaign_id=s["campaign_id"], campaign_name=s["campaign_name"],
-                            stat_date=stat_date, views=s["views"],
-                            clicks=s["clicks"], ctr=s["ctr"], spend=s["spend"],
-                        )
-                    logger.info(f"[Макс/sync] WB реклама: {len(ad_stats)} записей")
-                except Exception as e:
-                    logger.error(f"[Макс/sync] WB реклама: {e}")
-
             # Продажи
             try:
                 sales = await client.get_sales(date_from=since, statistics_token=stats_token)
@@ -957,6 +908,58 @@ class MaxAgent(BaseAgent):
                     except Exception as e:
                         logger.error(f"[Макс/sync] get_orders_analytics Ozon {df_str}: {e}")
                 logger.info(f"[Макс/sync] Ozon analytics итого: {total_new} новых записей за 14 дней")
+
+    async def sync_ad_stats(self, chat_id: int) -> None:
+        """Синхронизация рекламной статистики WB + Ozon. Вызывается отдельно от основного sync."""
+        from db import get_marketplace_shops, upsert_ad_stat
+        from tools.marketplace import WBClient, OzonPerformanceClient
+        import os
+        from datetime import date as _date
+
+        shops = await get_marketplace_shops(chat_id)
+        date_to_adv   = datetime.now(_UTC).strftime("%Y-%m-%d")
+        date_from_adv = (datetime.now(_UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
+
+        for shop in shops:
+            mp = shop["marketplace"]
+
+            if mp == "wb":
+                try:
+                    client = WBClient(shop["api_token"])
+                    ad_stats = await client.get_ad_stats(date_from=date_from_adv, date_to=date_to_adv)
+                    for s in ad_stats:
+                        stat_date = _date.fromisoformat(s["stat_date"]) if isinstance(s["stat_date"], str) else s["stat_date"]
+                        await upsert_ad_stat(
+                            chat_id=chat_id, marketplace="wb",
+                            campaign_id=s["campaign_id"], campaign_name=s["campaign_name"],
+                            stat_date=stat_date, views=s["views"],
+                            clicks=s["clicks"], ctr=s["ctr"], spend=s["spend"],
+                        )
+                    logger.info(f"[Макс/adv] WB реклама: {len(ad_stats)} записей")
+                except Exception as e:
+                    logger.error(f"[Макс/adv] WB реклама: {e}")
+
+            if mp == "ozon":
+                try:
+                    ozon_perf_client_id     = os.getenv("OZON_PERFORMANCE_CLIENT_ID")
+                    ozon_perf_client_secret = os.getenv("OZON_PERFORMANCE_CLIENT_SECRET")
+                    if ozon_perf_client_id and ozon_perf_client_secret:
+                        redis = await self._get_redis()
+                        perf_client = OzonPerformanceClient(ozon_perf_client_id, ozon_perf_client_secret, redis)
+                        ad_stats = await perf_client.get_ad_stats(date_from=date_from_adv, date_to=date_to_adv)
+                        for s in ad_stats:
+                            stat_date = _date.fromisoformat(s["stat_date"]) if isinstance(s["stat_date"], str) else s["stat_date"]
+                            await upsert_ad_stat(
+                                chat_id=chat_id, marketplace="ozon",
+                                campaign_id=s["campaign_id"], campaign_name=s["campaign_name"],
+                                stat_date=stat_date, views=s["views"],
+                                clicks=s["clicks"], ctr=s["ctr"], spend=s["spend"],
+                            )
+                        logger.info(f"[Макс/adv] Ozon реклама: {len(ad_stats)} записей")
+                    else:
+                        logger.warning("[Макс/adv] Ozon Performance credentials не настроены")
+                except Exception as e:
+                    logger.error(f"[Макс/adv] Ozon реклама: {e}")
 
     # ------------------------------------------------------------------ #
     #  Вспомогательные методы для сводки                                  #
@@ -1639,7 +1642,7 @@ class MaxAgent(BaseAgent):
         )
 
         # Голосовое с override_text считается уже прошедшим проверку триггера
-        triggered = bool(override_text) or has_mention or starts_with_max or is_reply_to_bot
+        triggered = has_mention or starts_with_max or is_reply_to_bot
 
         logger.debug(
             f"[max:group] trigger check: mention={has_mention}, starts_with={starts_with_max}, "

@@ -270,8 +270,46 @@ async def run_all_async() -> None:
                 await asyncio.sleep(60)
 
     negative_task = asyncio.create_task(_negative_reviews_loop())
+
+    async def _scheduled_adv_sync_loop():
+        """Синхронизация рекламной статистики WB + Ozon раз в сутки в 06:00 UTC."""
+        from datetime import datetime, timezone, timedelta
+        from db import get_all_active_shops
+
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                # Следующий запуск в 03:00 UTC (06:00 МСК) — до утренней сводки
+                target = now.replace(hour=3, minute=0, second=0, microsecond=0)
+                if target <= now:
+                    target += timedelta(days=1)
+                wait_seconds = (target - now).total_seconds()
+                logger.info(f"[adv_sync] следующий запуск через {wait_seconds/3600:.1f} ч")
+                await asyncio.sleep(wait_seconds)
+
+                if max_agent is None:
+                    continue
+
+                shops = await get_all_active_shops()
+                unique_chats = list({s["chat_id"] for s in shops})
+
+                for chat_id in unique_chats:
+                    try:
+                        await max_agent.sync_ad_stats(chat_id)
+                        logger.info(f"[adv_sync] chat_id={chat_id} завершено")
+                    except Exception as e:
+                        logger.error(f"[adv_sync] chat_id={chat_id} ошибка: {e}")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[adv_sync] критическая ошибка: {e}")
+                await asyncio.sleep(60)
+
+    asyncio.create_task(_scheduled_adv_sync_loop())
     logger.info("[main] Negative reviews task запущен (каждые 15 минут)")
     logger.info("[main] Scheduled reviews task запущен (06:00, 11:00, 17:00 UTC)")
+    logger.info("[main] Adv sync task запущен (03:00 UTC / 06:00 МСК)")
 
     try:
         await stop_event.wait()
