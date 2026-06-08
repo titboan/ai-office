@@ -944,26 +944,29 @@ class OzonPerformanceClient:
                 batch = campaign_ids[i:i+10]
                 if i > 0:
                     await asyncio.sleep(1)  # небольшая пауза между запросами
-                try:
-                    async with session.post(
-                        f"{self._BASE}/api/client/statistics",
-                        headers=headers,
-                        json={"campaigns": batch, "dateFrom": date_from, "dateTo": date_to},
-                        timeout=_TIMEOUT,
-                    ) as resp:
-                        if resp.status == 429:
-                            logger.warning(f"[OzonPerf] statistics rate limit, жду 60 сек")
-                            await asyncio.sleep(60)
-                            continue
-                        if resp.status != 200:
-                            logger.error(f"[OzonPerf] statistics POST HTTP {resp.status}: {await resp.text()}")
-                            continue
-                        task_data = await resp.json()
-                        uuid = task_data.get("UUID")
-                        if uuid:
-                            uuids.append(uuid)
-                except Exception as e:
-                    logger.error(f"[OzonPerf] statistics POST exception: {e}")
+                for attempt in range(5):
+                    try:
+                        async with session.post(
+                            f"{self._BASE}/api/client/statistics",
+                            headers=headers,
+                            json={"campaigns": batch, "dateFrom": date_from, "dateTo": date_to},
+                            timeout=_TIMEOUT,
+                        ) as resp:
+                            if resp.status == 429:
+                                logger.warning(f"[OzonPerf] statistics rate limit, жду 60 сек (attempt {attempt+1})")
+                                await asyncio.sleep(60)
+                                continue
+                            if resp.status != 200:
+                                logger.error(f"[OzonPerf] statistics POST HTTP {resp.status}: {await resp.text()}")
+                                break
+                            task_data = await resp.json()
+                            uuid = task_data.get("UUID")
+                            if uuid:
+                                uuids.append(uuid)
+                            break
+                    except Exception as e:
+                        logger.error(f"[OzonPerf] statistics POST exception: {e}")
+                        break
 
         if not uuids:
             logger.error("[OzonPerf] ни одного UUID не получено")
@@ -1009,7 +1012,13 @@ class OzonPerformanceClient:
                         if resp.status != 200:
                             logger.error(f"[OzonPerf] report {uuid[:8]} HTTP {resp.status}")
                             continue
-                        csv_texts.append(await resp.text())
+                        raw_bytes = await resp.read()
+                        for enc in ("utf-8-sig", "windows-1251", "utf-8"):
+                            try:
+                                csv_texts.append(raw_bytes.decode(enc))
+                                break
+                            except UnicodeDecodeError:
+                                continue
                 except Exception as e:
                     logger.error(f"[OzonPerf] report exception: {e}")
 
