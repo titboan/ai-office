@@ -938,14 +938,18 @@ class OzonPerformanceClient:
             return []
         logger.info(f"[OzonPerf] кампаний: {len(campaign_ids)}")
 
-        # Шаг 2: создать задачи батчами по 10 кампаний (лимит API)
-        uuids = []
+        # Шаги 2-4: для каждого батча: создать UUID → поллить → скачать CSV
+        # API допускает только 1 активный запрос — поэтому строго последовательно
+        csv_texts = []
         async with aiohttp.ClientSession() as session:
             for i in range(0, len(campaign_ids), 10):
                 batch = campaign_ids[i:i+10]
-                if i > 0:
-                    await asyncio.sleep(1)  # небольшая пауза между запросами
-                for attempt in range(5):
+                batch_num = i // 10 + 1
+                total_batches = (len(campaign_ids) + 9) // 10
+
+                # Создать UUID для батча
+                uuid = None
+                for attempt in range(10):
                     try:
                         async with session.post(
                             f"{self._BASE}/api/client/statistics",
@@ -954,30 +958,24 @@ class OzonPerformanceClient:
                             timeout=_TIMEOUT,
                         ) as resp:
                             if resp.status == 429:
-                                logger.warning(f"[OzonPerf] statistics rate limit, жду 60 сек (attempt {attempt+1})")
+                                logger.warning(f"[OzonPerf] batch {batch_num}/{total_batches} rate limit, жду 60 сек (attempt {attempt+1})")
                                 await asyncio.sleep(60)
                                 continue
                             if resp.status != 200:
-                                logger.error(f"[OzonPerf] statistics POST HTTP {resp.status}: {await resp.text()}")
+                                logger.error(f"[OzonPerf] batch {batch_num} POST HTTP {resp.status}: {await resp.text()}")
                                 break
                             task_data = await resp.json()
                             uuid = task_data.get("UUID")
-                            if uuid:
-                                uuids.append(uuid)
                             break
                     except Exception as e:
-                        logger.error(f"[OzonPerf] statistics POST exception: {e}")
+                        logger.error(f"[OzonPerf] batch {batch_num} POST exception: {e}")
                         break
 
-        if not uuids:
-            logger.error("[OzonPerf] ни одного UUID не получено")
-            return []
-        logger.info(f"[OzonPerf] создано задач: {len(uuids)}")
+                if not uuid:
+                    logger.warning(f"[OzonPerf] batch {batch_num}: UUID не получен, пропускаем")
+                    continue
 
-        # Шаг 3: поллим все UUID и собираем CSV
-        csv_texts = []
-        async with aiohttp.ClientSession() as session:
-            for uuid in uuids:
+                # Поллим до готовности (до 4 минут)
                 report_ready = False
                 for attempt in range(24):
                     await asyncio.sleep(10)
@@ -988,10 +986,10 @@ class OzonPerformanceClient:
                             timeout=_TIMEOUT,
                         ) as resp:
                             if resp.status != 200:
-                                logger.warning(f"[OzonPerf] poll {uuid[:8]} attempt {attempt+1} HTTP {resp.status}")
                                 continue
                             poll_data = await resp.json()
                             state = poll_data.get("state") or poll_data.get("status")
+                            logger.debug(f"[OzonPerf] batch {batch_num} poll {attempt+1} state={state}")
                             if state in ("OK", "READY", "done"):
                                 report_ready = True
                                 break
@@ -999,10 +997,10 @@ class OzonPerformanceClient:
                         logger.warning(f"[OzonPerf] poll exception: {e}")
 
                 if not report_ready:
-                    logger.error(f"[OzonPerf] отчёт {uuid[:8]} не готов после 10 попыток")
+                    logger.error(f"[OzonPerf] batch {batch_num} отчёт не готов за 4 мин")
                     continue
 
-                # Шаг 4: скачать CSV для этого UUID
+                # Скачать CSV
                 try:
                     async with session.get(
                         f"{self._BASE}/api/client/statistics/report",
@@ -1011,17 +1009,18 @@ class OzonPerformanceClient:
                         timeout=_TIMEOUT,
                     ) as resp:
                         if resp.status != 200:
-                            logger.error(f"[OzonPerf] report {uuid[:8]} HTTP {resp.status}")
+                            logger.error(f"[OzonPerf] batch {batch_num} report HTTP {resp.status}")
                             continue
                         raw_bytes = await resp.read()
                         for enc in ("utf-8-sig", "windows-1251", "utf-8"):
                             try:
                                 csv_texts.append(raw_bytes.decode(enc))
+                                logger.info(f"[OzonPerf] batch {batch_num}/{total_batches} CSV получен")
                                 break
                             except UnicodeDecodeError:
                                 continue
                 except Exception as e:
-                    logger.error(f"[OzonPerf] report exception: {e}")
+                    logger.error(f"[OzonPerf] batch {batch_num} report exception: {e}")
 
         if not csv_texts:
             logger.error("[OzonPerf] нет CSV-данных")
