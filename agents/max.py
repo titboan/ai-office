@@ -807,6 +807,35 @@ class MaxAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[Макс/sync] get_stocks {mp_label}: {e}")
 
+            # Реклама Ozon Performance
+            if mp == "ozon":
+                try:
+                    from tools.marketplace import OzonPerformanceClient
+                    from db import upsert_ad_stat
+                    import os as _os
+                    ozon_perf_client_id     = _os.getenv("OZON_PERFORMANCE_CLIENT_ID")
+                    ozon_perf_client_secret = _os.getenv("OZON_PERFORMANCE_CLIENT_SECRET")
+                    if ozon_perf_client_id and ozon_perf_client_secret:
+                        redis = await self._get_redis()
+                        perf_client = OzonPerformanceClient(ozon_perf_client_id, ozon_perf_client_secret, redis)
+                        date_to_adv   = datetime.now(_UTC).strftime("%Y-%m-%d")
+                        date_from_adv = (datetime.now(_UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
+                        ad_stats = await perf_client.get_ad_stats(date_from=date_from_adv, date_to=date_to_adv)
+                        for s in ad_stats:
+                            from datetime import date as _date
+                            stat_date = _date.fromisoformat(s["stat_date"]) if isinstance(s["stat_date"], str) else s["stat_date"]
+                            await upsert_ad_stat(
+                                chat_id=chat_id, marketplace="ozon",
+                                campaign_id=s["campaign_id"], campaign_name=s["campaign_name"],
+                                stat_date=stat_date, views=s["views"],
+                                clicks=s["clicks"], ctr=s["ctr"], spend=s["spend"],
+                            )
+                        logger.info(f"[Макс/sync] Ozon реклама: {len(ad_stats)} записей")
+                    else:
+                        logger.warning("[Макс/sync] Ozon Performance credentials не настроены")
+                except Exception as e:
+                    logger.error(f"[Макс/sync] Ozon реклама: {e}")
+
             # Реклама WB
             if mp == "wb":
                 try:
