@@ -534,11 +534,11 @@ class OzonClient:
 
 
     async def _get_sku_to_offer_id(self, skus: list[int]) -> dict[int, str]:
-        """Получить маппинг SKU → offer_id через /v2/product/info/list."""
+        """Получить маппинг SKU → offer_id через /v3/product/info/list."""
         import json as _json
         if not skus:
             return {}
-        url = f"{self._BASE}/v2/product/info/list"
+        url = f"{self._BASE}/v3/product/info/list"
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -555,8 +555,10 @@ class OzonClient:
         except Exception as e:
             logger.error(f"[Ozon.get_stocks] product/info/list exception: {e}")
             return {}
+
         mapping: dict[int, str] = {}
-        for item in (data.get("result") or {}).get("items") or []:
+        # v3 возвращает {"items": [...]} напрямую, без обёртки result
+        for item in (data.get("items") or []):
             sku = item.get("sku")
             offer_id = str(item.get("offer_id") or "").strip()
             if sku and offer_id:
