@@ -1018,7 +1018,9 @@ class OzonPerformanceClient:
                         raw_bytes = await resp.read()
                         logger.info(f"[OzonPerf] batch {batch_num} CSV bytes={len(raw_bytes)}")
                         if raw_bytes:
-                            csv_text_batch = raw_bytes.decode("windows-1251", errors="replace")
+                            import zipfile as _zipfile
+                            with _zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+                                csv_text_batch = zf.read(zf.namelist()[0]).decode("windows-1251", errors="replace")
                             csv_texts.append(csv_text_batch)
                             logger.info(f"[OzonPerf] batch {batch_num}/{total_batches} CSV получен, строк: {csv_text_batch.count(chr(10))}")
                 except Exception as e:
