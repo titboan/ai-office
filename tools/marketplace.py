@@ -1020,7 +1020,7 @@ class OzonPerformanceClient:
                         if raw_bytes:
                             import zipfile as _zipfile
                             with _zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
-                                csv_text_batch = zf.read(zf.namelist()[0]).decode("windows-1251", errors="replace")
+                                csv_text_batch = zf.read(zf.namelist()[0]).decode("utf-8-sig", errors="replace")
                             csv_texts.append(csv_text_batch)
                             logger.info(f"[OzonPerf] batch {batch_num}/{total_batches} CSV получен, строк: {csv_text_batch.count(chr(10))}")
                 except Exception as e:
@@ -1031,8 +1031,6 @@ class OzonPerformanceClient:
             return []
 
         csv_text = "\n".join(csv_texts)
-        logger.info(f"[OzonPerf] CSV preview: {csv_text[:500]!r}")
-
         # Шаг 5: парсим CSV
         results = []
         try:
