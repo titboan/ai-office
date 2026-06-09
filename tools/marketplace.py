@@ -932,11 +932,14 @@ class OzonPerformanceClient:
             logger.error(f"[OzonPerf] campaigns exception: {e}")
             return []
 
-        campaign_ids = [str(c["id"]) for c in (campaigns_data.get("list") or []) if c.get("id")]
-        states = [c.get("state") for c in (campaigns_data.get("list") or [])]
-        logger.info(f"[OzonPerf] статусы кампаний: {set(states)}")
-        logger.info(f"[OzonPerf] пример кампании: {(campaigns_data.get('list') or [{}])[0]}")
-        campaign_names = {str(c["id"]): c.get("title") or str(c["id"]) for c in (campaigns_data.get("list") or [])}
+        all_campaigns = campaigns_data.get("list") or []
+        # Фильтр: только кампании с реальным бюджетом (убирает REF_VK и прочие нулевые)
+        active = [c for c in all_campaigns if c.get("id") and float(c.get("budget") or 0) > 0]
+        if not active:
+            # Fallback: берём все RUNNING если у всех бюджет 0 (нетипично, но подстрахуемся)
+            active = [c for c in all_campaigns if c.get("id")]
+        campaign_ids = [str(c["id"]) for c in active]
+        campaign_names = {str(c["id"]): c.get("title") or str(c["id"]) for c in active}
 
         if not campaign_ids:
             logger.info("[OzonPerf] нет кампаний")
@@ -1025,8 +1028,6 @@ class OzonPerformanceClient:
                             with _zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
                                 csv_text_batch = zf.read(zf.namelist()[0]).decode("utf-8-sig", errors="replace")
                             csv_texts.append(csv_text_batch)
-                            if batch_num == 1:
-                                logger.info(f"[OzonPerf] CSV raw first 800: {csv_text_batch[:800]!r}")
                             logger.info(f"[OzonPerf] batch {batch_num}/{total_batches} CSV получен, строк: {csv_text_batch.count(chr(10))}")
                 except Exception as e:
                     logger.error(f"[OzonPerf] batch {batch_num} report exception: {e}")
@@ -1035,28 +1036,47 @@ class OzonPerformanceClient:
             logger.error("[OzonPerf] нет CSV-данных")
             return []
 
-        csv_text = "\n".join(csv_texts)
         # Шаг 5: парсим CSV
+        # Формат Ozon Performance CSV:
+        #   строка 1: ";Рекламная кампания № ID, период ..."  — мета
+        #   строка 2: заголовки колонок (sku;Название товара;...;Показы;Клики;CTR (%);Расход, ₽, с НДС;...)
+        #   строки 3+: данные по SKU
+        #   последняя: "Всего;;;;;N;N;..."  — агрегат, пропускаем
         results = []
         try:
-            reader = csv.DictReader(io.StringIO(csv_text), delimiter=";")
-            for row in reader:
-                campaign_id = str(row.get("Кампания", "") or "").strip()
-                views  = int(float(row.get("Показы", 0) or 0))
-                clicks = int(float(row.get("Клики", 0) or 0))
-                spend  = float(str(row.get("Расход", 0) or 0).replace(",", "."))
-                ctr    = round(float(str(row.get("CTR", 0) or 0).replace(",", ".")), 2)
-                date   = str(row.get("Дата", date_from) or date_from).strip()[:10]
-                if not campaign_id:
+            import re as _re
+            for csv_text_batch in csv_texts:
+                lines = csv_text_batch.splitlines()
+                if len(lines) < 2:
                     continue
+                # Извлекаем campaign_id из первой строки: "№ 28852510"
+                m = _re.search(r"№\s*(\d+)", lines[0])
+                if not m:
+                    continue
+                cid = m.group(1)
+                # Парсим через DictReader начиная со строки заголовков (строка 2)
+                header_and_data = "\n".join(lines[1:])
+                reader = csv.DictReader(io.StringIO(header_and_data), delimiter=";")
+                views_sum = clicks_sum = spend_sum = 0
+                row_count = 0
+                for row in reader:
+                    if str(row.get("sku", "")).strip().lower() in ("всего", ""):
+                        continue
+                    views_sum  += int(float(row.get("Показы", 0) or 0))
+                    clicks_sum += int(float(row.get("Клики", 0) or 0))
+                    spend_sum  += float(str(row.get("Расход, ₽, с НДС", 0) or 0).replace(",", "."))
+                    row_count  += 1
+                if row_count == 0:
+                    continue  # кампания без активности — не пишем в БД
+                ctr = round(clicks_sum / views_sum * 100, 2) if views_sum else 0.0
                 results.append({
-                    "campaign_id":   campaign_id,
-                    "campaign_name": campaign_names.get(campaign_id, campaign_id),
-                    "stat_date":     date,
-                    "views":         views,
-                    "clicks":        clicks,
+                    "campaign_id":   cid,
+                    "campaign_name": campaign_names.get(cid, cid),
+                    "stat_date":     date_from,
+                    "views":         views_sum,
+                    "clicks":        clicks_sum,
                     "ctr":           ctr,
-                    "spend":         spend,
+                    "spend":         spend_sum,
                 })
         except Exception as e:
             logger.error(f"[OzonPerf] CSV parse exception: {e}")
