@@ -1022,6 +1022,8 @@ class OzonPerformanceClient:
                             with _zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
                                 csv_text_batch = zf.read(zf.namelist()[0]).decode("utf-8-sig", errors="replace")
                             csv_texts.append(csv_text_batch)
+                            if batch_num == 1:
+                                logger.info(f"[OzonPerf] CSV raw first 800: {csv_text_batch[:800]!r}")
                             logger.info(f"[OzonPerf] batch {batch_num}/{total_batches} CSV получен, строк: {csv_text_batch.count(chr(10))}")
                 except Exception as e:
                     logger.error(f"[OzonPerf] batch {batch_num} report exception: {e}")
