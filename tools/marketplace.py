@@ -1029,6 +1029,7 @@ class OzonPerformanceClient:
             return []
 
         csv_text = "\n".join(csv_texts)
+        logger.info(f"[OzonPerf] CSV preview: {csv_text[:500]!r}")
 
         # Шаг 5: парсим CSV
         results = []
