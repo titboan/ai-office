@@ -933,6 +933,9 @@ class OzonPerformanceClient:
             return []
 
         campaign_ids = [str(c["id"]) for c in (campaigns_data.get("list") or []) if c.get("id")]
+        states = [c.get("state") for c in (campaigns_data.get("list") or [])]
+        logger.info(f"[OzonPerf] статусы кампаний: {set(states)}")
+        logger.info(f"[OzonPerf] пример кампании: {(campaigns_data.get('list') or [{}])[0]}")
         campaign_names = {str(c["id"]): c.get("title") or str(c["id"]) for c in (campaigns_data.get("list") or [])}
 
         if not campaign_ids:
