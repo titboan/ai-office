@@ -1524,6 +1524,21 @@ class MaxAgent(BaseAgent):
         await self.send_daily_summary(owner_chat_id=chat_id, target_chat_id=target, bot=context.bot)
         logger.info("[Макс/sync] send_daily_summary завершён")
 
+    async def cmd_sync_adv(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/sync_adv — вручную запустить синхронизацию рекламной статистики (WB + Ozon)."""
+        chat_id = update.effective_user.id
+        logger.info(f"[Макс/adv] команда /sync_adv получена от {chat_id}")
+        await update.message.reply_text("⏳ Синхронизирую рекламную статистику…")
+        try:
+            await self.sync_ad_stats(chat_id)
+            await update.message.reply_text(
+                "✅ Синк рекламы завершён. Проверь логи [Макс/adv] / [OzonPerf] "
+                "и таблицу marketplace_adv_stats."
+            )
+        except Exception as e:
+            logger.error(f"[Макс/adv] /sync_adv ошибка: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка синка рекламы: {e}")
+
     # ------------------------------------------------------------------ #
     #  ИИ-агент в группе                                                  #
     # ------------------------------------------------------------------ #
@@ -1750,6 +1765,7 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("reset_checked", self.cmd_reset_checked))
         self.app.add_handler(CommandHandler("reset_orders",  self.cmd_reset_orders))
         self.app.add_handler(CommandHandler("sync",          self.cmd_sync))
+        self.app.add_handler(CommandHandler("sync_adv",      self.cmd_sync_adv))
         self.app.add_handler(
             CallbackQueryHandler(self._handle_onboard_callback, pattern=r"^onboard:")
         )
