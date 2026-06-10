@@ -187,6 +187,13 @@ adv_stats_summary   -- агрегат по кампаниям: total_views, tota
 - Батчи по 10 кампаний (лимит API), retry при 429
 - Переменные: `OZON_PERFORMANCE_CLIENT_ID`, `OZON_PERFORMANCE_CLIENT_SECRET`
 
+**Известные особенности Ozon Performance:**
+- Отчёт приходит ZIP-архивом (`content-type: application/zip`), внутри CSV в UTF-8 с BOM → распаковка `zipfile` + `.decode("utf-8-sig")`
+- CSV — отчёт по SKU, не по кампаниям: `campaign_id` парсится из первой строки (`"№ XXXXX"`), метрики агрегируются по строкам SKU; строка `"Всего"` пропускается
+- `GET /api/client/campaign` со `state=CAMPAIGN_STATE_RUNNING` возвращает ~88 кампаний, из них реальных ~19: остальные — мусорные `REF_VK` с `PaymentType=CAMPAIGN_TYPE_INVALID`, `budget=0` → фильтруются в `get_ad_stats` по `advObjectType` и `PaymentType`
+- Ручной триггер рекламного синка: команда `/sync_adv` у Макса (`cmd_sync_adv` → `sync_ad_stats`)
+- Фикс голосовых в группе: `base_agent.handle_voice` не вызывает `handle_message` в группах (это делает `Max._handle_group_message` с проверкой триггера)
+
 ### DataLens дашборд
 
 - **URL:** https://datalens.yandex/zhnao5ut1xvmj
