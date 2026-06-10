@@ -934,9 +934,16 @@ class OzonPerformanceClient:
 
         all_campaigns = campaigns_data.get("list") or []
         # Фильтр: только кампании с реальным бюджетом (убирает REF_VK и прочие нулевые)
-        active = [c for c in all_campaigns if c.get("id") and float(c.get("budget") or 0) > 0]
+        # Исключаем мусорные типы: REF_VK и кампании с невалидным типом оплаты
+        EXCLUDE_TYPES = {"REF_VK"}
+        EXCLUDE_PAYMENT = {"CAMPAIGN_TYPE_INVALID"}
+        active = [
+            c for c in all_campaigns
+            if c.get("id")
+            and c.get("advObjectType") not in EXCLUDE_TYPES
+            and c.get("PaymentType") not in EXCLUDE_PAYMENT
+        ]
         if not active:
-            # Fallback: берём все RUNNING если у всех бюджет 0 (нетипично, но подстрахуемся)
             active = [c for c in all_campaigns if c.get("id")]
         campaign_ids = [str(c["id"]) for c in active]
         campaign_names = {str(c["id"]): c.get("title") or str(c["id"]) for c in active}
@@ -944,7 +951,7 @@ class OzonPerformanceClient:
         if not campaign_ids:
             logger.info("[OzonPerf] нет кампаний")
             return []
-        logger.info(f"[OzonPerf] кампаний: {len(campaign_ids)}")
+        logger.info(f"[OzonPerf] всего RUNNING: {len(all_campaigns)}, после фильтра: {len(active)}")
 
         # Шаги 2-4: для каждого батча: создать UUID → поллить → скачать CSV
         # API допускает только 1 активный запрос — поэтому строго последовательно
