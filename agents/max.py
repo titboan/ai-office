@@ -1570,7 +1570,6 @@ class MaxAgent(BaseAgent):
                 return
             lines = ["📦 Каталог товаров:\n"]
             for r in rows:
-                cost = f"{r['cost']}₽" if r["cost"] is not None else "—"
                 wb = r["wb_article"] or "—"
                 oz = r["ozon_offer_id"] or "—"
                 sku = "✓" if r["ozon_sku"] else "✗"
