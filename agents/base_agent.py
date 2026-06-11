@@ -276,7 +276,7 @@ class BaseAgent(ABC):
     #  Claude                                                              #
     # ------------------------------------------------------------------ #
 
-    async def think(self, user_message: str, chat_id: int, is_task: bool = False) -> str:
+    async def think(self, user_message: str, chat_id: int, is_task: bool = False, max_tokens: int | None = None) -> str:
         """Отправить сообщение в Claude и получить ответ.
 
         is_task=True: задача из воркер-очереди — история не грузится и не сохраняется.
@@ -311,7 +311,7 @@ class BaseAgent(ABC):
         try:
             response = await self.claude.messages.create(
                 model=config.CLAUDE_MODEL,
-                max_tokens=config.MAX_TOKENS,
+                max_tokens=max_tokens or config.MAX_TOKENS,
                 system=self.system_prompt,
                 messages=history,
             )
