@@ -187,10 +187,15 @@ async def _create_schema() -> None:
                 product_name TEXT,
                 quantity     INTEGER       NOT NULL DEFAULT 1,
                 price        NUMERIC(10,2),
+                seller_price NUMERIC(10,2),
                 order_date   TIMESTAMPTZ,
                 created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
                 UNIQUE (marketplace, order_id)
             );
+        """)
+        await conn.execute("""
+            ALTER TABLE marketplace_orders
+            ADD COLUMN IF NOT EXISTS seller_price NUMERIC(10,2)
         """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS digest_channels (
@@ -603,6 +608,7 @@ async def save_order(
     quantity: int,
     price: float | None,
     order_date,
+    seller_price: float | None = None,
 ) -> bool:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -610,12 +616,12 @@ async def save_order(
             """
             INSERT INTO marketplace_orders
                 (chat_id, marketplace, order_id, product_id, product_name,
-                 quantity, price, order_date)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 quantity, price, order_date, seller_price)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ON CONFLICT (marketplace, order_id) DO NOTHING
             """,
             chat_id, marketplace, order_id, product_id, product_name,
-            quantity, price, order_date,
+            quantity, price, order_date, seller_price,
         )
         return result.split()[-1] != "0"
 
