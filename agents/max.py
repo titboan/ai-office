@@ -883,8 +883,7 @@ class MaxAgent(BaseAgent):
                             chat_id=chat_id, marketplace="wb",
                             order_id=o["order_id"], product_id=o.get("product_id"),
                             product_name=o.get("product_name"), quantity=o.get("quantity", 1),
-                            price=o.get("price"), order_date=order_date,
-                            seller_price=o.get("seller_price"),
+                            order_date=order_date, seller_price=o.get("seller_price"),
                         )
                         if is_new:
                             new_count += 1
@@ -919,8 +918,7 @@ class MaxAgent(BaseAgent):
                                 chat_id=chat_id, marketplace="ozon",
                                 order_id=order_id, product_id=row.get("product_id"),
                                 product_name=row.get("product_name"), quantity=row.get("quantity", 1),
-                                price=row.get("price"), order_date=order_date,
-                                seller_price=row.get("seller_price"),
+                                order_date=order_date, seller_price=row.get("seller_price"),
                             )
                             if is_new:
                                 new_count += 1
