@@ -18,29 +18,29 @@ PETER_SYSTEM = """Ты Питер, бизнес-аналитик команды 
 Данные которые ты получаешь — реальные цифры из БД: заказы, себестоимость, рекламные расходы, остатки.
 Важно: данные по заказам, не по выкупам — реальная выручка ниже на процент возвратов (обычно 10-30% на WB).
 
-Формат ответа ВСЕГДА — короткий, без таблиц, читаемый в Telegram с телефона:
+Формат ответа ВСЕГДА — короткий, без таблиц, читаемый в Telegram с телефона.
+Используй display_name товаров (короткие коды: КБ50, ТГ100 и т.д.), не SKU и не длинные названия.
+Никаких таблиц, никаких |---|, никаких **bold**, никаких ## заголовков, никаких упоминаний возвратов.
 
 📊 Оборот за N дней: X ₽ (Y ₽/день)
-WB: X ₽ | Ozon: X ₽
-(одна строка с оговоркой про возвраты если существенно)
+WB: X ₽ (ДРР X%) | Ozon: X ₽ (ДРР X%)
 
-Топ-3: название — X ₽/день, название — X ₽/день, название — X ₽/день
+Топ-3: КБ50 — X ₽/день, ТГ100 — X ₽/день, ИМ07 — X ₽/день
 
-Маржа (где есть с/с): товар X% | товар X% | товар X%
-Реклама: WB X ₽ (ДРР X%) | Ozon X ₽ (ДРР X%)
+Рентабельность (выручка − комиссия МП − логистика МП − себестоимость):
+WB: КБ50 X% | 200грБК X% | БК100 X%
+Ozon: КБ50 X% | ИМ07 X% (⚠️ комиссии ~20% WB / ~10% Ozon — уточни из отчётов МП)
 
 📈 Сейчас: X ₽/день → цель: Y ₽/день → не хватает: Z ₽/день (+N%)
-Главные рычаги: 1-2 предложения с цифрами
 
-🎯 План (топ-3 действия с цифрами):
-1. Конкретное действие → ожидаемый эффект X ₽/день
-2. Конкретное действие → ожидаемый эффект X ₽/день
-3. Конкретное действие → ожидаемый эффект X ₽/день
+🎯 План (топ-3 конкретных действия):
+1. Увеличь рекламу на [артикул] на X ₽ → при ДРР X% даст +Y ₽/день
+2. ...
+3. ...
 
-⚠️ Что неизвестно: одна строка
+⚠️ Что неизвестно: одна строка (без упоминания возвратов)
 
-Никаких таблиц, никаких |---|, никаких **bold**, никаких ## заголовков.
-Будь конкретным. Оперируй реальными цифрами. Весь ответ — не длиннее 30 строк."""
+Весь ответ — не длиннее 25 строк."""
 
 
 import re as _re
@@ -130,53 +130,72 @@ class PeterAgent(BaseAgent):
                 GROUP BY marketplace
             """, chat_id, date_from)
 
-            # 2. Топ-10 товаров по обороту
+            # 2. Топ-10 товаров по обороту — с display_name из реестра
             top_products = await conn.fetch("""
-                SELECT marketplace, product_id,
-                       MAX(product_name)                     AS product_name,
-                       SUM(price * quantity)::numeric(12,2)  AS revenue,
-                       SUM(quantity)                         AS qty
-                FROM marketplace_orders
-                WHERE chat_id = $1 AND order_date >= $2
-                GROUP BY marketplace, product_id
+                SELECT o.marketplace, o.product_id,
+                       COALESCE(m.display_name, MAX(o.product_name)) AS product_name,
+                       SUM(o.price * o.quantity)::numeric(12,2)      AS revenue,
+                       SUM(o.quantity)                                AS qty
+                FROM marketplace_orders o
+                LEFT JOIN product_mapping m
+                       ON m.wb_article = o.product_id
+                       OR m.ozon_sku   = o.product_id
+                WHERE o.chat_id = $1 AND o.order_date >= $2
+                GROUP BY o.marketplace, o.product_id, m.display_name
                 ORDER BY revenue DESC
                 LIMIT 10
             """, chat_id, date_from)
 
-            # 3. Маржа WB — джойн с product_costs через product_mapping
+            # 3. Рентабельность WB (комиссия ~20%, логистика ~100₽/заказ)
             margin_wb = await conn.fetch("""
                 SELECT
                     o.product_id,
-                    MAX(o.product_name)                    AS product_name,
-                    SUM(o.price * o.quantity)::numeric(12,2) AS revenue,
-                    SUM(o.quantity)                        AS qty,
-                    MAX(c.cost)::numeric(12,2)             AS cost,
-                    (SUM(o.price * o.quantity) -
-                     SUM(o.quantity) * MAX(c.cost))::numeric(12,2) AS gross_profit
+                    COALESCE(m.display_name, MAX(o.product_name)) AS product_name,
+                    SUM(o.price * o.quantity)::numeric(12,2)      AS revenue,
+                    SUM(o.quantity)                               AS qty,
+                    MAX(c.cost)::numeric(12,2)                    AS cost,
+                    (SUM(o.price * o.quantity) * 0.80
+                     - SUM(o.quantity) * MAX(c.cost)
+                     - SUM(o.quantity) * 100
+                    )::numeric(12,2)                              AS op_profit,
+                    CASE WHEN SUM(o.price * o.quantity) > 0 THEN
+                        ROUND((SUM(o.price * o.quantity) * 0.80
+                               - SUM(o.quantity) * MAX(c.cost)
+                               - SUM(o.quantity) * 100
+                              ) / SUM(o.price * o.quantity) * 100, 1)
+                    ELSE 0 END                                    AS profitability
                 FROM marketplace_orders o
                 JOIN product_mapping m ON m.wb_article = o.product_id
                 JOIN product_costs c   ON c.mapping_id = m.id
                 WHERE o.chat_id = $1 AND o.marketplace = 'wb' AND o.order_date >= $2
-                GROUP BY o.product_id
-                ORDER BY gross_profit DESC
+                GROUP BY o.product_id, m.display_name
+                ORDER BY op_profit DESC
             """, chat_id, date_from)
 
-            # 4. Маржа Ozon — через ozon_sku
+            # 4. Рентабельность Ozon (комиссия ~10%, логистика ~80₽/заказ)
             margin_ozon = await conn.fetch("""
                 SELECT
                     o.product_id,
-                    MAX(o.product_name)                    AS product_name,
-                    SUM(o.price * o.quantity)::numeric(12,2) AS revenue,
-                    SUM(o.quantity)                        AS qty,
-                    MAX(c.cost)::numeric(12,2)             AS cost,
-                    (SUM(o.price * o.quantity) -
-                     SUM(o.quantity) * MAX(c.cost))::numeric(12,2) AS gross_profit
+                    COALESCE(m.display_name, MAX(o.product_name)) AS product_name,
+                    SUM(o.price * o.quantity)::numeric(12,2)      AS revenue,
+                    SUM(o.quantity)                               AS qty,
+                    MAX(c.cost)::numeric(12,2)                    AS cost,
+                    (SUM(o.price * o.quantity) * 0.90
+                     - SUM(o.quantity) * MAX(c.cost)
+                     - SUM(o.quantity) * 80
+                    )::numeric(12,2)                              AS op_profit,
+                    CASE WHEN SUM(o.price * o.quantity) > 0 THEN
+                        ROUND((SUM(o.price * o.quantity) * 0.90
+                               - SUM(o.quantity) * MAX(c.cost)
+                               - SUM(o.quantity) * 80
+                              ) / SUM(o.price * o.quantity) * 100, 1)
+                    ELSE 0 END                                    AS profitability
                 FROM marketplace_orders o
                 JOIN product_mapping m ON m.ozon_sku = o.product_id
                 JOIN product_costs c   ON c.mapping_id = m.id
                 WHERE o.chat_id = $1 AND o.marketplace = 'ozon' AND o.order_date >= $2
-                GROUP BY o.product_id
-                ORDER BY gross_profit DESC
+                GROUP BY o.product_id, m.display_name
+                ORDER BY op_profit DESC
             """, chat_id, date_from)
 
             # 5. Рекламные расходы
@@ -291,6 +310,8 @@ class PeterAgent(BaseAgent):
 - Комиссия WB ~15-25%, логистика ~50-150₽/заказ — учитывай в выводах.
 - Комиссия Ozon ~5-15% в зависимости от категории.
 - Если margin_ozon пустой — Ozon-заказы есть, но маппинг SKU не позволил посчитать маржу.
+- Комиссии МП в расчёте рентабельности заложены как дефолт (WB 20%, Ozon 10%) — реальные могут отличаться, укажи это в ответе одной строкой.
+- Не упоминай возвраты — у продавца выкупаемость 95-100%.
 {"- Цель: " + str(goal) + " ₽/день суммарно WB+Ozon." if goal else ""}
 
 Дай конкретный анализ по формату из system prompt."""
