@@ -225,10 +225,11 @@ class MaxAgent(BaseAgent):
         if update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
             return
         chat_id = update.effective_chat.id
-        # Не передавать в ИИ если активен мастер каталога
         if await self._redis_get(f"catalog_add:{chat_id}"):
+            await self._handle_catalog_add_text(update, context)
             return
         if await self._redis_get(f"catalog_cost:{chat_id}"):
+            await self._handle_catalog_cost_text(update, context)
             return
         state = await self._get_onboard(chat_id)
         if state and state.get("step") not in (None, "done"):
