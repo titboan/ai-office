@@ -1572,10 +1572,15 @@ class MaxAgent(BaseAgent):
 
             # Запрос к Ozon API: offer_id → sku
             import aiohttp, json as _json
-            from config import config
+            from db import get_marketplace_shops
+            shops = await get_marketplace_shops(update.effective_user.id)
+            ozon_shop = next((s for s in shops if s["marketplace"] == "ozon"), None)
+            if not ozon_shop:
+                await update.message.reply_text("❌ Ozon-магазин не подключён. Настрой через /start")
+                return
             headers = {
-                "Client-Id":  config.OZON_CLIENT_ID,
-                "Api-Key":    config.OZON_API_KEY,
+                "Client-Id":    ozon_shop["client_id"],
+                "Api-Key":      ozon_shop["api_token"],
                 "Content-Type": "application/json",
             }
             url = "https://api-seller.ozon.ru/v3/product/info/list"
