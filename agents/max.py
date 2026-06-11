@@ -1746,6 +1746,7 @@ class MaxAgent(BaseAgent):
                     "name": row["display_name"]
                 })
                 await self._redis_set(f"catalog_cost:{chat_id}", state, ttl=300)
+                logger.info(f"[Макс/cost_cb] Redis set catalog_cost:{chat_id} = {state!r}")
                 await query.edit_message_text(
                     f"Товар: {row['display_name']} [{mp.upper()}]\n"
                     f"Введи себестоимость (₽):\n\n/cancel — отмена"
@@ -1932,6 +1933,9 @@ class MaxAgent(BaseAgent):
         if update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
             return
         chat_id = update.effective_chat.id
+        add_val = await self._redis_get(f"catalog_add:{chat_id}")
+        cost_val = await self._redis_get(f"catalog_cost:{chat_id}")
+        logger.info(f"[Макс/catalog_text] chat={chat_id} add={add_val!r} cost={cost_val!r}")
         if await self._redis_get(f"catalog_add:{chat_id}"):
             await self._handle_catalog_add_text(update, context)
         elif await self._redis_get(f"catalog_cost:{chat_id}"):
