@@ -1612,20 +1612,23 @@ class MaxAgent(BaseAgent):
             await update.message.reply_text(f"❌ Ошибка: {e}")
 
     async def cmd_cost(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/cost <идентификатор> <сумма> — себестоимость по name/wb_article/ozon_offer_id.
-        Пример: /cost КБ50 136.3"""
+        """/cost <идентификатор> <wb|ozon> <сумма> — задать себестоимость.
+        Пример: /cost КБ50 wb 136.3"""
         args = (update.message.text or "").split()
-        if len(args) != 3:
+        if len(args) != 4:
             await update.message.reply_text(
-                "Формат: /cost <идентификатор> <себестоимость>\n"
-                "Идентификатор — имя, WB- или Ozon-артикул.\nПример: /cost КБ50 136.3"
+                "Формат: /cost <идентификатор> <wb|ozon> <себестоимость>\n"
+                "Пример: /cost КБ50 wb 136.3"
             )
             return
-        ident = args[1].strip()
+        ident, mp, cost_str = args[1].strip(), args[2].strip().lower(), args[3].strip()
+        if mp not in ("wb", "ozon"):
+            await update.message.reply_text("Площадка: wb или ozon")
+            return
         try:
-            cost = float(args[2].replace(",", "."))
+            cost = float(cost_str.replace(",", "."))
         except ValueError:
-            await update.message.reply_text(f"❌ '{args[2]}' — не число")
+            await update.message.reply_text(f"❌ '{cost_str}' — не число")
             return
         try:
             from db import get_pool
@@ -1637,19 +1640,17 @@ class MaxAgent(BaseAgent):
                 """, ident)
                 if not row:
                     await update.message.reply_text(
-                        f"❌ Товар '{ident}' не найден в реестре.\n"
-                        f"Сначала добавь: /map name={ident} wb=... ozon=..."
+                        f"❌ Товар '{ident}' не найден. Добавь: /add"
                     )
                     return
                 await conn.execute("""
-                    INSERT INTO product_costs (mapping_id, cost, updated_at)
-                    VALUES ($1, $2, now())
-                    ON CONFLICT (mapping_id)
-                    DO UPDATE SET cost = $2, updated_at = now()
-                """, row["id"], cost)
-                total = await conn.fetchval("SELECT COUNT(*) FROM product_costs")
+                    INSERT INTO product_costs (mapping_id, marketplace, cost, updated_at)
+                    VALUES ($1, $2, $3, now())
+                    ON CONFLICT (mapping_id, marketplace)
+                    DO UPDATE SET cost = $3, updated_at = now()
+                """, row["id"], mp, cost)
             await update.message.reply_text(
-                f"✅ {row['display_name']}: с/с = {cost} ₽\nТоваров с себестоимостью: {total}"
+                f"✅ {row['display_name']} [{mp.upper()}]: с/с = {cost} ₽"
             )
         except Exception as e:
             logger.error(f"[Макс/cost] ошибка: {e}", exc_info=True)
@@ -1661,62 +1662,92 @@ class MaxAgent(BaseAgent):
             await update.message.reply_text("Управление каталогом — только в личке.")
             return
         args = (update.message.text or "").split()
-        if len(args) == 3:
+        if len(args) == 4:
             await self.cmd_cost(update, context)
             return
         chat_id = update.effective_chat.id
-        try:
-            from db import get_pool
-            pool = await get_pool()
-            async with pool.acquire() as conn:
-                rows = await conn.fetch(
-                    "SELECT id, display_name FROM product_mapping ORDER BY display_name"
-                )
-            if not rows:
-                await update.message.reply_text("Реестр пуст. Сначала добавь товар: /add")
-                return
-            kb_rows = []
-            row_pair = []
-            for r in rows:
-                row_pair.append(InlineKeyboardButton(r["display_name"], callback_data=f"costpick:{r['id']}"))
-                if len(row_pair) == 2:
-                    kb_rows.append(row_pair)
-                    row_pair = []
-            if row_pair:
-                kb_rows.append(row_pair)
-            kb_rows.append([InlineKeyboardButton("❌ Отмена", callback_data="costpick:cancel")])
-            await update.message.reply_text(
-                "💰 Выбери товар:", reply_markup=InlineKeyboardMarkup(kb_rows)
-            )
-        except Exception as e:
-            logger.error(f"[Макс/cost_wizard] ошибка: {e}", exc_info=True)
-            await update.message.reply_text(f"❌ Ошибка: {e}")
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("WB",   callback_data="costpick:mp:wb"),
+            InlineKeyboardButton("Ozon", callback_data="costpick:mp:ozon"),
+            InlineKeyboardButton("❌ Отмена", callback_data="costpick:cancel"),
+        ]])
+        await update.message.reply_text("💰 Себестоимость — выбери площадку:", reply_markup=kb)
 
     async def _handle_catalog_cost_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         import json as _json
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         query = update.callback_query
         await query.answer()
         chat_id = query.message.chat_id
         data = query.data
+
         if data == "costpick:cancel":
             await self._redis_set(f"catalog_cost:{chat_id}", "", ttl=1)
             await query.edit_message_text("Отменено.")
             return
-        mapping_id = int(data.split(":", 1)[1])
-        try:
-            from db import get_pool
-            pool = await get_pool()
-            async with pool.acquire() as conn:
-                row = await conn.fetchrow("SELECT display_name FROM product_mapping WHERE id = $1", mapping_id)
-            if not row:
-                await query.edit_message_text("Товар не найден.")
-                return
-            state = _json.dumps({"mapping_id": mapping_id, "name": row["display_name"]})
-            await self._redis_set(f"catalog_cost:{chat_id}", state, ttl=300)
-            await query.edit_message_text(f"Товар: {row['display_name']}\nВведи себестоимость (₽):\n\n/cancel — отмена")
-        except Exception as e:
-            logger.error(f"[Макс/cost_callback] ошибка: {e}", exc_info=True)
-            await query.edit_message_text(f"❌ Ошибка: {e}")
+
+        # Шаг 1: выбор площадки → показать товары
+        if data.startswith("costpick:mp:"):
+            mp = data.split(":")[-1]  # wb или ozon
+            try:
+                from db import get_pool
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        "SELECT id, display_name FROM product_mapping ORDER BY display_name"
+                    )
+                if not rows:
+                    await query.edit_message_text("Реестр пуст. Добавь товар: /add")
+                    return
+                kb_rows = []
+                row_pair = []
+                for r in rows:
+                    row_pair.append(InlineKeyboardButton(
+                        r["display_name"],
+                        callback_data=f"costpick:item:{mp}:{r['id']}"
+                    ))
+                    if len(row_pair) == 2:
+                        kb_rows.append(row_pair)
+                        row_pair = []
+                if row_pair:
+                    kb_rows.append(row_pair)
+                kb_rows.append([InlineKeyboardButton("❌ Отмена", callback_data="costpick:cancel")])
+                await query.edit_message_text(
+                    f"💰 {mp.upper()} — выбери товар:",
+                    reply_markup=InlineKeyboardMarkup(kb_rows)
+                )
+            except Exception as e:
+                logger.error(f"[Макс/cost_callback] ошибка: {e}", exc_info=True)
+                await query.edit_message_text(f"❌ Ошибка: {e}")
+            return
+
+        # Шаг 2: выбор товара → запросить сумму
+        if data.startswith("costpick:item:"):
+            _, _, mp, mid = data.split(":", 3)
+            mapping_id = int(mid)
+            try:
+                from db import get_pool
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        "SELECT display_name FROM product_mapping WHERE id = $1", mapping_id
+                    )
+                if not row:
+                    await query.edit_message_text("Товар не найден.")
+                    return
+                state = _json.dumps({
+                    "mapping_id": mapping_id,
+                    "marketplace": mp,
+                    "name": row["display_name"]
+                })
+                await self._redis_set(f"catalog_cost:{chat_id}", state, ttl=300)
+                await query.edit_message_text(
+                    f"Товар: {row['display_name']} [{mp.upper()}]\n"
+                    f"Введи себестоимость (₽):\n\n/cancel — отмена"
+                )
+            except Exception as e:
+                logger.error(f"[Макс/cost_callback] ошибка: {e}", exc_info=True)
+                await query.edit_message_text(f"❌ Ошибка: {e}")
 
     async def _handle_catalog_cost_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         from telegram import Chat
@@ -1740,13 +1771,16 @@ class MaxAgent(BaseAgent):
             pool = await get_pool()
             async with pool.acquire() as conn:
                 await conn.execute("""
-                    INSERT INTO product_costs (mapping_id, cost, updated_at)
-                    VALUES ($1, $2, now())
-                    ON CONFLICT (mapping_id)
-                    DO UPDATE SET cost = $2, updated_at = now()
-                """, state["mapping_id"], cost)
+                    INSERT INTO product_costs (mapping_id, marketplace, cost, updated_at)
+                    VALUES ($1, $2, $3, now())
+                    ON CONFLICT (mapping_id, marketplace)
+                    DO UPDATE SET cost = $3, updated_at = now()
+                """, state["mapping_id"], state["marketplace"], cost)
                 total = await conn.fetchval("SELECT COUNT(*) FROM product_costs")
-            await update.message.reply_text(f"✅ {state['name']}: с/с = {cost} ₽\nТоваров с себестоимостью: {total}")
+            await update.message.reply_text(
+                f"✅ {state['name']} [{state['marketplace'].upper()}]: с/с = {cost} ₽\n"
+                f"Записей с себестоимостью: {total}"
+            )
         except Exception as e:
             logger.error(f"[Макс/cost_text] ошибка: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
