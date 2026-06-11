@@ -187,9 +187,14 @@ class MaxAgent(BaseAgent):
         await super().start_polling_async()
         try:
             await self.app.bot.set_my_commands([
-                BotCommand("start", "Управление отзывами"),
+                BotCommand("start",     "Управление отзывами"),
+                BotCommand("products",  "📦 Каталог: товары и с/с"),
+                BotCommand("map",       "✏️ Товар в реестр: name= wb= ozon="),
+                BotCommand("cost",      "💰 Себестоимость: <артикул> <сумма>"),
+                BotCommand("sync",      "🔄 Синхронизация заказов/остатков"),
+                BotCommand("sync_adv",  "📊 Синхронизация рекламы"),
             ])
-            logger.info("[Макс] BotCommand menu установлен: /start only")
+            logger.info("[Макс] BotCommand menu установлен")
         except Exception as e:
             logger.warning(f"[Макс] set_my_commands error: {e}")
 
@@ -1539,16 +1544,84 @@ class MaxAgent(BaseAgent):
             logger.error(f"[Макс/adv] /sync_adv ошибка: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка синка рекламы: {e}")
 
+    async def cmd_products(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/products — список товаров реестра с себестоимостью."""
+        try:
+            from db import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT m.display_name, m.wb_article, m.ozon_offer_id,
+                           m.ozon_sku, c.cost
+                    FROM product_mapping m
+                    LEFT JOIN product_costs c ON c.mapping_id = m.id
+                    ORDER BY m.display_name
+                """)
+            if not rows:
+                await update.message.reply_text("Реестр пуст. Добавь товар: /map name=КБ50 wb=БК50гр ozon=КБ50")
+                return
+            lines = ["📦 Каталог товаров:\n"]
+            for r in rows:
+                cost = f"{r['cost']}₽" if r["cost"] is not None else "—"
+                wb = r["wb_article"] or "—"
+                oz = r["ozon_offer_id"] or "—"
+                sku = "✓" if r["ozon_sku"] else "✗"
+                lines.append(f"• {r['display_name']}: WB={wb} OZ={oz} SKU={sku} с/с={cost}")
+            with_cost = sum(1 for r in rows if r["cost"] is not None)
+            lines.append(f"\nВсего: {len(rows)} | с себестоимостью: {with_cost}")
+            await update.message.reply_text("\n".join(lines))
+        except Exception as e:
+            logger.error(f"[Макс/products] ошибка: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+
+    async def cmd_map(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/map name=X wb=Y ozon=Z — добавить/обновить товар в реестре.
+        name обязателен. wb и ozon — опционально (товар может быть на одной площадке).
+        Значения без пробелов. Пример: /map name=КБ50 wb=БК50гр ozon=КБ50"""
+        params = {}
+        for tok in (update.message.text or "").split()[1:]:
+            if "=" in tok:
+                k, v = tok.split("=", 1)
+                params[k.strip().lower()] = v.strip()
+        name = params.get("name")
+        if not name:
+            await update.message.reply_text(
+                "Формат: /map name=КБ50 wb=БК50гр ozon=КБ50\n"
+                "name обязателен, wb/ozon — опционально. Значения без пробелов."
+            )
+            return
+        wb = params.get("wb") or None
+        ozon = params.get("ozon") or None
+        try:
+            from db import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO product_mapping (display_name, wb_article, ozon_offer_id)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (display_name)
+                    DO UPDATE SET wb_article = EXCLUDED.wb_article,
+                                  ozon_offer_id = EXCLUDED.ozon_offer_id
+                """, name, wb, ozon)
+            await update.message.reply_text(
+                f"✅ Товар '{name}' сохранён.\nWB={wb or '—'} OZ={ozon or '—'}\n"
+                f"Себестоимость: /cost {name} <сумма>"
+            )
+        except Exception as e:
+            logger.error(f"[Макс/map] ошибка: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+
     async def cmd_cost(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/cost <wb_article> <сумма> — задать/обновить себестоимость товара.
-        Пример: /cost 12345 136.3 """
+        """/cost <идентификатор> <сумма> — себестоимость по name/wb_article/ozon_offer_id.
+        Пример: /cost КБ50 136.3"""
         args = (update.message.text or "").split()
         if len(args) != 3:
             await update.message.reply_text(
-                "Формат: /cost <wb_article> <себестоимость>\nНапример: /cost 12345 136.3"
+                "Формат: /cost <идентификатор> <себестоимость>\n"
+                "Идентификатор — имя, WB- или Ozon-артикул.\nПример: /cost КБ50 136.3"
             )
             return
-        wb_article = args[1].strip()
+        ident = args[1].strip()
         try:
             cost = float(args[2].replace(",", "."))
         except ValueError:
@@ -1558,16 +1631,25 @@ class MaxAgent(BaseAgent):
             from db import get_pool
             pool = await get_pool()
             async with pool.acquire() as conn:
-                await conn.execute(
-                    """INSERT INTO product_costs (wb_article, cost, updated_at)
-                       VALUES ($1, $2, now())
-                       ON CONFLICT (wb_article)
-                       DO UPDATE SET cost = $2, updated_at = now()""",
-                    wb_article, cost,
-                )
+                row = await conn.fetchrow("""
+                    SELECT id, display_name FROM product_mapping
+                    WHERE display_name = $1 OR wb_article = $1 OR ozon_offer_id = $1
+                """, ident)
+                if not row:
+                    await update.message.reply_text(
+                        f"❌ Товар '{ident}' не найден в реестре.\n"
+                        f"Сначала добавь: /map name={ident} wb=... ozon=..."
+                    )
+                    return
+                await conn.execute("""
+                    INSERT INTO product_costs (mapping_id, cost, updated_at)
+                    VALUES ($1, $2, now())
+                    ON CONFLICT (mapping_id)
+                    DO UPDATE SET cost = $2, updated_at = now()
+                """, row["id"], cost)
                 total = await conn.fetchval("SELECT COUNT(*) FROM product_costs")
             await update.message.reply_text(
-                f"✅ Себестоимость {wb_article} = {cost} ₽\nВсего товаров с с/с: {total}"
+                f"✅ {row['display_name']}: с/с = {cost} ₽\nТоваров с себестоимостью: {total}"
             )
         except Exception as e:
             logger.error(f"[Макс/cost] ошибка: {e}", exc_info=True)
@@ -1800,6 +1882,8 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("reset_orders",  self.cmd_reset_orders))
         self.app.add_handler(CommandHandler("sync",          self.cmd_sync))
         self.app.add_handler(CommandHandler("sync_adv",      self.cmd_sync_adv))
+        self.app.add_handler(CommandHandler("products",      self.cmd_products))
+        self.app.add_handler(CommandHandler("map",           self.cmd_map))
         self.app.add_handler(CommandHandler("cost",          self.cmd_cost))
         self.app.add_handler(
             CallbackQueryHandler(self._handle_onboard_callback, pattern=r"^onboard:")
