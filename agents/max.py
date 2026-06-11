@@ -1884,12 +1884,27 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("sync_adv",      self.cmd_sync_adv))
         self.app.add_handler(CommandHandler("products",      self.cmd_products))
         self.app.add_handler(CommandHandler("map",           self.cmd_map))
-        self.app.add_handler(CommandHandler("cost",          self.cmd_cost))
+        self.app.add_handler(CommandHandler("cost",          self.cmd_cost_wizard))
+        self.app.add_handler(CommandHandler("add",           self.cmd_add))
+        self.app.add_handler(CommandHandler("cancel",        self.cmd_cancel))
         self.app.add_handler(
             CallbackQueryHandler(self._handle_onboard_callback, pattern=r"^onboard:")
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_review_callback, pattern=r"^rev:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_catalog_add_callback,  pattern=r"^addmp:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_catalog_cost_callback, pattern=r"^costpick:")
+        )
+        self.app.add_handler(
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
+                self._handle_catalog_text,
+            ),
+            group=0,
         )
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_edit_reply),
