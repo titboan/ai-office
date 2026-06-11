@@ -297,7 +297,7 @@ class PeterAgent(BaseAgent):
 
         await update.message.reply_text("🤔 Анализирую…")
         try:
-            answer = await self.think(prompt, chat_id=chat_id, is_task=True)
+            answer = await self.think(prompt, chat_id=chat_id, is_task=True, max_tokens=4096)
         except Exception as e:
             logger.error(f"[Питер/report] ошибка Claude: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка анализа: {e}")
