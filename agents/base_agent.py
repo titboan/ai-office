@@ -505,9 +505,10 @@ class BaseAgent(ABC):
             return
 
         # ── Показываем транскрипцию и передаём в handle_message ───────────
-        await update.message.reply_text(f"🎤 Распознано: {user_text}")
         from telegram import Chat
-        if update.effective_chat.type not in (Chat.GROUP, Chat.SUPERGROUP):
+        is_group = update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP)
+        if not is_group:
+            await update.message.reply_text(f"🎤 Распознано: {user_text}")
             await self.handle_message(update, context)
         return user_text
 
