@@ -1557,10 +1557,12 @@ class MaxAgent(BaseAgent):
             pool = await get_pool()
             async with pool.acquire() as conn:
                 rows = await conn.fetch("""
-                    SELECT m.display_name, m.wb_article, m.ozon_offer_id,
-                           m.ozon_sku, c.cost
+                    SELECT m.display_name, m.wb_article, m.ozon_offer_id, m.ozon_sku,
+                           MAX(CASE WHEN c.marketplace = 'wb'   THEN c.cost END) AS cost_wb,
+                           MAX(CASE WHEN c.marketplace = 'ozon' THEN c.cost END) AS cost_ozon
                     FROM product_mapping m
                     LEFT JOIN product_costs c ON c.mapping_id = m.id
+                    GROUP BY m.id, m.display_name, m.wb_article, m.ozon_offer_id, m.ozon_sku
                     ORDER BY m.display_name
                 """)
             if not rows:
@@ -1572,8 +1574,10 @@ class MaxAgent(BaseAgent):
                 wb = r["wb_article"] or "—"
                 oz = r["ozon_offer_id"] or "—"
                 sku = "✓" if r["ozon_sku"] else "✗"
-                lines.append(f"• {r['display_name']}: WB={wb} OZ={oz} SKU={sku} с/с={cost}")
-            with_cost = sum(1 for r in rows if r["cost"] is not None)
+                cost_wb   = f"{r['cost_wb']}₽"   if r["cost_wb"]   is not None else "—"
+                cost_ozon = f"{r['cost_ozon']}₽" if r["cost_ozon"] is not None else "—"
+                lines.append(f"• {r['display_name']}: WB={wb}({cost_wb}) OZ={oz}({cost_ozon}) SKU={sku}")
+            with_cost = sum(1 for r in rows if r["cost_wb"] is not None or r["cost_ozon"] is not None)
             lines.append(f"\nВсего: {len(rows)} | с себестоимостью: {with_cost}")
             await update.message.reply_text("\n".join(lines))
         except Exception as e:
