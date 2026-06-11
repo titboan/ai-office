@@ -27,7 +27,7 @@ WB: X ₽ (ДРР X%) | Ozon: X ₽ (ДРР X%)
 
 Топ-3: КБ50 — X ₽/день, ТГ100 — X ₽/день, ИМ07 — X ₽/день
 
-Рентабельность (выручка − комиссия МП − логистика МП − себестоимость):
+Валовая рентабельность (выручка − себестоимость, без комиссий МП — они неизвестны):
 WB: КБ50 X% | 200грБК X% | БК100 X%
 Ozon: КБ50 X% | ИМ07 X% (⚠️ комиссии ~20% WB / ~10% Ozon — уточни из отчётов МП)
 
@@ -154,14 +154,12 @@ class PeterAgent(BaseAgent):
                     SUM(o.price * o.quantity)::numeric(12,2)      AS revenue,
                     SUM(o.quantity)                               AS qty,
                     MAX(c.cost)::numeric(12,2)                    AS cost,
-                    (SUM(o.price * o.quantity) * 0.80
+                    (SUM(o.price * o.quantity)
                      - SUM(o.quantity) * MAX(c.cost)
-                     - SUM(o.quantity) * 100
                     )::numeric(12,2)                              AS op_profit,
                     CASE WHEN SUM(o.price * o.quantity) > 0 THEN
-                        ROUND((SUM(o.price * o.quantity) * 0.80
+                        ROUND((SUM(o.price * o.quantity)
                                - SUM(o.quantity) * MAX(c.cost)
-                               - SUM(o.quantity) * 100
                               ) / SUM(o.price * o.quantity) * 100, 1)
                     ELSE 0 END                                    AS profitability
                 FROM marketplace_orders o
@@ -180,14 +178,12 @@ class PeterAgent(BaseAgent):
                     SUM(o.price * o.quantity)::numeric(12,2)      AS revenue,
                     SUM(o.quantity)                               AS qty,
                     MAX(c.cost)::numeric(12,2)                    AS cost,
-                    (SUM(o.price * o.quantity) * 0.90
+                    (SUM(o.price * o.quantity)
                      - SUM(o.quantity) * MAX(c.cost)
-                     - SUM(o.quantity) * 80
                     )::numeric(12,2)                              AS op_profit,
                     CASE WHEN SUM(o.price * o.quantity) > 0 THEN
-                        ROUND((SUM(o.price * o.quantity) * 0.90
+                        ROUND((SUM(o.price * o.quantity)
                                - SUM(o.quantity) * MAX(c.cost)
-                               - SUM(o.quantity) * 80
                               ) / SUM(o.price * o.quantity) * 100, 1)
                     ELSE 0 END                                    AS profitability
                 FROM marketplace_orders o
@@ -310,7 +306,6 @@ class PeterAgent(BaseAgent):
 - Комиссия WB ~15-25%, логистика ~50-150₽/заказ — учитывай в выводах.
 - Комиссия Ozon ~5-15% в зависимости от категории.
 - Если margin_ozon пустой — Ozon-заказы есть, но маппинг SKU не позволил посчитать маржу.
-- Комиссии МП в расчёте рентабельности заложены как дефолт (WB 20%, Ozon 10%) — реальные могут отличаться, укажи это в ответе одной строкой.
 - Не упоминай возвраты — у продавца выкупаемость 95-100%.
 {"- Цель: " + str(goal) + " ₽/день суммарно WB+Ozon." if goal else ""}
 
