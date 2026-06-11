@@ -204,6 +204,13 @@ async def _create_schema() -> None:
                 UNIQUE (chat_id, added_by)
             );
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS product_costs (
+                wb_article  TEXT PRIMARY KEY,
+                cost        NUMERIC NOT NULL,
+                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
         logger.info("[db] Схема tasks + projects + digest_channels готова ✓")
 
 async def save_project(
