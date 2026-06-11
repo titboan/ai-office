@@ -55,7 +55,7 @@ class PeterAgent(BaseAgent):
         """Собрать аналитический срез из БД за последние N дней."""
         from db import get_pool
         pool = await get_pool()
-        date_from = (datetime.now(_UTC) - timedelta(days=days)).strftime("%Y-%m-%d")
+        date_from = (datetime.now(_UTC) - timedelta(days=days)).date()
 
         async with pool.acquire() as conn:
 
