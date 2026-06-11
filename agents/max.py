@@ -1539,6 +1539,40 @@ class MaxAgent(BaseAgent):
             logger.error(f"[Макс/adv] /sync_adv ошибка: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка синка рекламы: {e}")
 
+    async def cmd_cost(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/cost <wb_article> <сумма> — задать/обновить себестоимость товара.
+        Пример: /cost 12345 136.3 """
+        args = (update.message.text or "").split()
+        if len(args) != 3:
+            await update.message.reply_text(
+                "Формат: /cost <wb_article> <себестоимость>\nНапример: /cost 12345 136.3"
+            )
+            return
+        wb_article = args[1].strip()
+        try:
+            cost = float(args[2].replace(",", "."))
+        except ValueError:
+            await update.message.reply_text(f"❌ '{args[2]}' — не число")
+            return
+        try:
+            from db import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """INSERT INTO product_costs (wb_article, cost, updated_at)
+                       VALUES ($1, $2, now())
+                       ON CONFLICT (wb_article)
+                       DO UPDATE SET cost = $2, updated_at = now()""",
+                    wb_article, cost,
+                )
+                total = await conn.fetchval("SELECT COUNT(*) FROM product_costs")
+            await update.message.reply_text(
+                f"✅ Себестоимость {wb_article} = {cost} ₽\nВсего товаров с с/с: {total}"
+            )
+        except Exception as e:
+            logger.error(f"[Макс/cost] ошибка: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+
     # ------------------------------------------------------------------ #
     #  ИИ-агент в группе                                                  #
     # ------------------------------------------------------------------ #
@@ -1766,6 +1800,7 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("reset_orders",  self.cmd_reset_orders))
         self.app.add_handler(CommandHandler("sync",          self.cmd_sync))
         self.app.add_handler(CommandHandler("sync_adv",      self.cmd_sync_adv))
+        self.app.add_handler(CommandHandler("cost",          self.cmd_cost))
         self.app.add_handler(
             CallbackQueryHandler(self._handle_onboard_callback, pattern=r"^onboard:")
         )
