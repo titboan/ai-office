@@ -255,7 +255,7 @@ class PeterAgent(BaseAgent):
 
         # Telegram лимит 4096 символов
         for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
-            await update.message.reply_text(chunk, parse_mode="Markdown")
+            await update.message.reply_text(chunk)
 
     async def cmd_analyze(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
