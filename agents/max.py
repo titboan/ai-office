@@ -2192,13 +2192,7 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(
             CallbackQueryHandler(self._handle_catalog_cost_callback, pattern=r"^costpick:")
         )
-        self.app.add_handler(
-            MessageHandler(
-                filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
-                self._handle_catalog_text,
-            ),
-            group=0,
-        )
+
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_edit_reply),
             group=1,
