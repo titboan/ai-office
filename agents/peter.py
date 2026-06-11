@@ -41,6 +41,64 @@ PETER_SYSTEM = """Ты Питер, бизнес-аналитик команды 
 Будь конкретным. Оперируй реальными цифрами из данных. Не давай советов без обоснования цифрами."""
 
 
+import re as _re
+
+def _format_for_telegram(text: str) -> str:
+    """Убирает Markdown-таблицы и форматирование для читаемого TG-текста."""
+    lines = []
+    for line in text.splitlines():
+        # Пропускаем строки-разделители таблиц (|---|---|)
+        if _re.match(r"^\s*\|[\s\-\|]+\|\s*$", line):
+            continue
+        # Таблицу превращаем в строку с •
+        if line.strip().startswith("|") and line.strip().endswith("|"):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            cells = [c for c in cells if c and not _re.match(r"^[-\s]+$", c)]
+            if cells:
+                lines.append("• " + "  |  ".join(cells))
+            continue
+        # Убираем ## заголовки → просто текст с отступом
+        line = _re.sub(r"^#{1,3}\s*", "", line)
+        # Убираем **bold**
+        line = _re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _format_for_notion(text: str) -> str:
+    """Конвертирует Markdown-таблицы в читаемый текст для Notion API.
+    save_research использует простой текстовый блок — таблицы рендерим
+    как выровненные строки через пробелы."""
+    lines = []
+    table_rows: list[list[str]] = []
+
+    def _flush_table():
+        if not table_rows:
+            return
+        # Считаем ширину колонок
+        col_w = [0] * max(len(r) for r in table_rows)
+        for row in table_rows:
+            for i, cell in enumerate(row):
+                col_w[i] = max(col_w[i], len(cell))
+        for row in table_rows:
+            lines.append("  ".join(cell.ljust(col_w[i]) for i, cell in enumerate(row)))
+        lines.append("")
+        table_rows.clear()
+
+    for line in text.splitlines():
+        if _re.match(r"^\s*\|[\s\-\|]+\|\s*$", line):
+            continue  # разделитель таблицы
+        if line.strip().startswith("|") and line.strip().endswith("|"):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            table_rows.append(cells)
+        else:
+            _flush_table()
+            lines.append(line)
+
+    _flush_table()
+    return "\n".join(lines)
+
+
 class PeterAgent(BaseAgent):
     name = "Питер"
     agent_key = "peter"
@@ -95,7 +153,7 @@ class PeterAgent(BaseAgent):
                      SUM(o.quantity) * MAX(c.cost))::numeric(12,2) AS gross_profit
                 FROM marketplace_orders o
                 JOIN product_mapping m ON m.wb_article = o.product_id
-                JOIN product_costs c   ON c.mapping_id = m.id AND c.marketplace = 'wb'
+                JOIN product_costs c   ON c.mapping_id = m.id
                 WHERE o.chat_id = $1 AND o.marketplace = 'wb' AND o.order_date >= $2
                 GROUP BY o.product_id
                 ORDER BY gross_profit DESC
@@ -113,7 +171,7 @@ class PeterAgent(BaseAgent):
                      SUM(o.quantity) * MAX(c.cost))::numeric(12,2) AS gross_profit
                 FROM marketplace_orders o
                 JOIN product_mapping m ON m.ozon_sku = o.product_id
-                JOIN product_costs c   ON c.mapping_id = m.id AND c.marketplace = 'ozon'
+                JOIN product_costs c   ON c.mapping_id = m.id
                 WHERE o.chat_id = $1 AND o.marketplace = 'ozon' AND o.order_date >= $2
                 GROUP BY o.product_id
                 ORDER BY gross_profit DESC
@@ -246,15 +304,16 @@ class PeterAgent(BaseAgent):
         # Сохраняем в Notion
         notion_url = await save_research(
             title=f"Отчёт {datetime.now(_UTC).strftime('%d.%m.%Y')}",
-            content=answer,
+            content=_format_for_notion(answer),
             source="cmd:report",
             agent="Питер",
         )
         if notion_url:
             answer = f"{answer}\n\n📄 [Сохранено в Notion]({notion_url})"
 
-        # Telegram лимит 4096 символов
-        for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
+        # Telegram: убираем Markdown-таблицы, форматируем как текст
+        tg_answer = _format_for_telegram(answer)
+        for chunk in [tg_answer[i:i+4000] for i in range(0, len(tg_answer), 4000)]:
             await update.message.reply_text(chunk)
 
     async def cmd_analyze(
