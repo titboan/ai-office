@@ -186,7 +186,6 @@ async def _create_schema() -> None:
                 product_id   TEXT,
                 product_name TEXT,
                 quantity     INTEGER       NOT NULL DEFAULT 1,
-                price        NUMERIC(10,2),
                 seller_price NUMERIC(10,2),
                 order_date   TIMESTAMPTZ,
                 created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
@@ -196,6 +195,10 @@ async def _create_schema() -> None:
         await conn.execute("""
             ALTER TABLE marketplace_orders
             ADD COLUMN IF NOT EXISTS seller_price NUMERIC(10,2)
+        """)
+        await conn.execute("""
+            ALTER TABLE marketplace_orders
+            DROP COLUMN IF EXISTS price
         """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS digest_channels (
@@ -606,7 +609,6 @@ async def save_order(
     product_id: str | None,
     product_name: str | None,
     quantity: int,
-    price: float | None,
     order_date,
     seller_price: float | None = None,
 ) -> bool:
@@ -616,12 +618,12 @@ async def save_order(
             """
             INSERT INTO marketplace_orders
                 (chat_id, marketplace, order_id, product_id, product_name,
-                 quantity, price, order_date, seller_price)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 quantity, order_date, seller_price)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (marketplace, order_id) DO NOTHING
             """,
             chat_id, marketplace, order_id, product_id, product_name,
-            quantity, price, order_date, seller_price,
+            quantity, order_date, seller_price,
         )
         return result.split()[-1] != "0"
 
@@ -647,7 +649,7 @@ async def get_orders_summary(chat_id: int, date_from, date_to) -> list[dict]:
             )
         rows = await conn.fetch(
             """
-            SELECT marketplace, SUM(quantity) AS orders, SUM(price * quantity) AS revenue
+            SELECT marketplace, SUM(quantity) AS orders, SUM(seller_price * quantity) AS revenue
             FROM marketplace_orders
             WHERE chat_id = $1 AND order_date >= $2 AND order_date < $3
             GROUP BY marketplace
@@ -694,7 +696,7 @@ async def get_orders_total(chat_id: int, days: int = 7) -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT marketplace, SUM(quantity) AS orders, SUM(price * quantity) AS revenue
+            SELECT marketplace, SUM(quantity) AS orders, SUM(seller_price * quantity) AS revenue
             FROM marketplace_orders
             WHERE chat_id = $1
               AND order_date >= NOW() - ($2 || ' days')::interval
