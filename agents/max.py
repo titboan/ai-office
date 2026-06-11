@@ -1655,6 +1655,254 @@ class MaxAgent(BaseAgent):
             logger.error(f"[Макс/cost] ошибка: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
 
+    async def cmd_cost_wizard(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from telegram import Chat, InlineKeyboardButton, InlineKeyboardMarkup
+        if update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
+            await update.message.reply_text("Управление каталогом — только в личке.")
+            return
+        args = (update.message.text or "").split()
+        if len(args) == 3:
+            await self.cmd_cost(update, context)
+            return
+        chat_id = update.effective_chat.id
+        try:
+            from db import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT id, display_name FROM product_mapping ORDER BY display_name"
+                )
+            if not rows:
+                await update.message.reply_text("Реестр пуст. Сначала добавь товар: /add")
+                return
+            kb_rows = []
+            row_pair = []
+            for r in rows:
+                row_pair.append(InlineKeyboardButton(r["display_name"], callback_data=f"costpick:{r['id']}"))
+                if len(row_pair) == 2:
+                    kb_rows.append(row_pair)
+                    row_pair = []
+            if row_pair:
+                kb_rows.append(row_pair)
+            kb_rows.append([InlineKeyboardButton("❌ Отмена", callback_data="costpick:cancel")])
+            await update.message.reply_text(
+                "💰 Выбери товар:", reply_markup=InlineKeyboardMarkup(kb_rows)
+            )
+        except Exception as e:
+            logger.error(f"[Макс/cost_wizard] ошибка: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+
+    async def _handle_catalog_cost_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        import json as _json
+        query = update.callback_query
+        await query.answer()
+        chat_id = query.message.chat_id
+        data = query.data
+        if data == "costpick:cancel":
+            await self._redis_set(f"catalog_cost:{chat_id}", "", ttl=1)
+            await query.edit_message_text("Отменено.")
+            return
+        mapping_id = int(data.split(":", 1)[1])
+        try:
+            from db import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT display_name FROM product_mapping WHERE id = $1", mapping_id)
+            if not row:
+                await query.edit_message_text("Товар не найден.")
+                return
+            state = _json.dumps({"mapping_id": mapping_id, "name": row["display_name"]})
+            await self._redis_set(f"catalog_cost:{chat_id}", state, ttl=300)
+            await query.edit_message_text(f"Товар: {row['display_name']}\nВведи себестоимость (₽):\n\n/cancel — отмена")
+        except Exception as e:
+            logger.error(f"[Макс/cost_callback] ошибка: {e}", exc_info=True)
+            await query.edit_message_text(f"❌ Ошибка: {e}")
+
+    async def _handle_catalog_cost_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from telegram import Chat
+        if update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
+            return
+        chat_id = update.effective_chat.id
+        raw = await self._redis_get(f"catalog_cost:{chat_id}")
+        if not raw:
+            return
+        import json as _json
+        state = _json.loads(raw)
+        text = update.message.text.strip()
+        try:
+            cost = float(text.replace(",", "."))
+        except ValueError:
+            await update.message.reply_text("Введи число, например 136.3")
+            return
+        await self._redis_set(f"catalog_cost:{chat_id}", "", ttl=1)
+        try:
+            from db import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO product_costs (mapping_id, cost, updated_at)
+                    VALUES ($1, $2, now())
+                    ON CONFLICT (mapping_id)
+                    DO UPDATE SET cost = $2, updated_at = now()
+                """, state["mapping_id"], cost)
+                total = await conn.fetchval("SELECT COUNT(*) FROM product_costs")
+            await update.message.reply_text(f"✅ {state['name']}: с/с = {cost} ₽\nТоваров с себестоимостью: {total}")
+        except Exception as e:
+            logger.error(f"[Макс/cost_text] ошибка: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+
+    async def cmd_add(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from telegram import Chat
+        if update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
+            await update.message.reply_text("Управление каталогом — только в личке.")
+            return
+        chat_id = update.effective_chat.id
+        import json as _json
+        await self._redis_set(f"catalog_add:{chat_id}", _json.dumps({"step": "name"}), ttl=300)
+        await update.message.reply_text("📦 Добавление товара\n\nВведи название:\nНапример: КБ50\n\n/cancel — отмена")
+
+    async def _handle_catalog_add_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from telegram import Chat, InlineKeyboardButton, InlineKeyboardMarkup
+        if update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
+            return
+        chat_id = update.effective_chat.id
+        raw = await self._redis_get(f"catalog_add:{chat_id}")
+        if not raw:
+            return
+        import json as _json
+        state = _json.loads(raw)
+        step = state.get("step")
+        text = update.message.text.strip()
+
+        if step == "name":
+            state["name"] = text
+            state["step"] = "platform"
+            await self._redis_set(f"catalog_add:{chat_id}", _json.dumps(state), ttl=300)
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("WB",   callback_data="addmp:wb"),
+                InlineKeyboardButton("Ozon", callback_data="addmp:ozon"),
+                InlineKeyboardButton("Обе",  callback_data="addmp:both"),
+            ]])
+            await update.message.reply_text(f"Товар: {text}\nНа какой площадке?", reply_markup=kb)
+
+        elif step == "wb_article":
+            state["wb"] = text
+            if state.get("need_ozon"):
+                state["step"] = "ozon_offer"
+                await self._redis_set(f"catalog_add:{chat_id}", _json.dumps(state), ttl=300)
+                await update.message.reply_text("Артикул Ozon (offer_id)?")
+            else:
+                await self._ask_cost(update, chat_id, state)
+
+        elif step == "ozon_offer":
+            state["ozon"] = text
+            await self._ask_cost(update, chat_id, state)
+
+        elif step == "cost":
+            try:
+                cost = float(text.replace(",", "."))
+            except ValueError:
+                await update.message.reply_text("Введи число, например 136.3")
+                return
+            state["cost"] = cost
+            await self._save_product(update, chat_id, state)
+
+    async def _ask_cost(self, update: Update, chat_id: int, state: dict) -> None:
+        import json as _json
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        state["step"] = "cost"
+        await self._redis_set(f"catalog_add:{chat_id}", _json.dumps(state), ttl=300)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить", callback_data="addmp:skip_cost")]])
+        await update.message.reply_text("Себестоимость (₽)? Или пропусти — задашь позже через /cost", reply_markup=kb)
+
+    async def _save_product(self, update_or_query, chat_id: int, state: dict, edit: bool = False) -> None:
+        name = state.get("name")
+        wb   = state.get("wb") or None
+        ozon = state.get("ozon") or None
+        cost = state.get("cost") or None
+        await self._redis_set(f"catalog_add:{chat_id}", "", ttl=1)
+        try:
+            from db import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow("""
+                    INSERT INTO product_mapping (display_name, wb_article, ozon_offer_id)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (display_name)
+                    DO UPDATE SET wb_article = EXCLUDED.wb_article,
+                                  ozon_offer_id = EXCLUDED.ozon_offer_id
+                    RETURNING id
+                """, name, wb, ozon)
+                if cost is not None:
+                    await conn.execute("""
+                        INSERT INTO product_costs (mapping_id, cost, updated_at)
+                        VALUES ($1, $2, now())
+                        ON CONFLICT (mapping_id)
+                        DO UPDATE SET cost = $2, updated_at = now()
+                    """, row["id"], cost)
+            cost_str = f", с/с {cost} ₽" if cost else " (с/с не задана)"
+            text = f"✅ {name} сохранён{cost_str}\nWB={wb or '—'} OZ={ozon or '—'}"
+            if edit:
+                await update_or_query.edit_message_text(text)
+            else:
+                await update_or_query.message.reply_text(text)
+        except Exception as e:
+            logger.error(f"[Макс/add] ошибка: {e}", exc_info=True)
+            err = f"❌ Ошибка: {e}"
+            if edit:
+                await update_or_query.edit_message_text(err)
+            else:
+                await update_or_query.message.reply_text(err)
+
+    async def _handle_catalog_add_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        import json as _json
+        query = update.callback_query
+        await query.answer()
+        chat_id = query.message.chat_id
+        raw = await self._redis_get(f"catalog_add:{chat_id}")
+        if not raw:
+            await query.edit_message_text("Сессия истекла. Начни заново: /add")
+            return
+        state = _json.loads(raw)
+        data  = query.data
+
+        if data == "addmp:wb":
+            state["step"] = "wb_article"
+            state["need_ozon"] = False
+            await self._redis_set(f"catalog_add:{chat_id}", _json.dumps(state), ttl=300)
+            await query.edit_message_text(f"Товар: {state['name']}\nАртикул WB?")
+
+        elif data == "addmp:ozon":
+            state["step"] = "ozon_offer"
+            state["need_ozon"] = False
+            await self._redis_set(f"catalog_add:{chat_id}", _json.dumps(state), ttl=300)
+            await query.edit_message_text(f"Товар: {state['name']}\nАртикул Ozon (offer_id)?")
+
+        elif data == "addmp:both":
+            state["step"] = "wb_article"
+            state["need_ozon"] = True
+            await self._redis_set(f"catalog_add:{chat_id}", _json.dumps(state), ttl=300)
+            await query.edit_message_text(f"Товар: {state['name']}\nАртикул WB?")
+
+        elif data == "addmp:skip_cost":
+            await self._save_product(query, chat_id, state, edit=True)
+
+    async def _handle_catalog_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from telegram import Chat
+        if update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
+            return
+        chat_id = update.effective_chat.id
+        if await self._redis_get(f"catalog_add:{chat_id}"):
+            await self._handle_catalog_add_text(update, context)
+        elif await self._redis_get(f"catalog_cost:{chat_id}"):
+            await self._handle_catalog_cost_text(update, context)
+
+    async def cmd_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat_id = update.effective_chat.id
+        await self._redis_set(f"catalog_add:{chat_id}",  "", ttl=1)
+        await self._redis_set(f"catalog_cost:{chat_id}", "", ttl=1)
+        await update.message.reply_text("Отменено.")
+
     # ------------------------------------------------------------------ #
     #  ИИ-агент в группе                                                  #
     # ------------------------------------------------------------------ #
