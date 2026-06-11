@@ -1760,6 +1760,7 @@ class MaxAgent(BaseAgent):
             return
         chat_id = update.effective_chat.id
         raw = await self._redis_get(f"catalog_cost:{chat_id}")
+        logger.info(f"[Макс/cost_text] chat={chat_id} raw={raw!r}")
         if not raw:
             return
         import json as _json
