@@ -193,6 +193,7 @@ class MaxAgent(BaseAgent):
                 BotCommand("cost",      "💰 Себестоимость: <артикул> <сумма>"),
                 BotCommand("sync",      "🔄 Синхронизация заказов/остатков"),
                 BotCommand("sync_adv",  "📊 Синхронизация рекламы"),
+                BotCommand("sync_sku",  "🔗 Подтянуть Ozon SKU в реестр"),
             ])
             logger.info("[Макс] BotCommand menu установлен")
         except Exception as e:
@@ -1550,6 +1551,68 @@ class MaxAgent(BaseAgent):
             logger.error(f"[Макс/adv] /sync_adv ошибка: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка синка рекламы: {e}")
 
+    async def cmd_sync_sku(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/sync_sku — подтянуть Ozon SKU в реестр товаров."""
+        await update.message.reply_text("⏳ Запрашиваю Ozon SKU…")
+        try:
+            from db import get_pool
+            from tools.marketplace import OzonClient
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT id, ozon_offer_id FROM product_mapping
+                    WHERE ozon_offer_id IS NOT NULL AND (ozon_sku IS NULL OR ozon_sku = '')
+                """)
+            if not rows:
+                await update.message.reply_text("✅ Все товары уже имеют Ozon SKU.")
+                return
+
+            offer_ids = [r["ozon_offer_id"] for r in rows]
+            id_map = {r["ozon_offer_id"]: r["id"] for r in rows}
+
+            # Запрос к Ozon API: offer_id → sku
+            import aiohttp, json as _json
+            from config import config
+            headers = {
+                "Client-Id":  config.OZON_CLIENT_ID,
+                "Api-Key":    config.OZON_API_KEY,
+                "Content-Type": "application/json",
+            }
+            url = "https://api-seller.ozon.ru/v3/product/info/list"
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url, headers=headers,
+                    json={"offer_id": offer_ids},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        await update.message.reply_text(f"❌ Ozon API HTTP {resp.status}: {raw[:200]}")
+                        return
+                    data = _json.loads(raw)
+
+            updated = 0
+            async with pool.acquire() as conn:
+                for item in (data.get("items") or []):
+                    sku = str(item.get("sku") or "").strip()
+                    offer_id = str(item.get("offer_id") or "").strip()
+                    mapping_id = id_map.get(offer_id)
+                    if sku and mapping_id:
+                        await conn.execute(
+                            "UPDATE product_mapping SET ozon_sku = $1 WHERE id = $2",
+                            sku, mapping_id,
+                        )
+                        updated += 1
+
+            logger.info(f"[Макс/sync_sku] обновлено: {updated}/{len(rows)}")
+            await update.message.reply_text(
+                f"✅ Ozon SKU обновлены: {updated} из {len(rows)}\n"
+                f"Проверь /products — SKU=✓"
+            )
+        except Exception as e:
+            logger.error(f"[Макс/sync_sku] ошибка: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+
     async def cmd_products(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/products — список товаров реестра с себестоимостью."""
         try:
@@ -2178,6 +2241,7 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("reset_orders",  self.cmd_reset_orders))
         self.app.add_handler(CommandHandler("sync",          self.cmd_sync))
         self.app.add_handler(CommandHandler("sync_adv",      self.cmd_sync_adv))
+        self.app.add_handler(CommandHandler("sync_sku",      self.cmd_sync_sku))
         self.app.add_handler(CommandHandler("products",      self.cmd_products))
         self.app.add_handler(CommandHandler("map",           self.cmd_map))
         self.app.add_handler(CommandHandler("cost",          self.cmd_cost_wizard))
