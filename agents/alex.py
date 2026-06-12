@@ -9,7 +9,6 @@ from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
-from tools import create_task
 from task_queue import create_reminder
 from tools.ntfy import send_push
 from .base_agent import BaseAgent
@@ -23,12 +22,17 @@ ALEX_SYSTEM = """Ты Алекс, планировщик и личный асс�
    Парсишь время и создаёшь напоминание через remind_at.
    Подтверждаешь: '⏰ Напомню в [время]'
 
-2. ПЛАНИРОВАНИЕ — roadmap, OKR, декомпозиция задач,
-   дедлайны, Notion Tasks.
+2. ПЛАНИРОВАНИЕ — roadmap, OKR, декомпозиция задач, дедлайны.
 
 Для напоминаний используй формат remind_at в ответе.
-Никогда не отказывай в напоминании — это твоя
-ключевая функция.
+Никогда не отказывай в напоминании — это твоя ключевая функция.
+
+Форматируй ответы в HTML для Telegram:
+- <b>текст</b> — заголовки этапов и дедлайны
+- <code>текст</code> — даты, метрики, команды
+- Нумерованные списки для шагов
+- Эмодзи: ⏰ 📅 🎯 ✅
+- НЕ используй Markdown: никаких *звёздочек*, ##заголовков
 
 Отвечай по-русски, структурированно."""
 
@@ -104,6 +108,7 @@ class AlexAgent(BaseAgent):
     role = "Планировщик"
     emoji = "🗓️"
     system_prompt = ALEX_SYSTEM
+    claude_model = config.CLAUDE_HAIKU_MODEL
 
     def __init__(self) -> None:
         super().__init__(config.ALEX_BOT_TOKEN)
@@ -137,30 +142,7 @@ class AlexAgent(BaseAgent):
             is_task=True,
         )
 
-        # Извлекаем дедлайн и приоритет из задания + ответа Клода
-        deadline = _extract_deadline(task + " " + answer)
-        priority = _extract_priority(task)
-
-        # Сохраняем задачу в Notion
-        notion_url = await create_task(
-            name=task[:200],
-            deadline=deadline,
-            priority=priority,
-        )
-
-        if notion_url:
-            logger.info(f"[{self.name}] Задача сохранена в Notion ({priority}): {notion_url}")
-            await self.post_to_group(
-                f"📅 Задача '{task[:60]}' добавлена в Notion: {notion_url}"
-            )
-            deadline_info = f", дедлайн: {deadline}" if deadline else ""
-            answer = (
-                f"{answer}\n\n"
-                f"📋 *Задача добавлена в Notion* ({priority}{deadline_info}):\n{notion_url}"
-            )
-        else:
-            await self.post_to_group(f"📅 План готов: {answer[:200]}…")
-
+        await self.post_to_group(f"📅 План готов: {answer[:200]}…")
         return answer
 
     # ------------------------------------------------------------------ #
@@ -178,10 +160,10 @@ class AlexAgent(BaseAgent):
             return
         await update.message.reply_text("🗓️ Составляю план…")
         result = await self.handle_task(goal, from_agent="команды /plan")
-        if len(result) <= 4096:
-            await update.message.reply_text(result, parse_mode="Markdown")
-        else:
-            for chunk in [result[i : i + 4000] for i in range(0, len(result), 4000)]:
+        for chunk in [result[i : i + 4000] for i in range(0, len(result), 4000)]:
+            try:
+                await update.message.reply_text(chunk, parse_mode="HTML")
+            except Exception:
                 await update.message.reply_text(chunk)
 
     async def cmd_roadmap(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -198,10 +180,10 @@ class AlexAgent(BaseAgent):
             f"Составь roadmap для проекта: {project}",
             from_agent="команды /roadmap",
         )
-        if len(result) <= 4096:
-            await update.message.reply_text(result, parse_mode="Markdown")
-        else:
-            for chunk in [result[i : i + 4000] for i in range(0, len(result), 4000)]:
+        for chunk in [result[i : i + 4000] for i in range(0, len(result), 4000)]:
+            try:
+                await update.message.reply_text(chunk, parse_mode="HTML")
+            except Exception:
                 await update.message.reply_text(chunk)
 
     async def cmd_testpush(
@@ -221,13 +203,13 @@ class AlexAgent(BaseAgent):
 
         if success:
             await update.message.reply_text(
-                f"✅ Пуш отправлен на топик: `{config.NTFY_TOPIC}`",
-                parse_mode="Markdown",
+                f"✅ Пуш отправлен на топик: <code>{config.NTFY_TOPIC}</code>",
+                parse_mode="HTML",
             )
         else:
             await update.message.reply_text(
-                f"❌ Ошибка отправки. Проверь Railway logs → `ntfy_response`.",
-                parse_mode="Markdown",
+                f"❌ Ошибка отправки. Проверь Railway logs → <code>ntfy_response</code>.",
+                parse_mode="HTML",
             )
 
     def _register_extra_handlers(self) -> None:

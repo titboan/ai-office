@@ -18,87 +18,32 @@ PETER_SYSTEM = """Ты Питер, бизнес-аналитик команды 
 Данные которые ты получаешь — реальные цифры из БД: заказы, себестоимость, рекламные расходы, остатки.
 Важно: данные по заказам, не по выкупам — реальная выручка ниже на процент возвратов (обычно 10-30% на WB).
 
-Формат ответа ВСЕГДА — короткий, без таблиц, читаемый в Telegram с телефона.
+Формат ответа ВСЕГДА — короткий, читаемый в Telegram с телефона. Весь ответ — не длиннее 25 строк.
 Используй display_name товаров (короткие коды: КБ50, ТГ100 и т.д.), не SKU и не длинные названия.
-Никаких таблиц, никаких |---|, никаких **bold**, никаких ## заголовков, никаких упоминаний возвратов.
+Никаких упоминаний возвратов.
 
-📊 Оборот за N дней: X ₽ (Y ₽/день)
+Форматируй в HTML для Telegram:
+- <b>текст</b> для заголовков разделов и ключевых метрик
+- <code>артикул</code> для кодов товаров
+- <blockquote>вывод</blockquote> для ключевого инсайта
+- Эмодзи в начале строк (📊 📈 🎯 ⚠️)
+- НЕ используй Markdown: никаких *звёздочек*, ##заголовков, |таблиц|
+
+Пример структуры:
+📊 <b>Оборот за N дней:</b> X ₽ (Y ₽/день)
 WB: X ₽ (ДРР X%) | Ozon: X ₽ (ДРР X%)
 
-Топ-3: КБ50 — X ₽/день, ТГ100 — X ₽/день, ИМ07 — X ₽/день
+Топ-3: <code>КБ50</code> — X ₽/день, <code>ТГ100</code> — X ₽/день
 
-Валовая рентабельность (выручка − себестоимость, без комиссий МП — они неизвестны):
-WB: КБ50 X% | 200грБК X% | БК100 X%
-Ozon: КБ50 X% | ИМ07 X% (⚠️ комиссии ~20% WB / ~10% Ozon — уточни из отчётов МП)
+📈 Сейчас: X ₽/день → цель: Y ₽/день → не хватает: Z ₽/день
 
-📈 Сейчас: X ₽/день → цель: Y ₽/день → не хватает: Z ₽/день (+N%)
+🎯 <b>План (топ-3 действия):</b>
+1. Увеличь рекламу на <code>артикул</code> на X ₽ → при ДРР X% даст +Y ₽/день
 
-🎯 План (топ-3 конкретных действия):
-1. Увеличь рекламу на [артикул] на X ₽ → при ДРР X% даст +Y ₽/день
-2. ...
-3. ...
-
-⚠️ Что неизвестно: одна строка (без упоминания возвратов)
-
-Весь ответ — не длиннее 25 строк."""
+<blockquote>Главный инсайт одной строкой</blockquote>"""
 
 
-import re as _re
-
-def _format_for_telegram(text: str) -> str:
-    """Убирает Markdown-таблицы и форматирование для читаемого TG-текста."""
-    lines = []
-    for line in text.splitlines():
-        # Пропускаем строки-разделители таблиц (|---|---|)
-        if _re.match(r"^\s*\|[\s\-\|]+\|\s*$", line):
-            continue
-        # Таблицу превращаем в строку с •
-        if line.strip().startswith("|") and line.strip().endswith("|"):
-            cells = [c.strip() for c in line.strip().strip("|").split("|")]
-            cells = [c for c in cells if c and not _re.match(r"^[-\s]+$", c)]
-            if cells:
-                lines.append("• " + "  |  ".join(cells))
-            continue
-        # Убираем ## заголовки → просто текст с отступом
-        line = _re.sub(r"^#{1,3}\s*", "", line)
-        # Убираем **bold**
-        line = _re.sub(r"\*\*(.+?)\*\*", r"\1", line)
-        lines.append(line)
-    return "\n".join(lines)
-
-
-def _format_for_notion(text: str) -> str:
-    """Конвертирует Markdown-таблицы в читаемый текст для Notion API.
-    save_research использует простой текстовый блок — таблицы рендерим
-    как выровненные строки через пробелы."""
-    lines = []
-    table_rows: list[list[str]] = []
-
-    def _flush_table():
-        if not table_rows:
-            return
-        # Считаем ширину колонок
-        col_w = [0] * max(len(r) for r in table_rows)
-        for row in table_rows:
-            for i, cell in enumerate(row):
-                col_w[i] = max(col_w[i], len(cell))
-        for row in table_rows:
-            lines.append("  ".join(cell.ljust(col_w[i]) for i, cell in enumerate(row)))
-        lines.append("")
-        table_rows.clear()
-
-    for line in text.splitlines():
-        if _re.match(r"^\s*\|[\s\-\|]+\|\s*$", line):
-            continue  # разделитель таблицы
-        if line.strip().startswith("|") and line.strip().endswith("|"):
-            cells = [c.strip() for c in line.strip().strip("|").split("|")]
-            table_rows.append(cells)
-        else:
-            _flush_table()
-            lines.append(line)
-
-    _flush_table()
-    return "\n".join(lines)
+from utils.tg_format import strip_html as _strip_html
 
 
 class PeterAgent(BaseAgent):
@@ -238,12 +183,12 @@ class PeterAgent(BaseAgent):
         )
         notion_url = await save_research(
             title=task[:50],
-            content=answer,
+            content=_strip_html(answer),
             source=f"agent:{from_agent}",
             agent="Питер",
         )
         if notion_url:
-            answer = f"{answer}\n\n📄 *Анализ сохранён в Notion:* {notion_url}"
+            answer = f'{answer}\n\n📄 <a href="{notion_url}">Анализ сохранён в Notion</a>'
         await self.post_to_group(f"📊 Анализ готов: {answer[:200]}…")
         return answer
 
@@ -319,20 +264,21 @@ class PeterAgent(BaseAgent):
             await update.message.reply_text(f"❌ Ошибка анализа: {e}")
             return
 
-        # Сохраняем в Notion
+        # Сохраняем в Notion (strip HTML тегов — Notion ожидает plain text)
         notion_url = await save_research(
             title=f"Отчёт {datetime.now(_UTC).strftime('%d.%m.%Y')}",
-            content=_format_for_notion(answer),
+            content=_strip_html(answer),
             source="cmd:report",
             agent="Питер",
         )
         if notion_url:
-            answer = f"{answer}\n\n📄 [Сохранено в Notion]({notion_url})"
+            answer = f'{answer}\n\n📄 <a href="{notion_url}">Сохранено в Notion</a>'
 
-        # Telegram: убираем Markdown-таблицы, форматируем как текст
-        tg_answer = _format_for_telegram(answer)
-        for chunk in [tg_answer[i:i+4000] for i in range(0, len(tg_answer), 4000)]:
-            await update.message.reply_text(chunk)
+        for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
+            try:
+                await update.message.reply_text(chunk, parse_mode="HTML")
+            except Exception:
+                await update.message.reply_text(chunk)
 
     async def cmd_analyze(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE

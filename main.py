@@ -20,7 +20,7 @@ from contextlib import suppress
 from loguru import logger
 
 from config import config
-from tools.notion import update_status_page
+from tools.tg_status import update_status_pinned
 from task_queue import get_active_tasks, get_recent_tasks
 from agents import (
     MartaAgent,
@@ -108,11 +108,12 @@ async def run_all_async() -> None:
 
     async def _status_page_loop():
         redis = getattr(started[0], "_redis", None) if started else None
+        bot = started[0].app.bot if started else None
         while True:
             try:
                 active = await get_active_tasks()
                 recent = await get_recent_tasks(limit=20)
-                await update_status_page(redis, active, recent)
+                await update_status_pinned(bot, redis, active, recent)
             except Exception as e:
                 logger.warning(f"[status_loop] error: {e}")
             await asyncio.sleep(60)

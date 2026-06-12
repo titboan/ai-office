@@ -23,7 +23,16 @@ KASPER_SYSTEM = """Ты — Каспер, исследователь ИИ-офи
 Указывай источники (URL). Разделяй факты из поиска и собственный анализ.
 Структура: заголовки → факты → выводы → рекомендации.
 
-Отвечай по-русски, аналитически."""
+Отвечай по-русски, аналитически.
+
+Форматируй ответы в HTML для Telegram:
+- <b>текст</b> — заголовки разделов (Факты, Анализ, Выводы, Рекомендации)
+- <i>текст</i> — пояснения и уточнения
+- <code>текст</code> — URL-адреса, числовые данные, технические термины
+- <blockquote>текст</blockquote> — ключевые выводы и инсайты
+- <blockquote expandable>длинный блок</blockquote> — для больших разделов
+- Эмодзи в начале разделов (🔍 📊 💡 ✅)
+- НЕ используй Markdown: никаких *звёздочек*, ##заголовков, |таблиц|"""
 
 
 class KasperAgent(BaseAgent):
@@ -32,6 +41,7 @@ class KasperAgent(BaseAgent):
     role = "Исследователь"
     emoji = "🔍"
     system_prompt = KASPER_SYSTEM
+    claude_model = config.CLAUDE_OPUS_MODEL
 
     def __init__(self) -> None:
         super().__init__(config.KASPER_BOT_TOKEN)
@@ -168,14 +178,12 @@ class KasperAgent(BaseAgent):
             )
 
             # ── Шаг 4: отправка пользователю ─────────────────────────────────
-            # НЕ используем parse_mode — текст содержит неэкранированный Markdown
-            logger.info(f"[Каспер] Шаг 4 — reply_text ({len(answer)} симв.), no parse_mode")
-            if len(answer) <= 4096:
-                await update.message.reply_text(answer)
-            else:
-                # Telegram ограничение 4096 — разбиваем
-                logger.info(f"[Каспер] Разбиваем на части (>{4096} симв.)")
-                for chunk in [answer[i : i + 4000] for i in range(0, len(answer), 4000)]:
+            logger.info(f"[Каспер] Шаг 4 — reply_text ({len(answer)} симв.)")
+            chunks = [answer[i : i + 4000] for i in range(0, len(answer), 4000)]
+            for chunk in chunks:
+                try:
+                    await update.message.reply_text(chunk, parse_mode="HTML")
+                except Exception:
                     await update.message.reply_text(chunk)
 
             logger.info(f"[Каспер] Ответ отправлен")
@@ -239,11 +247,10 @@ class KasperAgent(BaseAgent):
             return
         await update.message.reply_text(f"🔍 Ищу информацию по теме: {topic}…")
         result = await self.handle_task(topic, from_agent="команды /research")
-        # Разбиваем если нужно, без parse_mode
-        if len(result) <= 4096:
-            await update.message.reply_text(result)
-        else:
-            for chunk in [result[i : i + 4000] for i in range(0, len(result), 4000)]:
+        for chunk in [result[i : i + 4000] for i in range(0, len(result), 4000)]:
+            try:
+                await update.message.reply_text(chunk, parse_mode="HTML")
+            except Exception:
                 await update.message.reply_text(chunk)
 
     def _register_extra_handlers(self) -> None:

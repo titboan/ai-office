@@ -310,7 +310,7 @@ class BaseAgent(ABC):
 
         try:
             response = await self.claude.messages.create(
-                model=config.CLAUDE_MODEL,
+                model=getattr(self, "claude_model", None) or config.CLAUDE_MODEL,
                 max_tokens=max_tokens or config.MAX_TOKENS,
                 system=self.system_prompt,
                 messages=history,
@@ -391,9 +391,9 @@ class BaseAgent(ABC):
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
-            f"{self.emoji} Привет! Я *{self.name}* — {self.role}.\n"
+            f"{self.emoji} Привет! Я <b>{self.name}</b> — {self.role}.\n"
             f"Напиши мне задачу, и я займусь ею.",
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
 
     async def cmd_reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -660,7 +660,7 @@ class BaseAgent(ABC):
                 for i, chunk in enumerate(chunks):
                     markup = reply_markup if i == len(chunks) - 1 else None
                     try:
-                        await self.app.bot.send_message(chat_id=chat_id, text=chunk, parse_mode="Markdown", reply_markup=markup)
+                        await self.app.bot.send_message(chat_id=chat_id, text=chunk, parse_mode="HTML", reply_markup=markup)
                     except Exception:
                         await self.app.bot.send_message(chat_id=chat_id, text=chunk, reply_markup=markup)
             else:
@@ -668,7 +668,7 @@ class BaseAgent(ABC):
                     for i, chunk in enumerate(chunks):
                         markup = reply_markup if i == len(chunks) - 1 else None
                         try:
-                            await bot.send_message(chat_id=chat_id, text=chunk, parse_mode="Markdown", reply_markup=markup)
+                            await bot.send_message(chat_id=chat_id, text=chunk, parse_mode="HTML", reply_markup=markup)
                         except Exception:
                             await bot.send_message(chat_id=chat_id, text=chunk, reply_markup=markup)
         except Exception as e:

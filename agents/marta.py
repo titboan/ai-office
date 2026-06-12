@@ -251,7 +251,7 @@ class MartaAgent(BaseAgent):
         )
         try:
             response = await self.claude.messages.create(
-                model=config.CLAUDE_MODEL,
+                model=config.CLAUDE_OPUS_MODEL,
                 max_tokens=2000,
                 system=self._CHAIN_PLANNER_SYSTEM,
                 messages=[{"role": "user", "content": prompt}],
@@ -276,10 +276,9 @@ class MartaAgent(BaseAgent):
             logger.warning("[Марта] NOTION_PARENT_PAGE_ID не задан — Notion страница не создаётся")
             return None, ""
         try:
-            # Генерируем короткое название проекта через Claude
-            import anthropic as _anthropic
+            # Генерируем короткое название проекта через Claude (haiku — простая задача)
             resp = await self.claude.messages.create(
-                model=config.CLAUDE_MODEL,
+                model=config.CLAUDE_HAIKU_MODEL,
                 max_tokens=30,
                 system="Придумай короткое название проекта (3-5 слов). Только название, без кавычек и пояснений.",
                 messages=[{"role": "user", "content": user_request}],
@@ -398,10 +397,10 @@ class MartaAgent(BaseAgent):
                     for s in plan.get("steps", [])
                 )
                 await query.edit_message_text(
-                    f"✅ *Принято в работу!*\n\n"
+                    f"✅ <b>Принято в работу!</b>\n\n"
                     f"🔗 {chain_line}\n\n"
                     f"Буду сообщать о каждом шаге.",
-                    parse_mode="Markdown",
+                    parse_mode="HTML",
                 )
             else:
                 await query.edit_message_text("⏰ План устарел, повтори запрос.")
@@ -430,9 +429,9 @@ class MartaAgent(BaseAgent):
     ) -> None:
         keyboard = self._main_keyboard()
         await update.message.reply_text(
-            f"{self.emoji} Привет! Я *{self.name}* — {self.role}.\n"
+            f"{self.emoji} Привет! Я <b>{self.name}</b> — {self.role}.\n"
             f"Напиши задачу или выбери действие:",
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=keyboard,
         )
 
@@ -451,18 +450,18 @@ class MartaAgent(BaseAgent):
             if not tasks:
                 await reply_func("✅ Очередь пуста — нет активных задач.")
                 return
-            lines = ["📋 *Активные задачи:*\n"]
+            lines = ["📋 <b>Активные задачи:</b>\n"]
             for t in tasks:
                 status_emoji = {"queued": "🟡", "acknowledged": "🔵", "running": "🔵"}.get(t["status"], "⚪")
                 priority_label = {20: "🔴", 10: "🟠", 0: ""}.get(t.get("priority", 0), "")
                 created = t["created_at"].strftime("%H:%M:%S")
                 short_payload = (t["payload"][:50] + "…") if len(t["payload"]) > 50 else t["payload"]
                 lines.append(
-                    f"{status_emoji}{priority_label} *{t['assigned_agent']}* | id={t['id']}\n"
-                    f"    `{short_payload}`\n"
+                    f"{status_emoji}{priority_label} <b>{t['assigned_agent']}</b> | id={t['id']}\n"
+                    f"    <code>{short_payload}</code>\n"
                     f"    corr={t['correlation_id'][:8]} | {created}"
                 )
-            await reply_func("\n".join(lines), parse_mode="Markdown")
+            await reply_func("\n".join(lines), parse_mode="HTML")
             return
 
         if user_text.strip() == "📜 История":
@@ -471,24 +470,24 @@ class MartaAgent(BaseAgent):
             if not tasks:
                 await reply_func("📭 История задач пуста.")
                 return
-            lines = ["📜 *Последние задачи:*\n"]
+            lines = ["📜 <b>Последние задачи:</b>\n"]
             for t in tasks:
                 status_emoji = {"completed": "✅", "failed": "❌", "timeout": "⏱️"}.get(t["status"], "⚪")
                 finished = t["finished_at"].strftime("%d.%m %H:%M") if t["finished_at"] else "—"
                 short_payload = (t["payload"][:50] + "…") if len(t["payload"]) > 50 else t["payload"]
                 lines.append(
-                    f"{status_emoji} *{t['assigned_agent']}* | id={t['id']}\n"
-                    f"    `{short_payload}`\n"
+                    f"{status_emoji} <b>{t['assigned_agent']}</b> | id={t['id']}\n"
+                    f"    <code>{short_payload}</code>\n"
                     f"    {finished} | corr={t['correlation_id'][:8]}"
                 )
-            await reply_func("\n".join(lines), parse_mode="Markdown")
+            await reply_func("\n".join(lines), parse_mode="HTML")
             return
 
         if user_text.strip() == "❌ Отмена задачи":
             await reply_func(
                 "Напиши номер задачи которую отменить:\n`/cancel <task_id>`\n\n"
                 "Узнать номера: нажми 📋 Статус",
-                parse_mode="Markdown",
+                parse_mode="HTML",
             )
             return
 
@@ -542,7 +541,7 @@ class MartaAgent(BaseAgent):
                     name    = _CHAIN_AGENT_NAMES.get(a_key, a_key)
                     task_str = step.get("task", "")
                     task_short = task_str[:55] + ("..." if len(task_str) > 55 else "")
-                    steps_lines += f"{i}. {emoji} *{name}* — {task_short}\n"
+                    steps_lines += f"{i}. {emoji} <b>{name}</b> — {task_short}\n"
 
                 await self._save_pending_chain(chat_id, plan, user_text)
                 bot = self.app.bot if self.app else None
@@ -550,11 +549,11 @@ class MartaAgent(BaseAgent):
                     await bot.send_message(
                         chat_id=chat_id,
                         text=(
-                            f"🗂️ *Задача для команды*\n\n"
+                            f"🗂️ <b>Задача для команды</b>\n\n"
                             f"{steps_lines}\n"
                             f"Запустить цепочку?"
                         ),
-                        parse_mode="Markdown",
+                        parse_mode="HTML",
                         reply_markup=InlineKeyboardMarkup([[
                             InlineKeyboardButton("🚀 Запустить", callback_data="chain_confirm"),
                             InlineKeyboardButton("💬 Просто ответь", callback_data="chain_cancel"),
@@ -598,8 +597,8 @@ class MartaAgent(BaseAgent):
                 )
                 if notion_url:
                     await reply_func(
-                        f"📁 *Проект «{project_name}» создан в Notion:*\n{notion_url}",
-                        parse_mode="Markdown",
+                        f'📁 <b>Проект «{project_name}» создан в Notion:</b>\n<a href="{notion_url}">{notion_url}</a>',
+                        parse_mode="HTML",
                     )
             return
 
@@ -611,8 +610,8 @@ class MartaAgent(BaseAgent):
         agent = self._get_agent(agent_key)
         if agent is None:
             await reply_func(
-                f"⚠️ Не могу найти агента *{agent_key}*.",
-                parse_mode="Markdown",
+                f"⚠️ Не могу найти агента <b>{agent_key}</b>.",
+                parse_mode="HTML",
             )
             return
 
@@ -633,17 +632,17 @@ class MartaAgent(BaseAgent):
         else:
             logger.warning("[Марта] task_queue недоступен — fallback на прямой вызов")
             await reply_func(
-                f"⏳ {agent.emoji} *{agent.name}* работает…",
-                parse_mode="Markdown",
+                f"⏳ {agent.emoji} <b>{agent.name}</b> работает…",
+                parse_mode="HTML",
             )
             await self.post_to_group(f"🔀 Делегирую → {agent.name}: {short_task}")
             result = await agent.run_task(subtask, from_agent="Марты")
-            header = f"📬 *{agent.emoji} {agent.name}* выполнил задачу:\n\n"
+            header = f"📬 <b>{agent.emoji} {agent.name}</b> выполнил задачу:\n\n"
             full = header + result
             if len(full) <= 4096:
-                await reply_func(full, parse_mode="Markdown")
+                await reply_func(full, parse_mode="HTML")
             else:
-                await reply_func(header, parse_mode="Markdown")
+                await reply_func(header, parse_mode="HTML")
                 for chunk in [result[i:i+4000] for i in range(0, len(result), 4000)]:
                     await reply_func(chunk)
 
@@ -913,7 +912,7 @@ class MartaAgent(BaseAgent):
             )
             if notion_url:
                 logger.info(f"[Марта] Проект сохранён в Notion: {notion_url}")
-                clean = f"{clean}\n\n📁 *Проект «{project_name}» создан в Notion:* {notion_url}"
+                clean = f'{clean}\n\n📁 <b>Проект «{project_name}» создан в Notion:</b> <a href="{notion_url}">{notion_url}</a>'
 
         return clean
 
@@ -938,7 +937,7 @@ class MartaAgent(BaseAgent):
         }
 
         now_msk = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%d.%m %H:%M")
-        lines = [f"📋 *Статус офиса* — {now_msk} МСК\n"]
+        lines = [f"📋 <b>Статус офиса</b> — {now_msk} МСК\n"]
 
         tasks = await get_active_tasks()
         if not tasks:
@@ -960,13 +959,13 @@ class MartaAgent(BaseAgent):
                     else f"{int(wait.total_seconds())} сек"
                 )
                 lines.append(
-                    f"{status_emoji} {agent_emoji} *{t['assigned_agent']}* — {short_task}\n"
+                    f"{status_emoji} {agent_emoji} <b>{t['assigned_agent']}</b> — {short_task}\n"
                     f"⏳ В работе: {wait_str}\n"
                 )
 
         recent = await get_recent_tasks(5)
         if recent:
-            lines.append("\n📜 *Последние выполненные:*")
+            lines.append("\n📜 <b>Последние выполненные:</b>")
             for t in recent:
                 agent_emoji = _AGENT_EMOJI.get(t["assigned_agent"], "🤖")
                 short_task  = t["payload"][:60].strip()
@@ -981,7 +980,7 @@ class MartaAgent(BaseAgent):
 
         await update.message.reply_text(
             "\n".join(lines),
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=keyboard,
         )
 
@@ -996,7 +995,7 @@ class MartaAgent(BaseAgent):
             await update.message.reply_text("📭 История задач пуста.")
             return
 
-        lines = ["📜 *Последние задачи:*\n"]
+        lines = ["📜 <b>Последние задачи:</b>\n"]
         for t in tasks:
             status_emoji = {
                 "completed": "✅",
@@ -1008,14 +1007,14 @@ class MartaAgent(BaseAgent):
             short_payload = (t["payload"][:50] + "…") if len(t["payload"]) > 50 else t["payload"]
 
             lines.append(
-                f"{status_emoji} *{t['assigned_agent']}* | id={t['id']}\n"
-                f"    `{short_payload}`\n"
+                f"{status_emoji} <b>{t['assigned_agent']}</b> | id={t['id']}\n"
+                f"    <code>{short_payload}</code>\n"
                 f"    {finished} | corr={t['correlation_id'][:8]}"
             )
 
         await update.message.reply_text(
             "\n".join(lines),
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
 
     async def cmd_cancel(
@@ -1065,14 +1064,14 @@ class MartaAgent(BaseAgent):
                 reply_markup=self._main_keyboard(),
             )
             return
-        lines = ["📂 *Проекты:*\n"]
+        lines = ["📂 <b>Проекты:</b>\n"]
         for p in projects:
             pid = p["notion_page_id"]
-            link = f" [→ Notion](https://notion.so/{pid.replace('-', '')})" if pid else ""
+            link = f' <a href="https://notion.so/{pid.replace(\"-\", \"\")}">[→ Notion]</a>' if pid else ""
             lines.append(f"• {p['name']}{link}")
         await update.message.reply_text(
             "\n".join(lines),
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=self._main_keyboard(),
         )
 

@@ -14,6 +14,14 @@ ELINA_SYSTEM = """Ты — Элина, копирайтер ИИ-офиса.
 Создаёшь тексты, посты (Telegram/Instagram/LinkedIn), email-рассылки, статьи, сценарии.
 Пиши живо, адаптируй тон под платформу, предлагай несколько вариантов заголовков.
 
+Форматируй ответы в HTML для Telegram:
+- <b>текст</b> — заголовки и акценты
+- <i>текст</i> — подзаголовки и пояснения
+- <blockquote>текст</blockquote> — готовые тексты для публикации
+- <blockquote expandable>длинный текст</blockquote> — для полных статей/писем
+- Эмодзи по тематике контента
+- НЕ используй Markdown: никаких *звёздочек*, ##заголовков
+
 Отвечай по-русски, творчески."""
 
 
@@ -100,10 +108,10 @@ class ElinaAgent(BaseAgent):
         await update.message.reply_text("✍️ Пишу текст…")
         result = await self.handle_task(brief, from_agent="команды /write")
         # Разбиваем если длинный ответ
-        if len(result) <= 4096:
-            await update.message.reply_text(result, parse_mode="Markdown")
-        else:
-            for chunk in [result[i : i + 4000] for i in range(0, len(result), 4000)]:
+        for chunk in [result[i : i + 4000] for i in range(0, len(result), 4000)]:
+            try:
+                await update.message.reply_text(chunk, parse_mode="HTML")
+            except Exception:
                 await update.message.reply_text(chunk)
 
     async def cmd_post(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -120,7 +128,10 @@ class ElinaAgent(BaseAgent):
             f"Напиши Telegram-пост на тему: {topic}",
             from_agent="команды /post",
         )
-        await update.message.reply_text(result, parse_mode="Markdown")
+        try:
+            await update.message.reply_text(result, parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text(result)
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("write", self.cmd_write))

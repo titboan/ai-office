@@ -12,9 +12,11 @@ if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
 
 
 class Config:
-    # Claude
+    # Claude models
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+    CLAUDE_HAIKU_MODEL: str = "claude-haiku-4-5-20251001"
+    CLAUDE_OPUS_MODEL: str = "claude-opus-4-8"
 
     # Telegram токены агентов
     MARTA_BOT_TOKEN: str = os.getenv("MARTA_BOT_TOKEN", "")

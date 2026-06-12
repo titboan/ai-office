@@ -26,7 +26,13 @@ _DIGEST_PROMPT = """\
 2. Для каждой темы: заголовок + 2-3 предложения выжимки + ссылки на 1-3 самых важных сообщения
 3. В конце: раздел "Остальное" для мелких новостей без отдельной темы
 4. Язык: русский
-5. Формат: Markdown
+
+Форматируй в HTML для Telegram:
+- <b>Название темы</b> — заголовки групп
+- <a href="url">текст</a> — ссылки на сообщения
+- <blockquote expandable>выжимка по теме</blockquote> — содержание каждой темы
+- Эмодзи в начале каждой темы (📰 🔍 💡 ⚡ 🌍)
+- НЕ используй Markdown: никаких *звёздочек*, ##заголовков
 
 Сообщения:
 {messages}"""
@@ -373,7 +379,7 @@ class EvaAgent(BaseAgent):
             )
             return
 
-        lines = ["📋 *Ваши каналы:*\n"]
+        lines = ["📋 <b>Ваши каналы:</b>\n"]
         for ch in channels:
             name = ch.get("title") or f"@{ch.get('username')}" or ch["chat_id"]
             last = ch.get("last_checked_at")
@@ -385,7 +391,10 @@ class EvaAgent(BaseAgent):
             mention = f"@{username}" if username else ch["chat_id"]
             lines.append(f"• {name} ({mention}) — последний дайджест: {last_str}")
 
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        try:
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text("\n".join(lines))
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("digest",         self.cmd_digest))
