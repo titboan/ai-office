@@ -402,13 +402,13 @@ class BaseAgent(ABC):
         backend = "Redis" if config.REDIS_URL else "памяти"
         await update.message.reply_text(f"🔄 История диалога очищена (из {backend}).")
 
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not update.message or not update.message.text:
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, *, override_text: str | None = None) -> None:
+        if not update.message or (not update.message.text and not override_text):
             logger.debug(f"[{self.name}] Пропуск: нет текста в update")
             return
 
         chat_id = update.effective_chat.id
-        user_text = update.message.text
+        user_text = override_text or update.message.text
         user_name = update.effective_user.username or update.effective_user.first_name or "unknown"
 
         logger.info(f"[{self.name}] Получено сообщение от @{user_name} (chat={chat_id}): {user_text!r}")
@@ -509,7 +509,7 @@ class BaseAgent(ABC):
         is_group = update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP)
         if not is_group:
             await update.message.reply_text(f"🎤 Распознано: {user_text}")
-            await self.handle_message(update, context)
+            await self.handle_message(update, context, override_text=user_text)
         return user_text
 
     @abstractmethod

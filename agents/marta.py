@@ -650,12 +650,12 @@ class MartaAgent(BaseAgent):
     #  Telegram — обработчик сообщений (переопределяем BaseAgent)          #
     # ------------------------------------------------------------------ #
 
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not update.message or not update.message.text:
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, *, override_text: str | None = None) -> None:
+        if not update.message or (not update.message.text and not override_text):
             return
 
         chat_id   = update.effective_chat.id
-        user_text = update.message.text
+        user_text = override_text or update.message.text
         user_name = (
             update.effective_user.username
             or update.effective_user.first_name

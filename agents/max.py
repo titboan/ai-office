@@ -244,7 +244,7 @@ class MaxAgent(BaseAgent):
             await self._handle_group_message(update, context, override_text=transcribed)
         return transcribed
 
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, *, override_text: str | None = None) -> None:
         from telegram import Chat
         if update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
             return
@@ -258,7 +258,7 @@ class MaxAgent(BaseAgent):
         state = await self._get_onboard(chat_id)
         if state and state.get("step") not in (None, "done"):
             return
-        await super().handle_message(update, context)
+        await super().handle_message(update, context, override_text=override_text)
 
     # ------------------------------------------------------------------ #
     #  Онбординг — управление состоянием                                   #
