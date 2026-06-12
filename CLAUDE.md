@@ -20,6 +20,7 @@
 ```
 ai-office/
 ├── CLAUDE.md              ← этот файл
+├── ROADMAP.md             ← долгосрочная дорожная карта проекта
 ├── config.py              ← конфиг, переменные окружения, CONSTANTS в конце файла
 ├── task_queue.py          ← логика очереди Postgres
 ├── main.py                ← точка входа, регистрация агентов, PTB setup
