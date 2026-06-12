@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Office — Архитектура агентов</title>
+  <script src="https://unpkg.com/vis-network@9.1.9/dist/vis-network.min.js"></script>
+  <link  href="https://unpkg.com/vis-network@9.1.9/dist/dist/vis-network.min.css" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      padding: 14px 24px;
+      background: #1a1d27;
+      border-bottom: 1px solid #2d3148;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+
+    header h1 { font-size: 18px; font-weight: 600; }
+    header span { font-size: 13px; color: #6b7280; }
+
+    .legend {
+      display: flex;
+      gap: 20px;
+      margin-left: auto;
+      flex-wrap: wrap;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #9ca3af;
+    }
+
+    .legend-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    #network {
+      flex: 1;
+    }
+
+    #tooltip {
+      position: fixed;
+      background: #1e2235;
+      border: 1px solid #3d4270;
+      border-radius: 8px;
+      padding: 12px 16px;
+      max-width: 280px;
+      font-size: 13px;
+      line-height: 1.6;
+      pointer-events: none;
+      display: none;
+      z-index: 100;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    }
+
+    #tooltip .tt-title {
+      font-weight: 600;
+      font-size: 14px;
+      margin-bottom: 6px;
+      color: #fff;
+    }
+
+    #tooltip .tt-role {
+      color: #a5b4fc;
+      margin-bottom: 8px;
+    }
+
+    #tooltip .tt-tools {
+      color: #9ca3af;
+      font-size: 12px;
+    }
+
+    #tooltip .tt-tools strong {
+      color: #d1d5db;
+      display: block;
+      margin-bottom: 2px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🏢 AI Office</h1>
+  <span>Архитектура агентов · 10 ботов · один Python процесс</span>
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#6366f1"></div> Агент</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#10b981"></div> Хранилище</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f59e0b"></div> Интеграция</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#ec4899"></div> Telegram</div>
+  </div>
+</header>
+
+<div id="network"></div>
+<div id="tooltip"></div>
+
+<script>
+const AGENTS = [
+  { id: "marta",  label: "👩‍💼 Марта",  role: "Координатор, router, цепочки", tools: ["Task Queue", "Chain Planner", "Claude Vision", "Notion Status"] },
+  { id: "kevin",  label: "👨‍💻 Кевин",  role: "Разработчик, GitHub", tools: ["GitHub API", "agentic loop", "max_tokens=16000"] },
+  { id: "kasper", label: "🔍 Каспер", role: "Исследователь, поиск", tools: ["Tavily Search", "Notion Research"] },
+  { id: "peter",  label: "📊 Питер",  role: "Бизнес-аналитик, маркетплейсы", tools: ["PostgreSQL (заказы, остатки, реклама)", "Notion Research", "ДРР, SWOT"] },
+  { id: "elina",  label: "✍️ Элина",  role: "Копирайтер", tools: ["Notion Content"] },
+  { id: "alex",   label: "🗓️ Алекс",  role: "Планировщик, напоминания", tools: ["Notion Tasks", "ntfy.sh (iOS push)"] },
+  { id: "dan",    label: "🎨 Дэн",    role: "Дизайнер, изображения", tools: ["Pollinations.ai", "GitHub (изображения)", "Notion дизайн-система"] },
+  { id: "eva",    label: "📰 Ева",    role: "Дайджест Telegram каналов", tools: ["Telethon MTProto", "Notion Content", "⚠️ ждёт TELETHON_SESSION"] },
+  { id: "max",    label: "🛒 Макс",   role: "Менеджер WB + Ozon", tools: ["WB Feedbacks API", "Ozon Seller API", "Ozon Performance API", "PostgreSQL"] },
+  { id: "tina",   label: "🏛️ Тина",  role: "Тендеры 44-ФЗ, Краснодарский край", tools: ["ГосПлан API v2", "Tavily", "PostgreSQL (tender_opportunities)", "⚠️ ждёт TINA_BOT_TOKEN"] },
+];
+
+const INFRA = [
+  { id: "postgres", label: "🗄️ PostgreSQL",  role: "Task Queue, источник истины", tools: ["tasks", "marketplace_orders", "stocks", "reviews", "adv_stats", "tender_opportunities"] },
+  { id: "redis",    label: "⚡ Redis",        role: "История диалогов, кеш, locks", tools: ["TTL", "pending_image", "Haiku summary при ≥15 сообщений"] },
+  { id: "telegram", label: "📱 Telegram",     role: "Входной канал", tools: ["текст", "голос (Groq Whisper)", "фото + подпись"] },
+];
+
+const INTEGRATIONS = [
+  { id: "github",    label: "🐙 GitHub",        role: "Репозитории, PR, GitHub Pages", tools: [] },
+  { id: "notion",    label: "📋 Notion",         role: "Research, Content, Tasks, Projects, Status", tools: [] },
+  { id: "tavily",    label: "🔎 Tavily",         role: "Поиск в интернете", tools: [] },
+  { id: "ntfy",      label: "🔔 ntfy.sh",        role: "iOS push-уведомления", tools: [] },
+  { id: "pollinations", label: "🎨 Pollinations", role: "Генерация изображений (бесплатно)", tools: [] },
+  { id: "wb",        label: "🟣 WB API",         role: "Wildberries: отзывы, заказы, реклама", tools: [] },
+  { id: "ozon",      label: "🔵 Ozon API",       role: "Ozon Seller + Performance API", tools: [] },
+  { id: "gosplan",   label: "🏛️ ГосПлан API",   role: "Тендеры 44-ФЗ, free до 01.08.2026", tools: [] },
+];
+
+const nodeData = [];
+const edgeData = [];
+
+// Telegram
+nodeData.push({ id: "telegram", label: "📱 Telegram", color: { background: "#be185d", border: "#ec4899" }, font: { color: "#fff" }, shape: "ellipse", size: 32 });
+
+// Agents
+for (const a of AGENTS) {
+  const isWaiting = a.tools.some(t => t.startsWith("⚠️"));
+  nodeData.push({
+    id: a.id,
+    label: a.label,
+    color: {
+      background: isWaiting ? "#374151" : "#4338ca",
+      border: isWaiting ? "#6b7280" : "#6366f1",
+    },
+    font: { color: isWaiting ? "#9ca3af" : "#fff" },
+    shape: "box",
+    borderWidth: isWaiting ? 1 : 2,
+    _meta: a,
+  });
+}
+
+// Infra (postgres, redis)
+for (const i of INFRA.filter(x => x.id !== "telegram")) {
+  nodeData.push({
+    id: i.id,
+    label: i.label,
+    color: { background: "#065f46", border: "#10b981" },
+    font: { color: "#fff" },
+    shape: "database",
+    size: 26,
+    _meta: i,
+  });
+}
+
+// Integrations
+for (const i of INTEGRATIONS) {
+  nodeData.push({
+    id: i.id,
+    label: i.label,
+    color: { background: "#78350f", border: "#f59e0b" },
+    font: { color: "#fff" },
+    shape: "ellipse",
+    size: 20,
+    _meta: i,
+  });
+}
+
+// Edges: Telegram → Marta
+edgeData.push({ from: "telegram", to: "marta", label: "вход", color: { color: "#ec4899" }, arrows: "to", width: 2 });
+
+// Marta → all agents
+for (const a of AGENTS.filter(x => x.id !== "marta")) {
+  edgeData.push({ from: "marta", to: a.id, color: { color: "#6366f1", opacity: 0.6 }, arrows: "to", dashes: true });
+}
+
+// Chain edges
+edgeData.push({ from: "kasper", to: "dan",   label: "цепочка", color: { color: "#a78bfa" }, arrows: "to", width: 2 });
+edgeData.push({ from: "dan",    to: "kevin", label: "цепочка", color: { color: "#a78bfa" }, arrows: "to", width: 2 });
+
+// All agents → postgres (task queue)
+for (const a of AGENTS) {
+  edgeData.push({ from: a.id, to: "postgres", color: { color: "#10b981", opacity: 0.3 }, arrows: "to", width: 1 });
+}
+
+// Agent → integrations
+const agentToInteg = [
+  ["kevin",  "github"],
+  ["kasper", "tavily"],
+  ["kasper", "notion"],
+  ["peter",  "notion"],
+  ["elina",  "notion"],
+  ["alex",   "notion"],
+  ["alex",   "ntfy"],
+  ["dan",    "pollinations"],
+  ["dan",    "github"],
+  ["eva",    "notion"],
+  ["max",    "wb"],
+  ["max",    "ozon"],
+  ["tina",   "gosplan"],
+  ["tina",   "tavily"],
+  ["marta",  "notion"],
+];
+
+for (const [from, to] of agentToInteg) {
+  edgeData.push({ from, to, color: { color: "#f59e0b", opacity: 0.4 }, arrows: "to", width: 1, dashes: [4, 4] });
+}
+
+// Redis
+edgeData.push({ from: "marta", to: "redis", color: { color: "#10b981", opacity: 0.4 }, arrows: "to", dashes: [2,2] });
+
+// Build network
+const container = document.getElementById("network");
+const data = {
+  nodes: new vis.DataSet(nodeData),
+  edges: new vis.DataSet(edgeData),
+};
+
+const options = {
+  physics: {
+    enabled: true,
+    solver: "forceAtlas2Based",
+    forceAtlas2Based: {
+      gravitationalConstant: -60,
+      centralGravity: 0.005,
+      springLength: 140,
+      springConstant: 0.08,
+      damping: 0.4,
+    },
+    stabilization: { iterations: 200, updateInterval: 25 },
+  },
+  interaction: {
+    hover: true,
+    tooltipDelay: 0,
+    zoomView: true,
+    dragView: true,
+  },
+  nodes: {
+    font: { size: 13, face: "-apple-system, sans-serif" },
+    margin: 10,
+    shadow: { enabled: true, color: "rgba(0,0,0,0.4)", x: 2, y: 2, size: 6 },
+  },
+  edges: {
+    smooth: { type: "curvedCW", roundness: 0.15 },
+    font: { size: 11, color: "#9ca3af", strokeWidth: 0, align: "middle" },
+    selectionWidth: 2,
+  },
+};
+
+const network = new vis.Network(container, data, options);
+
+// Tooltip
+const tooltip = document.getElementById("tooltip");
+
+function getMeta(nodeId) {
+  const node = nodeData.find(n => n.id === nodeId);
+  return node?._meta || null;
+}
+
+network.on("hoverNode", (params) => {
+  const meta = getMeta(params.node);
+  if (!meta) return;
+
+  const canvasPos = params.pointer.DOM;
+  tooltip.style.left = (canvasPos.x + 16) + "px";
+  tooltip.style.top  = (canvasPos.y - 10) + "px";
+
+  let html = `<div class="tt-title">${meta.label}</div>`;
+  if (meta.role) html += `<div class="tt-role">${meta.role}</div>`;
+  if (meta.tools && meta.tools.length) {
+    html += `<div class="tt-tools"><strong>Инструменты</strong>${meta.tools.join(" · ")}</div>`;
+  }
+  tooltip.innerHTML = html;
+  tooltip.style.display = "block";
+});
+
+network.on("blurNode", () => {
+  tooltip.style.display = "none";
+});
+
+network.on("dragStart", () => {
+  tooltip.style.display = "none";
+});
+
+// Stop physics after stabilisation
+network.on("stabilizationIterationsDone", () => {
+  network.setOptions({ physics: { enabled: false } });
+});
+</script>
+</body>
+</html>
