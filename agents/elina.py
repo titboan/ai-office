@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from loguru import logger
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
@@ -132,6 +132,25 @@ class ElinaAgent(BaseAgent):
             await update.message.reply_text(result, parse_mode="HTML")
         except Exception:
             await update.message.reply_text(result)
+
+    def _help_text(self) -> str:
+        return (
+            "✍️ <b>Элина</b> — копирайтер\n\n"
+            "Пишу тексты для карточек товаров, посты и рекламные тексты.\n\n"
+            "📌 <b>Команды:</b>\n"
+            "/write &lt;бриф&gt; — написать текст по заданию\n"
+            "/post &lt;тема&gt; — написать пост для Telegram\n"
+            "/reset — очистить историю\n\n"
+            "💡 <i>Пример: /write карточка товара: термокружка 500мл</i>"
+        )
+
+    def _bot_commands(self) -> list:
+        return [
+            BotCommand("start", "Запуск и помощь"),
+            BotCommand("write", "✍️ Написать текст по заданию"),
+            BotCommand("post",  "📝 Написать пост для Telegram"),
+            BotCommand("reset", "Очистить историю"),
+        ]
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("write", self.cmd_write))

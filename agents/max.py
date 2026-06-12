@@ -190,25 +190,20 @@ class MaxAgent(BaseAgent):
     def __init__(self) -> None:
         super().__init__(config.MAX_BOT_TOKEN)
 
-    # ------------------------------------------------------------------ #
-    #  Запуск — устанавливаем меню бота только с /start                   #
-    # ------------------------------------------------------------------ #
+    def _help_text(self) -> str:
+        return _HELP_TEXT
 
-    async def start_polling_async(self) -> None:
-        await super().start_polling_async()
-        try:
-            await self.app.bot.set_my_commands([
-                BotCommand("start",     "Управление отзывами"),
-                BotCommand("products",  "📦 Каталог: товары и с/с"),
-                BotCommand("map",       "✏️ Товар в реестр: name= wb= ozon="),
-                BotCommand("cost",      "💰 Себестоимость: <артикул> <сумма>"),
-                BotCommand("sync",      "🔄 Синхронизация заказов/остатков"),
-                BotCommand("sync_adv",  "📊 Синхронизация рекламы"),
-                BotCommand("sync_sku",  "🔗 Подтянуть Ozon SKU в реестр"),
-            ])
-            logger.info("[Макс] BotCommand menu установлен")
-        except Exception as e:
-            logger.warning(f"[Макс] set_my_commands error: {e}")
+    def _bot_commands(self) -> list:
+        return [
+            BotCommand("start",      "Запуск и помощь"),
+            BotCommand("products",   "📦 Каталог: товары и с/с"),
+            BotCommand("map",        "✏️ Товар в реестр: name= wb= ozon="),
+            BotCommand("cost",       "💰 Себестоимость: <артикул> <сумма>"),
+            BotCommand("sync",       "🔄 Синхронизация заказов/остатков"),
+            BotCommand("sync_adv",   "📊 Синхронизация рекламы"),
+            BotCommand("sync_sku",   "🔗 Подтянуть Ozon SKU в реестр"),
+            BotCommand("reset",      "Очистить историю"),
+        ]
 
     # ------------------------------------------------------------------ #
     #  handle_task (заглушка)                                              #

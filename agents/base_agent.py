@@ -11,7 +11,7 @@ from typing import Any, Optional
 import anthropic
 import redis.asyncio as aioredis
 from loguru import logger
-from telegram import Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Bot, BotCommand, Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -390,11 +390,24 @@ class BaseAgent(ABC):
     # ------------------------------------------------------------------ #
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(
-            f"{self.emoji} Привет! Я <b>{self.name}</b> — {self.role}.\n"
-            f"Напиши мне задачу, и я займусь ею.",
-            parse_mode="HTML",
+        await update.message.reply_text(self._help_text(), parse_mode="HTML")
+
+    async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await update.message.reply_text(self._help_text(), parse_mode="HTML")
+
+    def _help_text(self) -> str:
+        return (
+            f"{self.emoji} <b>{self.name}</b> — {self.role}\n\n"
+            "/start — главное меню\n"
+            "/reset — очистить историю\n\n"
+            "Напишите задачу, и я займусь ею."
         )
+
+    def _bot_commands(self) -> list:
+        return [
+            BotCommand("start", "Запуск и помощь"),
+            BotCommand("reset", "Очистить историю диалога"),
+        ]
 
     async def cmd_reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id
@@ -933,6 +946,7 @@ class BaseAgent(ABC):
         )
         self.app.add_error_handler(self._error_handler)
         self.app.add_handler(CommandHandler("start", self.cmd_start))
+        self.app.add_handler(CommandHandler("help",  self.cmd_help))
         self.app.add_handler(CommandHandler("reset", self.cmd_reset))
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
@@ -958,6 +972,10 @@ class BaseAgent(ABC):
         """Инициализировать и запустить polling без блокировки event loop."""
         app = self.build_app()
         await app.initialize()
+        try:
+            await app.bot.set_my_commands(self._bot_commands())
+        except Exception as e:
+            logger.warning(f"[{self.name}] set_my_commands error: {e}")
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
         logger.info(f"[{self.name}] Polling активен (async mode)")

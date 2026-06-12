@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from loguru import logger
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
@@ -246,6 +246,22 @@ class DanAgent(BaseAgent):
 
         await self.post_to_group(f"🎨 Дэн выполнил задачу: {task[:80]}")
         return final_text or "Задача выполнена."
+
+    def _help_text(self) -> str:
+        return (
+            "🎨 <b>Дэн</b> — дизайнер\n\n"
+            "Генерирую изображения и визуалы для карточек товаров и постов.\n\n"
+            "📌 <b>Как работать:</b>\n"
+            "Опишите что нужно нарисовать — Дэн создаст изображение.\n\n"
+            "/reset — очистить историю\n\n"
+            "💡 <i>Пример: нарисуй баннер: термокружка на фоне леса</i>"
+        )
+
+    def _bot_commands(self) -> list:
+        return [
+            BotCommand("start", "Запуск и помощь"),
+            BotCommand("reset", "Очистить историю"),
+        ]
 
     def _register_extra_handlers(self) -> None:
         pass

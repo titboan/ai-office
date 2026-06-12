@@ -3,7 +3,7 @@ from __future__ import annotations
 import traceback
 
 from loguru import logger
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
@@ -252,6 +252,23 @@ class KasperAgent(BaseAgent):
                 await update.message.reply_text(chunk, parse_mode="HTML")
             except Exception:
                 await update.message.reply_text(chunk)
+
+    def _help_text(self) -> str:
+        return (
+            "🔍 <b>Каспер</b> — исследователь\n\n"
+            "Ищу информацию в интернете, анализирую конкурентов и рынок.\n\n"
+            "📌 <b>Команды:</b>\n"
+            "/research — глубокое исследование по теме\n"
+            "/reset — очистить историю\n\n"
+            "💡 <i>Пример: /research тренды WB в категории одежда 2026</i>"
+        )
+
+    def _bot_commands(self) -> list:
+        return [
+            BotCommand("start",    "Запуск и помощь"),
+            BotCommand("research", "🔍 Исследование по теме"),
+            BotCommand("reset",    "Очистить историю"),
+        ]
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("research", self.cmd_research))

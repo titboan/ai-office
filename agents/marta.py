@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import anthropic
 from loguru import logger
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
+from telegram import BotCommand, Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 from config import config
@@ -1075,6 +1075,30 @@ class MartaAgent(BaseAgent):
             parse_mode="HTML",
             reply_markup=self._main_keyboard(),
         )
+
+    def _help_text(self) -> str:
+        return (
+            "👩‍💼 <b>Марта</b> — координатор команды\n\n"
+            "Принимаю задачи на русском языке и направляю нужному агенту.\n"
+            "Могу планировать цепочки задач и следить за статусом офиса.\n\n"
+            "📌 <b>Команды:</b>\n"
+            "/status — состояние офиса и активные задачи\n"
+            "/history — последние 10 выполненных задач\n"
+            "/delegate — явно передать задачу агенту\n"
+            "/cancel — отменить задачу из очереди\n"
+            "/reset — очистить историю\n\n"
+            "💡 <i>Примеры: «напиши пост про наш товар», «исследуй конкурентов»</i>"
+        )
+
+    def _bot_commands(self) -> list:
+        return [
+            BotCommand("start",    "Запуск и главное меню"),
+            BotCommand("status",   "📋 Состояние офиса"),
+            BotCommand("history",  "🕐 Последние выполненные задачи"),
+            BotCommand("delegate", "📤 Передать задачу агенту"),
+            BotCommand("cancel",   "❌ Отменить задачу"),
+            BotCommand("reset",    "Очистить историю"),
+        ]
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("delegate", self.cmd_delegate))

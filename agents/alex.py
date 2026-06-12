@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from loguru import logger
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
@@ -211,6 +211,27 @@ class AlexAgent(BaseAgent):
                 f"❌ Ошибка отправки. Проверь Railway logs → <code>ntfy_response</code>.",
                 parse_mode="HTML",
             )
+
+    def _help_text(self) -> str:
+        return (
+            "🗓️ <b>Алекс</b> — планировщик\n\n"
+            "Составляю планы, дорожные карты и отправляю push-уведомления.\n\n"
+            "📌 <b>Команды:</b>\n"
+            "/plan &lt;задача&gt; — составить план и добавить в Notion\n"
+            "/roadmap &lt;проект&gt; — построить дорожную карту\n"
+            "/testpush — проверить push-уведомления\n"
+            "/reset — очистить историю\n\n"
+            "💡 <i>Пример: /plan запустить новую карточку товара к пятнице</i>"
+        )
+
+    def _bot_commands(self) -> list:
+        return [
+            BotCommand("start",    "Запуск и помощь"),
+            BotCommand("plan",     "🗓️ Составить план"),
+            BotCommand("roadmap",  "🗺️ Построить дорожную карту"),
+            BotCommand("testpush", "🔔 Проверить push-уведомления"),
+            BotCommand("reset",    "Очистить историю"),
+        ]
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("plan", self.cmd_plan))

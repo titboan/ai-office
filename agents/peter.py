@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from loguru import logger
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
@@ -678,6 +678,30 @@ class PeterAgent(BaseAgent):
             logger.info(f"[Питер/weekly_audit] отправлен в chat_id={chat_id}")
         except Exception as e:
             logger.error(f"[Питер/weekly_audit] ошибка отправки: {e}")
+
+    def _help_text(self) -> str:
+        return (
+            "📊 <b>Питер</b> — бизнес-аналитик\n\n"
+            "Анализирую продажи WB и Ozon, считаю ДРР и рентабельность,\n"
+            "даю конкретные рекомендации по росту.\n\n"
+            "📌 <b>Команды:</b>\n"
+            "/report [цель=X] [период=14] — отчёт о продажах и план роста\n"
+            "/audit — полная оценка магазина (SWOT, KPI, топ-5 действий)\n"
+            "/drr [период=30] — ДРР и ROAS по товарам с вердиктами\n"
+            "/analyze &lt;вопрос&gt; — произвольный бизнес-анализ\n"
+            "/reset — очистить историю\n\n"
+            "💡 <i>Пример: /report цель=100000 период=14</i>"
+        )
+
+    def _bot_commands(self) -> list:
+        return [
+            BotCommand("start",   "Запуск и помощь"),
+            BotCommand("report",  "📊 Отчёт о продажах и план роста"),
+            BotCommand("audit",   "🏪 Полный аудит магазина"),
+            BotCommand("drr",     "📈 ДРР и ROAS по товарам"),
+            BotCommand("analyze", "💬 Произвольный бизнес-анализ"),
+            BotCommand("reset",   "Очистить историю"),
+        ]
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("report",  self.cmd_report))

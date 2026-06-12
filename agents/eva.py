@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from loguru import logger
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
@@ -395,6 +395,29 @@ class EvaAgent(BaseAgent):
             await update.message.reply_text("\n".join(lines), parse_mode="HTML")
         except Exception:
             await update.message.reply_text("\n".join(lines))
+
+    def _help_text(self) -> str:
+        return (
+            "📰 <b>Ева</b> — редактор дайджеста\n\n"
+            "Собираю дайджест из Telegram-каналов, которые вы добавите.\n\n"
+            "📌 <b>Команды:</b>\n"
+            "/digest — сгенерировать дайджест\n"
+            "/add_channel @username — добавить канал\n"
+            "/remove_channel @username — удалить канал\n"
+            "/channels — список подключённых каналов\n"
+            "/reset — очистить историю\n\n"
+            "💡 <i>Пример: /add_channel @wildberries_sellers</i>"
+        )
+
+    def _bot_commands(self) -> list:
+        return [
+            BotCommand("start",          "Запуск и помощь"),
+            BotCommand("digest",         "📰 Сгенерировать дайджест"),
+            BotCommand("add_channel",    "➕ Добавить канал"),
+            BotCommand("remove_channel", "➖ Удалить канал"),
+            BotCommand("channels",       "📋 Список каналов"),
+            BotCommand("reset",          "Очистить историю"),
+        ]
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("digest",         self.cmd_digest))
