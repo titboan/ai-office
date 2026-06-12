@@ -133,6 +133,26 @@ class ElinaAgent(BaseAgent):
         except Exception:
             await update.message.reply_text(result)
 
+    def _help_text(self) -> str:
+        return (
+            "✍️ <b>Элина</b> — копирайтер\n\n"
+            "Пишу тексты для карточек товаров, посты и рекламные тексты.\n\n"
+            "📌 <b>Команды:</b>\n"
+            "/write &lt;бриф&gt; — написать текст по заданию\n"
+            "/post &lt;тема&gt; — написать пост для Telegram\n"
+            "/reset — очистить историю\n\n"
+            "💡 Пример: /write «карточка товара: термокружка 500мл»"
+        )
+
+    def _bot_commands(self) -> list:
+        from telegram import BotCommand
+        return [
+            BotCommand("start", "Запуск и помощь"),
+            BotCommand("write", "Написать текст по брифу"),
+            BotCommand("post", "Написать пост для Telegram"),
+            BotCommand("reset", "Очистить историю диалога"),
+        ]
+
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("write", self.cmd_write))
         self.app.add_handler(CommandHandler("post", self.cmd_post))

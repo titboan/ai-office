@@ -279,5 +279,23 @@ class KevinAgent(BaseAgent):
             for chunk in [result[i:i+4000] for i in range(0, len(result), 4000)]:
                 await update.message.reply_text(chunk)
 
+    def _help_text(self) -> str:
+        return (
+            "👨‍💻 <b>Кевин</b> — разработчик\n\n"
+            "Пишу код, создаю PR на GitHub, разбираю баги.\n\n"
+            "📌 <b>Команды:</b>\n"
+            "/code — написать код и создать PR\n"
+            "/reset — очистить историю\n\n"
+            "💡 Пример: /code «добавь логирование в max.py»"
+        )
+
+    def _bot_commands(self) -> list:
+        from telegram import BotCommand
+        return [
+            BotCommand("start", "Запуск и помощь"),
+            BotCommand("code", "Написать код и создать PR"),
+            BotCommand("reset", "Очистить историю диалога"),
+        ]
+
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("code", self.cmd_code))

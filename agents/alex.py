@@ -212,6 +212,28 @@ class AlexAgent(BaseAgent):
                 parse_mode="HTML",
             )
 
+    def _help_text(self) -> str:
+        return (
+            "🗓️ <b>Алекс</b> — планировщик\n\n"
+            "Составляю планы, дорожные карты и отправляю push-уведомления.\n\n"
+            "📌 <b>Команды:</b>\n"
+            "/plan &lt;задача&gt; — составить план и добавить в Notion\n"
+            "/roadmap &lt;проект&gt; — построить дорожную карту\n"
+            "/testpush — проверить push-уведомления\n"
+            "/reset — очистить историю\n\n"
+            "💡 Пример: /plan «запустить новую карточку товара к пятнице»"
+        )
+
+    def _bot_commands(self) -> list:
+        from telegram import BotCommand
+        return [
+            BotCommand("start", "Запуск и помощь"),
+            BotCommand("plan", "Составить план и добавить в Notion"),
+            BotCommand("roadmap", "Построить дорожную карту"),
+            BotCommand("testpush", "Проверить push-уведомления"),
+            BotCommand("reset", "Очистить историю диалога"),
+        ]
+
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("plan", self.cmd_plan))
         self.app.add_handler(CommandHandler("roadmap", self.cmd_roadmap))

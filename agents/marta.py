@@ -1076,6 +1076,32 @@ class MartaAgent(BaseAgent):
             reply_markup=self._main_keyboard(),
         )
 
+    def _help_text(self) -> str:
+        return (
+            "👩‍💼 <b>Марта</b> — координатор команды\n\n"
+            "Принимаю задачи на русском языке и направляю нужному агенту.\n"
+            "Могу планировать цепочки задач и следить за статусом офиса.\n\n"
+            "📌 <b>Команды:</b>\n"
+            "/start — главное меню\n"
+            "/status — состояние офиса и активные задачи\n"
+            "/history — последние 10 выполненных задач\n"
+            "/delegate — явно передать задачу агенту\n"
+            "/cancel — отменить задачу из очереди\n"
+            "/reset — очистить историю\n\n"
+            "💡 Примеры: «напиши пост про наш товар», «исследуй конкурентов»"
+        )
+
+    def _bot_commands(self) -> list:
+        from telegram import BotCommand
+        return [
+            BotCommand("start", "Главное меню"),
+            BotCommand("status", "Состояние офиса и активные задачи"),
+            BotCommand("history", "Последние 10 задач"),
+            BotCommand("delegate", "Передать задачу агенту"),
+            BotCommand("cancel", "Отменить задачу из очереди"),
+            BotCommand("reset", "Очистить историю диалога"),
+        ]
+
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("delegate", self.cmd_delegate))
         self.app.add_handler(CommandHandler("status", self.cmd_status))

@@ -251,8 +251,8 @@ async def cmd_help(self, update, context):
 
 ## Фазы
 
-- [ ] base_agent.py — `_help_text()`, `cmd_help()`, обновить `cmd_start()`, `_bot_commands()`, post_init
-- [ ] Переопределить в каждом из 9 агентов: marta, kevin, kasper, peter, elina, alex, dan, eva, max
+- [x] base_agent.py — `_help_text()`, `cmd_help()`, обновить `cmd_start()`, `_bot_commands()`, post_init
+- [x] Переопределить в каждом из 9 агентов: marta, kevin, kasper, peter, elina, alex, dan, eva, max
 - [ ] Коммит + пуш
 
 ---

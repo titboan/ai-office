@@ -247,5 +247,22 @@ class DanAgent(BaseAgent):
         await self.post_to_group(f"🎨 Дэн выполнил задачу: {task[:80]}")
         return final_text or "Задача выполнена."
 
+    def _help_text(self) -> str:
+        return (
+            "🎨 <b>Дэн</b> — дизайнер\n\n"
+            "Генерирую изображения и визуалы для карточек товаров и постов.\n\n"
+            "📌 <b>Как работать:</b>\n"
+            "Опишите что нужно нарисовать — Дэн создаст изображение.\n\n"
+            "/reset — очистить историю\n\n"
+            "💡 Пример: «нарисуй баннер: термокружка на фоне леса»"
+        )
+
+    def _bot_commands(self) -> list:
+        from telegram import BotCommand
+        return [
+            BotCommand("start", "Запуск и помощь"),
+            BotCommand("reset", "Очистить историю диалога"),
+        ]
+
     def _register_extra_handlers(self) -> None:
         pass

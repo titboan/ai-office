@@ -2285,6 +2285,34 @@ class MaxAgent(BaseAgent):
         history = history[-10:]
         await self._redis_set(history_key, _json.dumps(history, ensure_ascii=False), ttl=3600)
 
+    def _help_text(self) -> str:
+        return (
+            "🛒 <b>Макс</b> — менеджер маркетплейсов\n\n"
+            "Управляю магазинами WB и Ozon: отзывы, заказы, остатки, реклама.\n\n"
+            "📌 <b>Команды:</b>\n"
+            "/sync — синхронизировать заказы, остатки, отзывы\n"
+            "/sync_adv — синхронизировать рекламную статистику\n"
+            "/products — список товаров и себестоимость\n"
+            "/cost &lt;артикул&gt; &lt;сумма&gt; — задать себестоимость\n"
+            "/map name=X wb=Y ozon=Z — добавить товар в реестр\n"
+            "/cancel — отменить активный мастер\n"
+            "/reset — очистить историю\n\n"
+            "💡 Пример: /cost КБ50 850"
+        )
+
+    def _bot_commands(self) -> list:
+        from telegram import BotCommand
+        return [
+            BotCommand("start", "Главное меню магазина"),
+            BotCommand("sync", "Синхронизировать заказы, остатки, отзывы"),
+            BotCommand("sync_adv", "Синхронизировать рекламную статистику"),
+            BotCommand("products", "Список товаров и себестоимость"),
+            BotCommand("cost", "Задать себестоимость товара"),
+            BotCommand("map", "Добавить товар в реестр"),
+            BotCommand("cancel", "Отменить активный мастер"),
+            BotCommand("reset", "Очистить историю диалога"),
+        ]
+
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("start",         self.cmd_start))
         self.app.add_handler(CommandHandler("add_shop",      self.cmd_add_shop))

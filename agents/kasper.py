@@ -253,5 +253,23 @@ class KasperAgent(BaseAgent):
             except Exception:
                 await update.message.reply_text(chunk)
 
+    def _help_text(self) -> str:
+        return (
+            "🔍 <b>Каспер</b> — исследователь\n\n"
+            "Ищу информацию в интернете, анализирую конкурентов и рынок.\n\n"
+            "📌 <b>Команды:</b>\n"
+            "/research — глубокое исследование по теме\n"
+            "/reset — очистить историю\n\n"
+            "💡 Пример: /research «тренды WB в категории одежда 2026»"
+        )
+
+    def _bot_commands(self) -> list:
+        from telegram import BotCommand
+        return [
+            BotCommand("start", "Запуск и помощь"),
+            BotCommand("research", "Глубокое исследование по теме"),
+            BotCommand("reset", "Очистить историю диалога"),
+        ]
+
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("research", self.cmd_research))

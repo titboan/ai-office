@@ -11,7 +11,7 @@ from typing import Any, Optional
 import anthropic
 import redis.asyncio as aioredis
 from loguru import logger
-from telegram import Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -389,12 +389,25 @@ class BaseAgent(ABC):
     #  Telegram — обработчики                                             #
     # ------------------------------------------------------------------ #
 
-    async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(
-            f"{self.emoji} Привет! Я <b>{self.name}</b> — {self.role}.\n"
-            f"Напиши мне задачу, и я займусь ею.",
-            parse_mode="HTML",
+    def _help_text(self) -> str:
+        return (
+            f"{self.emoji} <b>{self.name}</b> — {self.role}\n\n"
+            "/start — главное меню\n"
+            "/reset — очистить историю\n\n"
+            "Напишите задачу, и я займусь ею."
         )
+
+    def _bot_commands(self) -> list[BotCommand]:
+        return [
+            BotCommand("start", "Запуск и помощь"),
+            BotCommand("reset", "Очистить историю диалога"),
+        ]
+
+    async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await update.message.reply_text(self._help_text(), parse_mode="HTML")
+
+    async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await update.message.reply_text(self._help_text(), parse_mode="HTML")
 
     async def cmd_reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id
@@ -926,13 +939,18 @@ class BaseAgent(ABC):
             logger.error(traceback.format_exc())
 
     def build_app(self) -> Application:
+        async def _post_init(app: Application) -> None:
+            await app.bot.set_my_commands(self._bot_commands())
+
         self.app = (
             Application.builder()
             .token(self.bot_token)
+            .post_init(_post_init)
             .build()
         )
         self.app.add_error_handler(self._error_handler)
         self.app.add_handler(CommandHandler("start", self.cmd_start))
+        self.app.add_handler(CommandHandler("help", self.cmd_help))
         self.app.add_handler(CommandHandler("reset", self.cmd_reset))
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)

@@ -679,6 +679,31 @@ class PeterAgent(BaseAgent):
         except Exception as e:
             logger.error(f"[Питер/weekly_audit] ошибка отправки: {e}")
 
+    def _help_text(self) -> str:
+        return (
+            "📊 <b>Питер</b> — бизнес-аналитик\n\n"
+            "Анализирую продажи WB и Ozon, считаю ДРР и рентабельность,\n"
+            "даю конкретные рекомендации по росту.\n\n"
+            "📌 <b>Команды:</b>\n"
+            "/report [цель=X] [период=14] — отчёт о продажах и план роста\n"
+            "/audit — полная оценка магазина (SWOT, KPI, топ-5 действий)\n"
+            "/drr [период=30] — ДРР и ROAS по товарам с вердиктами\n"
+            "/analyze &lt;вопрос&gt; — произвольный бизнес-анализ\n"
+            "/reset — очистить историю\n\n"
+            "💡 Пример: /report цель=100000 период=14"
+        )
+
+    def _bot_commands(self) -> list:
+        from telegram import BotCommand
+        return [
+            BotCommand("start", "Запуск и помощь"),
+            BotCommand("report", "Отчёт о продажах и план роста"),
+            BotCommand("audit", "Полная оценка магазина (SWOT, KPI)"),
+            BotCommand("drr", "ДРР и ROAS по товарам"),
+            BotCommand("analyze", "Произвольный бизнес-анализ"),
+            BotCommand("reset", "Очистить историю диалога"),
+        ]
+
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("report",  self.cmd_report))
         self.app.add_handler(CommandHandler("analyze", self.cmd_analyze))
