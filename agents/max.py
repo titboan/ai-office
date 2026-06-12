@@ -791,7 +791,10 @@ class MaxAgent(BaseAgent):
                 )
 
                 if rating <= 2:
-                    await self._notify_pending(chat_id, shop, rv, reply)
+                    try:
+                        await self._notify_pending(chat_id, shop, rv, reply)
+                    except Exception as e:
+                        logger.error(f"[Макс] _notify_pending failed review={rv['review_id'][:8]}: {e}")
                     stats["pending"] += 1
                 else:
                     ok = await self._send_to_marketplace(shop, rv["review_id"], reply)
@@ -1308,7 +1311,10 @@ class MaxAgent(BaseAgent):
                     reply = ""
 
                 await update_review_status(mp, rv["review_id"], "pending_approval", generated_reply=reply)
-                await self._notify_pending(chat_id, shop, rv, reply)
+                try:
+                    await self._notify_pending(chat_id, shop, rv, reply)
+                except Exception as e:
+                    logger.error(f"[Макс/neg] _notify_pending failed review={rv['review_id'][:8]}: {e}")
 
             # Обновляем last_checked_negative
             from db import get_pool
