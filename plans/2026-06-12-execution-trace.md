@@ -1,6 +1,6 @@
 # Execution Trace — таблица task_events
 
-Статус: в работе
+Статус: завершён
 
 ## Контекст
 
@@ -14,7 +14,7 @@
 - [x] Фаза 2: `db.py` — таблица `task_events` + функция `log_event()`
 - [x] Фаза 3: `task_queue.py` — TASK_CREATED при enqueue
 - [x] Фаза 4: `base_agent.py` — TASK_STARTED / TASK_COMPLETED / TASK_FAILED / CHAIN_ADVANCED
-- [ ] Фаза 5: Коммит, пуш, обновить ROADMAP.md
+- [x] Фаза 5: Коммит, пуш, обновить ROADMAP.md
 
 ## События
 
