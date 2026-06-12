@@ -219,7 +219,24 @@ async def _create_schema() -> None:
                 updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
-        logger.info("[db] Схема tasks + projects + digest_channels готова ✓")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS product_adv_stats (
+                id           SERIAL PRIMARY KEY,
+                chat_id      BIGINT       NOT NULL,
+                marketplace  VARCHAR(10)  NOT NULL,
+                product_id   VARCHAR(50)  NOT NULL,
+                campaign_id  VARCHAR(50),
+                stat_date    DATE         NOT NULL,
+                views        BIGINT       DEFAULT 0,
+                clicks       BIGINT       DEFAULT 0,
+                ctr          NUMERIC(6,4) DEFAULT 0,
+                spend        NUMERIC(12,2) DEFAULT 0,
+                orders_count INTEGER      DEFAULT 0,
+                updated_at   TIMESTAMPTZ  DEFAULT now(),
+                UNIQUE(chat_id, marketplace, product_id, stat_date)
+            )
+        """)
+        logger.info("[db] Схема tasks + projects + digest_channels + product_adv_stats готова ✓")
 
 async def save_project(
     chat_id: int,
@@ -502,6 +519,37 @@ async def upsert_ad_stat(
             """,
             chat_id, marketplace, campaign_id, campaign_name,
             stat_date, views, clicks, ctr, spend,
+        )
+
+
+async def upsert_product_ad_stat(
+    chat_id: int, marketplace: str, product_id: str, campaign_id: str | None,
+    stat_date, views: int, clicks: int, ctr: float, spend: float,
+    orders_count: int = 0,
+) -> None:
+    """Сохранить/обновить рекламную статистику на уровне товара за день."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO product_adv_stats
+                (chat_id, marketplace, product_id, campaign_id, stat_date,
+                 views, clicks, ctr, spend, orders_count, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+            ON CONFLICT (chat_id, marketplace, product_id, stat_date) DO UPDATE
+                SET campaign_id   = COALESCE(EXCLUDED.campaign_id, product_adv_stats.campaign_id),
+                    views         = product_adv_stats.views + EXCLUDED.views,
+                    clicks        = product_adv_stats.clicks + EXCLUDED.clicks,
+                    ctr           = CASE WHEN (product_adv_stats.views + EXCLUDED.views) > 0
+                                         THEN ROUND((product_adv_stats.clicks + EXCLUDED.clicks)::numeric
+                                              / (product_adv_stats.views + EXCLUDED.views) * 100, 4)
+                                         ELSE 0 END,
+                    spend         = product_adv_stats.spend + EXCLUDED.spend,
+                    orders_count  = product_adv_stats.orders_count + EXCLUDED.orders_count,
+                    updated_at    = NOW()
+            """,
+            chat_id, marketplace, product_id, campaign_id,
+            stat_date, views, clicks, ctr, spend, orders_count,
         )
 
 

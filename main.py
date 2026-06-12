@@ -144,7 +144,8 @@ async def run_all_async() -> None:
     digest_task = asyncio.create_task(_scheduled_digest_loop())
     logger.info("[main] Scheduled digest task запущен (каждый день 06:30 UTC)")
 
-    max_agent = next((a for a in started if isinstance(a, MaxAgent)), None)
+    max_agent   = next((a for a in started if isinstance(a, MaxAgent)), None)
+    peter_agent = next((a for a in started if a.__class__.__name__ == "PeterAgent"), None)
 
     async def _scheduled_reviews_loop():
         """Запускает обработку отзывов в 06:00, 11:00, 17:00 UTC."""
@@ -294,9 +295,50 @@ async def run_all_async() -> None:
                 await asyncio.sleep(60)
 
     asyncio.create_task(_scheduled_adv_sync_loop())
+
+    async def _weekly_audit_loop():
+        """Еженедельный аудит магазина — понедельник 07:00 UTC (10:00 МСК)."""
+        from datetime import datetime, timezone, timedelta
+        from db import get_all_active_shops
+
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                # Следующий понедельник 07:00 UTC
+                days_until_monday = (7 - now.weekday()) % 7
+                if days_until_monday == 0 and now.hour >= 7:
+                    days_until_monday = 7
+                target = (now + timedelta(days=days_until_monday)).replace(
+                    hour=7, minute=0, second=0, microsecond=0
+                )
+                wait_seconds = (target - now).total_seconds()
+                logger.info(f"[weekly_audit] следующий запуск через {wait_seconds/3600:.1f} ч (пн 10:00 МСК)")
+                await asyncio.sleep(wait_seconds)
+
+                if peter_agent is None:
+                    continue
+
+                shops = await get_all_active_shops()
+                unique_chats = list({s["chat_id"] for s in shops})
+
+                for chat_id in unique_chats:
+                    try:
+                        await peter_agent.run_weekly_audit(chat_id)
+                        logger.info(f"[weekly_audit] chat_id={chat_id} завершено")
+                    except Exception as e:
+                        logger.error(f"[weekly_audit] chat_id={chat_id} ошибка: {e}")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[weekly_audit] критическая ошибка: {e}")
+                await asyncio.sleep(60)
+
+    asyncio.create_task(_weekly_audit_loop())
     logger.info("[main] Negative reviews task запущен (каждые 15 минут)")
     logger.info("[main] Scheduled reviews task запущен (06:00, 11:00, 17:00 UTC)")
     logger.info("[main] Adv sync task запущен (03:00 UTC / 06:00 МСК)")
+    logger.info("[main] Weekly audit task запущен (пн 07:00 UTC / 10:00 МСК)")
 
     try:
         await stop_event.wait()

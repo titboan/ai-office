@@ -430,6 +430,26 @@ class WBClient:
                     stat_date = day.get("date", "")[:10]
                     if not stat_date:
                         continue
+                    # Собираем per-nm статистику для product_adv_stats
+                    product_stats = []
+                    for app in (day.get("apps") or []):
+                        for nm in (app.get("nm") or []):
+                            nm_id = str(nm.get("nmId", ""))
+                            if not nm_id:
+                                continue
+                            nm_views  = int(nm.get("views", 0) or 0)
+                            nm_clicks = int(nm.get("clicks", 0) or 0)
+                            nm_spend  = float(nm.get("sum", 0) or 0)
+                            nm_ctr    = round(float(nm.get("ctr", 0) or 0), 2)
+                            nm_orders = int(nm.get("orders", 0) or 0)
+                            product_stats.append({
+                                "product_id":    nm_id,
+                                "views":         nm_views,
+                                "clicks":        nm_clicks,
+                                "ctr":           nm_ctr,
+                                "spend":         nm_spend,
+                                "orders_count":  nm_orders,
+                            })
                     results.append({
                         "campaign_id":   str(cid),
                         "campaign_name": str(cid),
@@ -438,6 +458,7 @@ class WBClient:
                         "clicks":        clicks,
                         "ctr":           ctr,
                         "spend":         spend,
+                        "product_stats": product_stats,
                     })
 
         logger.info(f"[WB.get_ad_stats] итого записей: {len(results)}")
@@ -1067,13 +1088,27 @@ class OzonPerformanceClient:
                 reader = csv.DictReader(io.StringIO(header_and_data), delimiter=";")
                 views_sum = clicks_sum = spend_sum = 0
                 row_count = 0
+                product_stats = []
                 for row in reader:
-                    if str(row.get("sku", "")).strip().lower() in ("всего", ""):
+                    sku_val = str(row.get("sku", "")).strip()
+                    if sku_val.lower() in ("всего", ""):
                         continue
-                    views_sum  += int(float(row.get("Показы", 0) or 0))
-                    clicks_sum += int(float(row.get("Клики", 0) or 0))
-                    spend_sum  += float(str(row.get("Расход, ₽, с НДС", 0) or 0).replace(",", "."))
+                    nm_views  = int(float(row.get("Показы", 0) or 0))
+                    nm_clicks = int(float(row.get("Клики", 0) or 0))
+                    nm_spend  = float(str(row.get("Расход, ₽, с НДС", 0) or 0).replace(",", "."))
+                    views_sum  += nm_views
+                    clicks_sum += nm_clicks
+                    spend_sum  += nm_spend
                     row_count  += 1
+                    nm_ctr = round(nm_clicks / nm_views * 100, 2) if nm_views else 0.0
+                    product_stats.append({
+                        "product_id":   sku_val,
+                        "views":        nm_views,
+                        "clicks":       nm_clicks,
+                        "ctr":          nm_ctr,
+                        "spend":        nm_spend,
+                        "orders_count": 0,
+                    })
                 if row_count == 0:
                     continue  # кампания без активности — не пишем в БД
                 ctr = round(clicks_sum / views_sum * 100, 2) if views_sum else 0.0
@@ -1085,6 +1120,7 @@ class OzonPerformanceClient:
                     "clicks":        clicks_sum,
                     "ctr":           ctr,
                     "spend":         spend_sum,
+                    "product_stats": product_stats,
                 })
         except Exception as e:
             logger.error(f"[OzonPerf] CSV parse exception: {e}")

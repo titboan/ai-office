@@ -18,7 +18,7 @@ PETER_SYSTEM = """Ты Питер, бизнес-аналитик команды 
 Данные которые ты получаешь — реальные цифры из БД: заказы, себестоимость, рекламные расходы, остатки.
 Важно: данные по заказам, не по выкупам — реальная выручка ниже на процент возвратов (обычно 10-30% на WB).
 
-Формат ответа ВСЕГДА — короткий, читаемый в Telegram с телефона. Весь ответ — не длиннее 25 строк.
+Формат ответа ВСЕГДА — короткий, читаемый в Telegram с телефона. Весь ответ — не длиннее 30 строк.
 Используй display_name товаров (короткие коды: КБ50, ТГ100 и т.д.), не SKU и не длинные названия.
 Никаких упоминаний возвратов.
 
@@ -26,21 +26,104 @@ PETER_SYSTEM = """Ты Питер, бизнес-аналитик команды 
 - <b>текст</b> для заголовков разделов и ключевых метрик
 - <code>артикул</code> для кодов товаров
 - <blockquote>вывод</blockquote> для ключевого инсайта
-- Эмодзи в начале строк (📊 📈 🎯 ⚠️)
+- Эмодзи в начале строк (📊 📈 🎯 ⚠️ ⬆️ 📸 📦 💰 🔄)
 - НЕ используй Markdown: никаких *звёздочек*, ##заголовков, |таблиц|
 
 Пример структуры:
 📊 <b>Оборот за N дней:</b> X ₽ (Y ₽/день)
 WB: X ₽ (ДРР X%) | Ozon: X ₽ (ДРР X%)
+Тренд: WB ↑X% | Ozon ↓X% (неделя к неделе)
 
 Топ-3: <code>КБ50</code> — X ₽/день, <code>ТГ100</code> — X ₽/день
 
 📈 Сейчас: X ₽/день → цель: Y ₽/день → не хватает: Z ₽/день
 
-🎯 <b>План (топ-3 действия):</b>
-1. Увеличь рекламу на <code>артикул</code> на X ₽ → при ДРР X% даст +Y ₽/день
+🎯 <b>Plan (топ-5 действий):</b>
+1. ⬆️ Реклама <code>КБ50</code> +5 000₽/нед → ROAS 4.2x → +Y₽/день
+2. 📸 Переделать фото <code>ТГ100</code> — CTR 0.7% (норма 2-3%), теряем X кликов/день
+3. 📦 Заказать <code>КБ30</code> — осталось 8 дней, провал стока = -Y₽
+4. 💰 Снизить ставку <code>ДС200</code> — ROAS 1.1, тратим X₽ в минус
+5. 🔄 Перенести бюджет Ozon→WB — ДРР Ozon 35% vs WB 18%
 
-<blockquote>Главный инсайт одной строкой</blockquote>"""
+<blockquote>Главный инсайт одной строкой</blockquote>
+
+ПРИ АНАЛИЗЕ:
+- CTR < 1% — плохая инфографика → рекомендуй замену конкретных карточек
+- CTR > 4% — хорошая карточка, масштабируй бюджет
+- ROAS = revenue/spend. ROAS > 5 → увеличь бюджет. ROAS < 2 → стоп
+- days_left < 14 → срочный дозаказ, назови товар
+- ДРР норма: WB ~15-20%, Ozon ~10-15%
+- Конкретные суммы, не абстрактные советы"""
+
+PETER_AUDIT_PROMPT = """Ты проводишь полный аудит магазина на маркетплейсах.
+
+ФОРМАТ ОТВЕТА (не длиннее 45 строк, HTML Telegram):
+
+🏪 <b>Оценка магазина: X/10</b>
+Оборот: X ₽/мес | Тренд: ↑/↓ X% | ДРР: X%
+
+💪 <b>Сильные стороны:</b>
+1. [факт из данных с цифрой]
+2. [факт из данных с цифрой]
+3. [факт из данных с цифрой]
+
+⚠️ <b>Слабые стороны:</b>
+1. [факт из данных с цифрой]
+2. [факт из данных с цифрой]
+3. [факт из данных с цифрой]
+
+🎯 <b>Приоритет №1 на ближайший месяц:</b>
+[направление] — [конкретное обоснование с числами]
+
+📋 <b>Топ-5 действий прямо сейчас:</b>
+1. [действие с конкретным товаром/суммой] — [ожидаемый эффект]
+2. ...
+5. ...
+
+📊 <b>KPI-дашборд:</b>
+Заказов/день: X | ДРР WB: X% | ДРР Ozon: X%
+Топ-CTR: <code>арт</code> X% | Худший-CTR: <code>арт</code> X%
+Стоков < 14 дней: X позиций
+
+<blockquote>Главный вывод: [почему магазин там где он есть и куда идти]</blockquote>
+
+ПРАВИЛА:
+- Оценка X/10: считай по факторам (рост оборота, CTR, ROAS, маржа, стоки, ДРР)
+- Каждое действие — конкретный товар <code>код</code> + конкретная сумма/процент
+- CTR < 1% → "переделать инфографику на <code>арт</code> — CTR X%, теряем X кликов/день"
+- ROAS < 2 → "отключить рекламу <code>арт</code> — убыток X₽/день"
+- days_left < 14 → "срочно заказать <code>арт</code> — осталось X дней"
+- Если тренд недели +20% — отдельно отметь рост"""
+
+PETER_DRR_PROMPT = """Ты анализируешь рекламную эффективность магазина. Выдай краткий ДРР-отчёт.
+
+ФОРМАТ (не длиннее 30 строк, HTML Telegram):
+
+📊 <b>ДРР-отчёт за N дней</b>
+
+<b>По площадкам:</b>
+WB: расход X₽ / оборот X₽ → ДРР X%  [норма 15-20%]
+Ozon: расход X₽ / оборот X₽ → ДРР X%  [норма 10-15%]
+
+<b>Топ-5 товаров по расходу:</b>
+<code>КБ50</code> — ДРР X%, ROAS X.X, CTR X% → [вердикт: 🟢 эффективно / 🟡 пересмотреть / 🔴 отключить]
+...
+
+⚠️ <b>Проблемные:</b>
+[Товары с ДРР > 25% или ROAS < 2]
+
+✅ <b>Лидеры эффективности:</b>
+[Товары с ROAS > 5]
+
+<blockquote>Рекомендация: [одно главное действие с суммой/товаром]</blockquote>
+
+ПРАВИЛА:
+- ДРР = (рекл. расход / оборот от заказов) × 100%
+- ROAS = оборот / рекл. расход
+- 🟢 ROAS > 5 (ДРР < 20%)
+- 🟡 ROAS 2-5 (ДРР 20-50%)
+- 🔴 ROAS < 2 (ДРР > 50%)
+- Если данных по товару нет в product_adv_stats — укажи суммарный ДРР по площадке"""
 
 
 from utils.tg_format import strip_html as _strip_html
@@ -57,7 +140,7 @@ class PeterAgent(BaseAgent):
         super().__init__(config.PETER_BOT_TOKEN)
 
     async def _collect_data(self, chat_id: int, days: int = 14) -> dict:
-        """Собрать аналитический срез из БД за последние N дней."""
+        """Собрать базовый аналитический срез из БД за последние N дней."""
         from db import get_pool
         pool = await get_pool()
         date_from = (datetime.now(_UTC) - timedelta(days=days)).date()
@@ -174,6 +257,96 @@ class PeterAgent(BaseAgent):
             "low_stocks":  [dict(r) for r in low_stocks],
         }
 
+    async def _collect_advanced_data(self, chat_id: int, days: int = 14) -> dict:
+        """Расширенные метрики: тренд, CTR/ROAS по товарам, stock velocity."""
+        from db import get_pool
+        pool = await get_pool()
+        date_from = (datetime.now(_UTC) - timedelta(days=days)).date()
+
+        async with pool.acquire() as conn:
+
+            # 1. Тренд: текущие 7 дней vs предыдущие 7 дней
+            trend = await conn.fetch("""
+                SELECT marketplace,
+                       SUM(CASE WHEN order_date >= NOW() - INTERVAL '7 days'
+                                THEN seller_price * quantity ELSE 0 END)::numeric(12,2) AS week_current,
+                       SUM(CASE WHEN order_date <  NOW() - INTERVAL '7 days'
+                                THEN seller_price * quantity ELSE 0 END)::numeric(12,2) AS week_prev
+                FROM marketplace_orders
+                WHERE chat_id = $1 AND order_date >= NOW() - INTERVAL '14 days'
+                GROUP BY marketplace
+            """, chat_id)
+
+            # 2. CTR, ROAS, расход по товарам (из product_adv_stats + orders)
+            product_metrics = await conn.fetch("""
+                SELECT
+                    p.product_id,
+                    COALESCE(m.display_name, p.product_id) AS name,
+                    p.marketplace,
+                    SUM(p.views)::bigint                            AS views,
+                    SUM(p.clicks)::bigint                           AS clicks,
+                    CASE WHEN SUM(p.views) > 0
+                         THEN ROUND(SUM(p.clicks)::numeric / SUM(p.views) * 100, 2)
+                         ELSE 0 END                                 AS avg_ctr,
+                    SUM(p.spend)::numeric(12,2)                     AS adv_spend,
+                    SUM(p.orders_count)::integer                    AS adv_orders,
+                    COALESCE(o.revenue, 0)::numeric(12,2)           AS revenue,
+                    CASE WHEN SUM(p.spend) > 0
+                         THEN ROUND(COALESCE(o.revenue, 0) / SUM(p.spend), 2)
+                         ELSE 0 END                                 AS roas
+                FROM product_adv_stats p
+                LEFT JOIN product_mapping m
+                       ON m.wb_article = p.product_id
+                       OR m.ozon_sku   = p.product_id
+                LEFT JOIN (
+                    SELECT product_id,
+                           SUM(seller_price * quantity)::numeric(12,2) AS revenue
+                    FROM marketplace_orders
+                    WHERE chat_id = $1 AND order_date >= $2
+                    GROUP BY product_id
+                ) o ON o.product_id = p.product_id
+                WHERE p.chat_id = $1 AND p.stat_date >= $2
+                GROUP BY p.product_id, m.display_name, p.marketplace, o.revenue
+                ORDER BY adv_spend DESC
+                LIMIT 20
+            """, chat_id, date_from)
+
+            # 3. Stock velocity — дней осталось при текущих продажах
+            stock_velocity = await conn.fetch("""
+                SELECT
+                    s.marketplace,
+                    s.product_id,
+                    COALESCE(m.display_name, MAX(s.product_name)) AS name,
+                    SUM(s.stock)::integer                          AS stock,
+                    COALESCE(v.daily_orders, 0)                    AS daily_orders,
+                    CASE WHEN COALESCE(v.daily_orders, 0) > 0
+                         THEN ROUND(SUM(s.stock) / v.daily_orders)
+                         ELSE 999 END                              AS days_left
+                FROM marketplace_stocks s
+                LEFT JOIN product_mapping m
+                       ON m.wb_article = s.product_id
+                       OR m.ozon_offer_id = s.product_id
+                LEFT JOIN (
+                    SELECT product_id,
+                           ROUND(SUM(quantity)::numeric / $3, 2) AS daily_orders
+                    FROM marketplace_orders
+                    WHERE chat_id = $1 AND order_date >= $2
+                    GROUP BY product_id
+                ) v ON v.product_id = s.product_id
+                WHERE s.chat_id = $1
+                GROUP BY s.marketplace, s.product_id, m.display_name, v.daily_orders
+                ORDER BY days_left ASC
+                LIMIT 15
+            """, chat_id, date_from, days)
+
+        return {
+            "period_days":     days,
+            "date_from":       date_from,
+            "trend":           [dict(r) for r in trend],
+            "product_metrics": [dict(r) for r in product_metrics],
+            "stock_velocity":  [dict(r) for r in stock_velocity],
+        }
+
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
         logger.info(f"[Питер] Задача от {from_agent}: {task!r}")
         answer = await self.think(
@@ -199,7 +372,6 @@ class PeterAgent(BaseAgent):
         chat_id = update.effective_user.id
         args_raw = " ".join(context.args) if context.args else ""
 
-        # Парсим параметры
         goal = None
         days = 14
         for tok in args_raw.split():
@@ -221,12 +393,12 @@ class PeterAgent(BaseAgent):
 
         try:
             data = await self._collect_data(chat_id, days=days)
+            adv_data = await self._collect_advanced_data(chat_id, days=days)
         except Exception as e:
             logger.error(f"[Питер/report] ошибка сбора данных: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка сбора данных: {e}")
             return
 
-        # Считаем средний оборот/день
         total_revenue = sum(float(r["revenue"] or 0) for r in data["revenue"])
         avg_per_day = round(total_revenue / days, 0) if days else 0
 
@@ -242,19 +414,24 @@ class PeterAgent(BaseAgent):
         prompt = f"""Проанализируй данные магазинов за последние {days} дней.
 {goal_str}
 
-ДАННЫЕ:
+БАЗОВЫЕ ДАННЫЕ:
 {json.dumps(data, ensure_ascii=False, default=str, indent=2)}
+
+РАСШИРЕННЫЕ ДАННЫЕ (тренд, CTR/ROAS по товарам, остатки):
+{json.dumps(adv_data, ensure_ascii=False, default=str, indent=2)}
 
 ВАЖНО:
 - Данные по заказам, не по выкупам. Реальная выручка ниже на % возвратов.
 - Маржа считается как выручка минус себестоимость (без комиссии МП и логистики МП).
 - Комиссия WB ~15-25%, логистика ~50-150₽/заказ — учитывай в выводах.
 - Комиссия Ozon ~5-15% в зависимости от категории.
+- product_metrics.avg_ctr — CTR из рекламы (если 0 — данные ещё не накоплены после /sync_adv).
+- product_metrics.roas — ROAS = оборот/расход. Если 0 — данные не синхронизированы.
+- stock_velocity.days_left — дней осталось стока при текущем темпе продаж. 999 = нет продаж.
 - Если margin_ozon пустой — Ozon-заказы есть, но маппинг SKU не позволил посчитать маржу.
-- Не упоминай возвраты — у продавца выкупаемость 95-100%.
 {"- Цель: " + str(goal) + " ₽/день суммарно WB+Ozon." if goal else ""}
 
-Дай конкретный анализ по формату из system prompt."""
+Дай конкретный анализ по формату из system prompt с 5 практическими действиями."""
 
         await update.message.reply_text("🤔 Анализирую…")
         try:
@@ -264,11 +441,159 @@ class PeterAgent(BaseAgent):
             await update.message.reply_text(f"❌ Ошибка анализа: {e}")
             return
 
-        # Сохраняем в Notion (strip HTML тегов — Notion ожидает plain text)
         notion_url = await save_research(
             title=f"Отчёт {datetime.now(_UTC).strftime('%d.%m.%Y')}",
             content=_strip_html(answer),
             source="cmd:report",
+            agent="Питер",
+        )
+        if notion_url:
+            answer = f'{answer}\n\n📄 <a href="{notion_url}">Сохранено в Notion</a>'
+
+        for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
+            try:
+                await update.message.reply_text(chunk, parse_mode="HTML")
+            except Exception:
+                await update.message.reply_text(chunk)
+
+    async def cmd_audit(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """/audit — оценка магазина: здоровье, SWOT, KPI-дашборд, топ-5 действий."""
+        chat_id = update.effective_user.id
+        await update.message.reply_text("🏪 Провожу аудит магазина за 30 дней…")
+
+        try:
+            data = await self._collect_data(chat_id, days=30)
+            adv_data = await self._collect_advanced_data(chat_id, days=30)
+        except Exception as e:
+            logger.error(f"[Питер/audit] ошибка сбора данных: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка сбора данных: {e}")
+            return
+
+        total_revenue = sum(float(r["revenue"] or 0) for r in data["revenue"])
+        total_adv_spend = sum(float(r["spend"] or 0) for r in data["adv"])
+        avg_per_day = round(total_revenue / 30, 0)
+        drr_overall = round(total_adv_spend / total_revenue * 100, 1) if total_revenue else 0
+
+        prompt = f"""Проведи полный аудит магазина. Используй формат из PETER_AUDIT_PROMPT.
+
+ПЕРИОД: 30 дней
+Оборот: {total_revenue:,.0f} ₽ ({avg_per_day:,.0f} ₽/день)
+Рекл. расход: {total_adv_spend:,.0f} ₽ | Общий ДРР: {drr_overall}%
+
+БАЗОВЫЕ ДАННЫЕ (оборот, маржа, реклама по площадкам, остатки):
+{json.dumps(data, ensure_ascii=False, default=str, indent=2)}
+
+РАСШИРЕННЫЕ ДАННЫЕ (тренд 7д, CTR/ROAS по товарам, stock velocity):
+{json.dumps(adv_data, ensure_ascii=False, default=str, indent=2)}
+
+ВАЖНО:
+- Оценка X/10 должна отражать реальное состояние (не завышай и не занижай)
+- Каждое действие в топ-5 — конкретный товар <code>код</code> + цифры
+- CTR данные в product_metrics.avg_ctr (0 = нет данных из рекламы)
+- ROAS в product_metrics.roas (0 = нет данных)
+- days_left в stock_velocity (999 = нет продаж по этому товару)
+- trend показывает неделя к неделе по каждой площадке
+- Маржа (op_profit) — без комиссий МП и логистики. Реальная прибыль ниже ~20-30%
+
+Используй формат PETER_AUDIT_PROMPT."""
+
+        await update.message.reply_text("🤔 Анализирую…")
+        try:
+            # Передаём audit prompt как системный через кастомный вызов
+            from anthropic import AsyncAnthropic
+            client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+            resp = await client.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=4096,
+                system=PETER_AUDIT_PROMPT,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            answer = resp.content[0].text
+        except Exception as e:
+            logger.error(f"[Питер/audit] ошибка Claude: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка анализа: {e}")
+            return
+
+        notion_url = await save_research(
+            title=f"Аудит {datetime.now(_UTC).strftime('%d.%m.%Y')}",
+            content=_strip_html(answer),
+            source="cmd:audit",
+            agent="Питер",
+        )
+        if notion_url:
+            answer = f'{answer}\n\n📄 <a href="{notion_url}">Аудит сохранён в Notion</a>'
+
+        for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
+            try:
+                await update.message.reply_text(chunk, parse_mode="HTML")
+            except Exception:
+                await update.message.reply_text(chunk)
+
+    async def cmd_drr(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """/drr [период=30] — ДРР по товарам и площадкам."""
+        chat_id = update.effective_user.id
+        days = 30
+        if context.args:
+            try:
+                days = int(context.args[0])
+            except ValueError:
+                pass
+
+        await update.message.reply_text(f"💰 Считаю ДРР за {days} дней…")
+
+        try:
+            data = await self._collect_data(chat_id, days=days)
+            adv_data = await self._collect_advanced_data(chat_id, days=days)
+        except Exception as e:
+            logger.error(f"[Питер/drr] ошибка сбора данных: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка сбора данных: {e}")
+            return
+
+        prompt = f"""Выдай ДРР-отчёт по товарам и площадкам. Используй формат PETER_DRR_PROMPT.
+
+ПЕРИОД: {days} дней
+
+РЕКЛАМНЫЕ РАСХОДЫ ПО ПЛОЩАДКАМ:
+{json.dumps(data["adv"], ensure_ascii=False, default=str, indent=2)}
+
+ОБОРОТ ПО ПЛОЩАДКАМ:
+{json.dumps(data["revenue"], ensure_ascii=False, default=str, indent=2)}
+
+МЕТРИКИ ПО ТОВАРАМ (CTR, ROAS, расход, оборот):
+{json.dumps(adv_data["product_metrics"], ensure_ascii=False, default=str, indent=2)}
+
+ВАЖНО:
+- ДРР = adv_spend / revenue × 100%
+- ROAS = revenue / adv_spend
+- Если product_metrics пустой — данные ещё не синхронизированы (/sync_adv)
+- avg_ctr в процентах (2.5 = 2.5%)
+- Используй display_name товаров (поле "name") если есть
+
+Используй формат PETER_DRR_PROMPT."""
+
+        try:
+            from anthropic import AsyncAnthropic
+            client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+            resp = await client.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=2048,
+                system=PETER_DRR_PROMPT,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            answer = resp.content[0].text
+        except Exception as e:
+            logger.error(f"[Питер/drr] ошибка Claude: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка анализа: {e}")
+            return
+
+        notion_url = await save_research(
+            title=f"ДРР {datetime.now(_UTC).strftime('%d.%m.%Y')}",
+            content=_strip_html(answer),
+            source="cmd:drr",
             agent="Питер",
         )
         if notion_url:
@@ -288,7 +613,9 @@ class PeterAgent(BaseAgent):
         if not data:
             await update.message.reply_text(
                 "Использование: /analyze <данные или вопрос>\n"
-                "Для анализа магазинов используй /report"
+                "Для анализа магазинов используй /report\n"
+                "Для аудита — /audit\n"
+                "Для ДРР — /drr"
             )
             return
         await update.message.reply_text("📊 Анализирую…")
@@ -296,6 +623,64 @@ class PeterAgent(BaseAgent):
         for chunk in [result[i:i+4000] for i in range(0, len(result), 4000)]:
             await update.message.reply_text(chunk)
 
+    async def run_weekly_audit(self, chat_id: int) -> None:
+        """Автоматический еженедельный аудит — вызывается из планировщика."""
+        logger.info(f"[Питер/weekly_audit] Запуск для chat_id={chat_id}")
+        try:
+            data = await self._collect_data(chat_id, days=30)
+            adv_data = await self._collect_advanced_data(chat_id, days=30)
+        except Exception as e:
+            logger.error(f"[Питер/weekly_audit] ошибка данных: {e}")
+            return
+
+        total_revenue = sum(float(r["revenue"] or 0) for r in data["revenue"])
+        total_adv_spend = sum(float(r["spend"] or 0) for r in data["adv"])
+        avg_per_day = round(total_revenue / 30, 0)
+        drr_overall = round(total_adv_spend / total_revenue * 100, 1) if total_revenue else 0
+
+        prompt = f"""Еженедельный автоаудит магазина (понедельник). Краткий вариант — не более 25 строк.
+
+Оборот: {total_revenue:,.0f} ₽ ({avg_per_day:,.0f} ₽/день) | ДРР: {drr_overall}%
+
+ДАННЫЕ:
+{json.dumps({**data, **adv_data}, ensure_ascii=False, default=str, indent=2)}
+
+Сделай акцент на изменениях за прошлую неделю (тренд) и 3 главных действиях.
+Используй формат PETER_AUDIT_PROMPT, но сокращённо."""
+
+        try:
+            from anthropic import AsyncAnthropic
+            client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+            resp = await client.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=2048,
+                system=PETER_AUDIT_PROMPT,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            answer = resp.content[0].text
+        except Exception as e:
+            logger.error(f"[Питер/weekly_audit] ошибка Claude: {e}")
+            return
+
+        notion_url = await save_research(
+            title=f"Еженедельный аудит {datetime.now(_UTC).strftime('%d.%m.%Y')}",
+            content=_strip_html(answer),
+            source="scheduler:weekly_audit",
+            agent="Питер",
+        )
+        if notion_url:
+            answer = f'{answer}\n\n📄 <a href="{notion_url}">Сохранено в Notion</a>'
+
+        # Отправляем в личку владельца
+        try:
+            for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
+                await self.app.bot.send_message(chat_id=chat_id, text=chunk, parse_mode="HTML")
+            logger.info(f"[Питер/weekly_audit] отправлен в chat_id={chat_id}")
+        except Exception as e:
+            logger.error(f"[Питер/weekly_audit] ошибка отправки: {e}")
+
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("report",  self.cmd_report))
         self.app.add_handler(CommandHandler("analyze", self.cmd_analyze))
+        self.app.add_handler(CommandHandler("audit",   self.cmd_audit))
+        self.app.add_handler(CommandHandler("drr",     self.cmd_drr))

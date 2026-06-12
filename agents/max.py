@@ -945,7 +945,7 @@ class MaxAgent(BaseAgent):
 
     async def sync_ad_stats(self, chat_id: int) -> None:
         """Синхронизация рекламной статистики WB + Ozon. Вызывается отдельно от основного sync."""
-        from db import get_marketplace_shops, upsert_ad_stat
+        from db import get_marketplace_shops, upsert_ad_stat, upsert_product_ad_stat
         from tools.marketplace import WBClient, OzonPerformanceClient
         import os
         from datetime import date as _date
@@ -961,6 +961,7 @@ class MaxAgent(BaseAgent):
                 try:
                     client = WBClient(shop["api_token"])
                     ad_stats = await client.get_ad_stats(date_from=date_from_adv, date_to=date_to_adv)
+                    prod_count = 0
                     for s in ad_stats:
                         stat_date = _date.fromisoformat(s["stat_date"]) if isinstance(s["stat_date"], str) else s["stat_date"]
                         await upsert_ad_stat(
@@ -969,7 +970,16 @@ class MaxAgent(BaseAgent):
                             stat_date=stat_date, views=s["views"],
                             clicks=s["clicks"], ctr=s["ctr"], spend=s["spend"],
                         )
-                    logger.info(f"[Макс/adv] WB реклама: {len(ad_stats)} записей")
+                        for ps in (s.get("product_stats") or []):
+                            await upsert_product_ad_stat(
+                                chat_id=chat_id, marketplace="wb",
+                                product_id=ps["product_id"], campaign_id=s["campaign_id"],
+                                stat_date=stat_date, views=ps["views"],
+                                clicks=ps["clicks"], ctr=ps["ctr"], spend=ps["spend"],
+                                orders_count=ps.get("orders_count", 0),
+                            )
+                            prod_count += 1
+                    logger.info(f"[Макс/adv] WB реклама: {len(ad_stats)} записей, {prod_count} nm-записей")
                 except Exception as e:
                     logger.error(f"[Макс/adv] WB реклама: {e}")
 
@@ -981,6 +991,7 @@ class MaxAgent(BaseAgent):
                         redis = await self._get_redis()
                         perf_client = OzonPerformanceClient(ozon_perf_client_id, ozon_perf_client_secret, redis)
                         ad_stats = await perf_client.get_ad_stats(date_from=date_from_adv, date_to=date_to_adv)
+                        prod_count = 0
                         for s in ad_stats:
                             stat_date = _date.fromisoformat(s["stat_date"]) if isinstance(s["stat_date"], str) else s["stat_date"]
                             await upsert_ad_stat(
@@ -989,7 +1000,16 @@ class MaxAgent(BaseAgent):
                                 stat_date=stat_date, views=s["views"],
                                 clicks=s["clicks"], ctr=s["ctr"], spend=s["spend"],
                             )
-                        logger.info(f"[Макс/adv] Ozon реклама: {len(ad_stats)} записей")
+                            for ps in (s.get("product_stats") or []):
+                                await upsert_product_ad_stat(
+                                    chat_id=chat_id, marketplace="ozon",
+                                    product_id=ps["product_id"], campaign_id=s["campaign_id"],
+                                    stat_date=stat_date, views=ps["views"],
+                                    clicks=ps["clicks"], ctr=ps["ctr"], spend=ps["spend"],
+                                    orders_count=ps.get("orders_count", 0),
+                                )
+                                prod_count += 1
+                        logger.info(f"[Макс/adv] Ozon реклама: {len(ad_stats)} записей, {prod_count} sku-записей")
                     else:
                         logger.warning("[Макс/adv] Ozon Performance credentials не настроены")
                 except Exception as e:
