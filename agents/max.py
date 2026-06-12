@@ -220,12 +220,25 @@ class MaxAgent(BaseAgent):
 
     async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> str | None:
         from telegram import Chat
-        transcribed = await super().handle_voice(update, context)
-        if (
-            transcribed
-            and update.effective_chat
+        msg = update.message
+        if not msg:
+            return None
+
+        is_group = (
+            update.effective_chat
             and update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP)
-        ):
+        )
+        if is_group:
+            reply = msg.reply_to_message
+            is_reply_to_bot = bool(
+                reply and reply.from_user and reply.from_user.id == context.bot.id
+            )
+            if not is_reply_to_bot:
+                logger.debug("[max:voice] group voice — not reply-to-bot, skip transcription")
+                return None
+
+        transcribed = await super().handle_voice(update, context)
+        if transcribed and is_group:
             await self._handle_group_message(update, context, override_text=transcribed)
         return transcribed
 
