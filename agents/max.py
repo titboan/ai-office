@@ -14,6 +14,7 @@ from telegram.ext import (
 )
 
 from config import config
+from utils.tg_format import bold, escape
 from .base_agent import BaseAgent
 
 _UTC = timezone.utc
@@ -447,7 +448,7 @@ class MaxAgent(BaseAgent):
                     chat_id,
                 )
             stats_text = (
-                f"📊 *Отзывы за сегодня:*\n\n"
+                f"📊 <b>Отзывы за сегодня:</b>\n\n"
                 f"✅ Автоответ: {row['auto_replied']}\n"
                 f"✅ Вручную: {row['replied']}\n"
                 f"⏳ Ожидают: {row['pending']}\n"
@@ -494,7 +495,7 @@ class MaxAgent(BaseAgent):
                 InlineKeyboardButton("🔵 Остатки Ozon",   callback_data="onboard:summary_ozon_stocks"),
                 InlineKeyboardButton("📋 Всё сразу",      callback_data="onboard:summary_all"),
             ]])
-            await query.message.reply_text("📦 *Сводка магазина*\nЧто показать?", parse_mode="HTML", reply_markup=keyboard)
+            await query.message.reply_text("📦 <b>Сводка магазина</b>\nЧто показать?", parse_mode="HTML", reply_markup=keyboard)
             return
 
         if action in ("summary_sales", "summary_wb_stocks", "summary_ozon_stocks", "summary_all"):
@@ -634,10 +635,10 @@ class MaxAgent(BaseAgent):
             await self._set_onboard(chat_id, {"step": "wb_statistics_token", "data": data})
             await update.message.reply_text(
                 "✅ Wildberries подключён!\n\n"
-                "Теперь отправь токен для *Statistics API* (остатки и продажи).\n\n"
+                "Теперь отправь токен для <b>Statistics API</b> (остатки и продажи).\n\n"
                 "📌 Где взять:\n"
                 "seller.wildberries.ru → Настройки → Доступ к API → "
-                "создать токен с категорией *Статистика*\n\n"
+                "создать токен с категорией <b>Статистика</b>\n\n"
                 "Если не нужно — отправь /skip",
                 parse_mode="HTML",
             )
@@ -1040,7 +1041,7 @@ class MaxAgent(BaseAgent):
     def _render_low(grouped: dict) -> list[str]:
         out = []
         for info in grouped.values():
-            out.append(f"📦 *{info['name']}*")
+            out.append(f"📦 <b>{escape(info['name'])}</b>")
             for region, qty in info["regions"].items():
                 out.append(f"  • {region}: {qty} шт")
         return out
@@ -1050,7 +1051,7 @@ class MaxAgent(BaseAgent):
         out = []
         for info in grouped.values():
             regions = ", ".join(info["regions"].keys())
-            out.append(f"📦 *{info['name']}*")
+            out.append(f"📦 <b>{escape(info['name'])}</b>")
             out.append(f"  • {regions}")
         return out
 
@@ -1164,17 +1165,17 @@ class MaxAgent(BaseAgent):
             return line
 
         date_str = now_msk.strftime("%d.%m.%Y")
-        lines = [f"💰 *Статистика — {date_str}*\n"]
+        lines = [f"💰 <b>Статистика — {escape(date_str)}</b>\n"]
 
-        lines.append(f"📅 *Сегодня ({_fmt_date(today_start)})*")
+        lines.append(f"📅 <b>Сегодня ({_fmt_date(today_start)})</b>")
         for mp in ("wb", "ozon"):
             lines.append(_mp_line(mp, ord_today, sal_today, cmp_orders=ord_yday, cmp_label="вчера"))
 
-        lines.append(f"\n📅 *Вчера ({_fmt_date(yesterday_start)})*")
+        lines.append(f"\n📅 <b>Вчера ({_fmt_date(yesterday_start)})</b>")
         for mp in ("wb", "ozon"):
             lines.append(_mp_line(mp, ord_yday, sal_yday))
 
-        lines.append(f"\n📅 *Неделю назад ({_fmt_date(week_ago_start)})*")
+        lines.append(f"\n📅 <b>Неделю назад ({_fmt_date(week_ago_start)})</b>")
         for mp in ("wb", "ozon"):
             lines.append(_mp_line(mp, ord_wago, sal_wago))
 
@@ -1182,7 +1183,7 @@ class MaxAgent(BaseAgent):
         prev_week_days = await get_orders_days_count(owner_chat_id, prev_week_start, prev_week_end)
         prev_week_has_data = prev_week_days >= 5
         logger.info(f"[sales_summary] prev_week_days={prev_week_days}, show_delta={prev_week_has_data}")
-        lines.append("\n📈 *За 7 дней*")
+        lines.append("\n📈 <b>За 7 дней</b>")
         for mp in ("wb", "ozon"):
             lines.append(_mp_line(
                 mp, ord_week, sal_week,
@@ -1200,15 +1201,15 @@ class MaxAgent(BaseAgent):
         wb_low  = [s for s in low_stocks if s["marketplace"] == "wb" and 0 < s["stock"] <= 20]
         wb_zero = [s for s in low_stocks if s["marketplace"] == "wb" and s["stock"] == 0]
 
-        lines = ["🟣 *WB — остатки*\n"]
+        lines = ["🟣 <b>WB — остатки</b>\n"]
         if not wb_low and not wb_zero:
             lines.append("✅ Остатки в норме")
         else:
             if wb_low:
-                lines.append("⚠️ *Заканчиваются* (0 < stock ≤ 20)")
+                lines.append("⚠️ <b>Заканчиваются</b> (0 < stock ≤ 20)")
                 lines.extend(self._render_low(self._group_by_sku(wb_low, _get_cluster)))
             if wb_zero:
-                lines.append("\n❌ *Закончились на складах*")
+                lines.append("\n❌ <b>Закончились на складах</b>")
                 lines.extend(self._render_zero(self._group_by_sku(wb_zero, _get_cluster)))
 
         for part in self._split_message("\n".join(lines)):
@@ -1222,15 +1223,15 @@ class MaxAgent(BaseAgent):
         oz_low  = [s for s in low_stocks if s["marketplace"] == "ozon" and 0 < s["stock"] <= 20]
         oz_zero = [s for s in low_stocks if s["marketplace"] == "ozon" and s["stock"] == 0]
 
-        lines = ["🔵 *Ozon — остатки*\n"]
+        lines = ["🔵 <b>Ozon — остатки</b>\n"]
         if not oz_low and not oz_zero:
             lines.append("✅ Остатки в норме")
         else:
             if oz_low:
-                lines.append("⚠️ *Заканчиваются* (0 < stock ≤ 20)")
+                lines.append("⚠️ <b>Заканчиваются</b> (0 < stock ≤ 20)")
                 lines.extend(self._render_low(self._group_by_sku(oz_low, _get_ozon_cluster)))
             if oz_zero:
-                lines.append("\n❌ *Закончились на складах*")
+                lines.append("\n❌ <b>Закончились на складах</b>")
                 lines.extend(self._render_zero(self._group_by_sku(oz_zero, _get_ozon_cluster)))
 
         for part in self._split_message("\n".join(lines)):
@@ -1485,7 +1486,7 @@ class MaxAgent(BaseAgent):
         if not shops:
             await update.message.reply_text("Магазинов нет. Используй /start чтобы подключить.")
             return
-        lines = ["🛒 *Ваши магазины:*\n"]
+        lines = ["🛒 <b>Ваши магазины:</b>\n"]
         for s in shops:
             label = _MP_LABELS.get(s["marketplace"], s["marketplace"])
             lines.append(f"• {s.get('shop_name') or label} ({label})")
@@ -1531,7 +1532,7 @@ class MaxAgent(BaseAgent):
                 chat_id,
             )
         await update.message.reply_text(
-            f"📊 *Отзывы за сегодня:*\n\n"
+            f"📊 <b>Отзывы за сегодня:</b>\n\n"
             f"✅ Автоответ: {row['auto_replied']}\n"
             f"✅ Отправлено вручную: {row['replied']}\n"
             f"⏳ Ожидают одобрения: {row['pending']}\n"
