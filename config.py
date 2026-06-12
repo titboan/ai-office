@@ -73,6 +73,10 @@ class Config:
     TELEGRAM_API_HASH: str = os.getenv("TELEGRAM_API_HASH", "")
     TELETHON_SESSION: str = os.getenv("TELETHON_SESSION", "")
 
+    # Тина — тендерный агент (44-ФЗ, Краснодарский край)
+    TINA_BOT_TOKEN: str = os.getenv("TINA_BOT_TOKEN", "")
+    GOSPLAN_API_KEY: str = os.getenv("GOSPLAN_API_KEY", "")  # обязателен с 01.08.2026
+
     # Лимиты
     MAX_TOKENS: int = 2048
     TEMPERATURE: float = 0.7
@@ -85,3 +89,19 @@ class Config:
 
 
 config = Config()
+
+# ─── CONSTANTS ────────────────────────────────────────────────────────────────
+# Тендеры (44-ФЗ, Краснодарский край)
+# Не хардкодить — менять только здесь
+
+config.TENDER_REGION_CODE        = "23"          # ОКТМО Краснодарского края
+config.TENDER_MIN_NMCK           = 100_000        # мин. НМЦК для поиска (руб)
+config.TENDER_MAX_NMCK           = 5_000_000      # макс. НМЦК для поиска (руб)
+config.TENDER_AVG_PRICE_REDUCTION = 0.28          # средний демпинг по 44-ФЗ (~28%)
+config.TENDER_SCAN_HOUR_UTC      = 5             # 08:00 МСК = 05:00 UTC
+config.TENDER_KEYWORDS           = [             # ключевые слова для ежедневного поиска
+    "матрасы",
+    "постельное белье",
+    "мебель",
+    "текстиль",
+]

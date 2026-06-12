@@ -236,7 +236,30 @@ async def _create_schema() -> None:
                 UNIQUE(chat_id, marketplace, product_id, stat_date)
             )
         """)
-        logger.info("[db] Схема tasks + projects + digest_channels + product_adv_stats готова ✓")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS tender_opportunities (
+                id                      BIGSERIAL PRIMARY KEY,
+                tender_id               TEXT        NOT NULL UNIQUE,
+                title                   TEXT,
+                nmck                    NUMERIC,
+                region                  TEXT,
+                status                  TEXT,
+                submission_deadline     TIMESTAMPTZ,
+                lot_description         TEXT,
+                supplier_price_estimate NUMERIC,
+                expected_winning_price  NUMERIC,
+                margin_estimate         NUMERIC,
+                recommendation          TEXT,
+                analysis_json           JSONB,
+                chat_id                 BIGINT,
+                created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_tender_opp_chat_rec
+                ON tender_opportunities (chat_id, recommendation, created_at DESC);
+        """)
+        logger.info("[db] Схема tasks + projects + digest_channels + product_adv_stats + tender_opportunities готова ✓")
 
 async def save_project(
     chat_id: int,
