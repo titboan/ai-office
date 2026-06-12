@@ -67,7 +67,7 @@ class PeterAgent(BaseAgent):
             # 1. Оборот по площадкам
             revenue = await conn.fetch("""
                 SELECT marketplace,
-                       SUM(price * quantity)::numeric(12,2) AS revenue,
+                       SUM(seller_price * quantity)::numeric(12,2) AS revenue,
                        COUNT(*)                              AS orders,
                        COUNT(DISTINCT product_id)           AS skus
                 FROM marketplace_orders
@@ -79,7 +79,7 @@ class PeterAgent(BaseAgent):
             top_products = await conn.fetch("""
                 SELECT o.marketplace, o.product_id,
                        COALESCE(m.display_name, MAX(o.product_name)) AS product_name,
-                       SUM(o.price * o.quantity)::numeric(12,2)      AS revenue,
+                       SUM(o.seller_price * o.quantity)::numeric(12,2)      AS revenue,
                        SUM(o.quantity)                                AS qty
                 FROM marketplace_orders o
                 LEFT JOIN product_mapping m
@@ -96,16 +96,16 @@ class PeterAgent(BaseAgent):
                 SELECT
                     o.product_id,
                     COALESCE(m.display_name, MAX(o.product_name)) AS product_name,
-                    SUM(o.price * o.quantity)::numeric(12,2)      AS revenue,
+                    SUM(o.seller_price * o.quantity)::numeric(12,2)      AS revenue,
                     SUM(o.quantity)                               AS qty,
                     MAX(c.cost)::numeric(12,2)                    AS cost,
-                    (SUM(o.price * o.quantity)
+                    (SUM(o.seller_price * o.quantity)
                      - SUM(o.quantity) * MAX(c.cost)
                     )::numeric(12,2)                              AS op_profit,
-                    CASE WHEN SUM(o.price * o.quantity) > 0 THEN
-                        ROUND((SUM(o.price * o.quantity)
+                    CASE WHEN SUM(o.seller_price * o.quantity) > 0 THEN
+                        ROUND((SUM(o.seller_price * o.quantity)
                                - SUM(o.quantity) * MAX(c.cost)
-                              ) / SUM(o.price * o.quantity) * 100, 1)
+                              ) / SUM(o.seller_price * o.quantity) * 100, 1)
                     ELSE 0 END                                    AS profitability
                 FROM marketplace_orders o
                 JOIN product_mapping m ON m.wb_article = o.product_id
@@ -120,16 +120,16 @@ class PeterAgent(BaseAgent):
                 SELECT
                     o.product_id,
                     COALESCE(m.display_name, MAX(o.product_name)) AS product_name,
-                    SUM(o.price * o.quantity)::numeric(12,2)      AS revenue,
+                    SUM(o.seller_price * o.quantity)::numeric(12,2)      AS revenue,
                     SUM(o.quantity)                               AS qty,
                     MAX(c.cost)::numeric(12,2)                    AS cost,
-                    (SUM(o.price * o.quantity)
+                    (SUM(o.seller_price * o.quantity)
                      - SUM(o.quantity) * MAX(c.cost)
                     )::numeric(12,2)                              AS op_profit,
-                    CASE WHEN SUM(o.price * o.quantity) > 0 THEN
-                        ROUND((SUM(o.price * o.quantity)
+                    CASE WHEN SUM(o.seller_price * o.quantity) > 0 THEN
+                        ROUND((SUM(o.seller_price * o.quantity)
                                - SUM(o.quantity) * MAX(c.cost)
-                              ) / SUM(o.price * o.quantity) * 100, 1)
+                              ) / SUM(o.seller_price * o.quantity) * 100, 1)
                     ELSE 0 END                                    AS profitability
                 FROM marketplace_orders o
                 JOIN product_mapping m ON m.ozon_sku = o.product_id
