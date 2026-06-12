@@ -20,7 +20,6 @@ from contextlib import suppress
 from loguru import logger
 
 from config import config
-from tools.tg_status import update_status_pinned
 from task_queue import get_active_tasks, get_recent_tasks
 from agents import (
     MartaAgent,
@@ -106,20 +105,7 @@ async def run_all_async() -> None:
         # Ctrl+C поднимет KeyboardInterrupt → asyncio.run() прервёт корутину.
         logger.info("Windows: signal handlers не поддерживаются, используй Ctrl+C")
 
-    async def _status_page_loop():
-        redis = getattr(started[0], "_redis", None) if started else None
-        bot = started[0].app.bot if started else None
-        while True:
-            try:
-                active = await get_active_tasks()
-                recent = await get_recent_tasks(limit=20)
-                await update_status_pinned(bot, redis, active, recent)
-            except Exception as e:
-                logger.warning(f"[status_loop] error: {e}")
-            await asyncio.sleep(60)
-
-    status_task = asyncio.create_task(_status_page_loop())
-    logger.info("[main] Фоновая задача обновления статуса запущена")
+    status_task = asyncio.create_task(asyncio.sleep(0))  # placeholder для graceful shutdown
 
     # Ищем Еву среди запущенных агентов для scheduled digest
     eva_agent = next((a for a in started if isinstance(a, EvaAgent)), None)
