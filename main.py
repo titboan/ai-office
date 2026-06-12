@@ -31,6 +31,7 @@ from agents import (
     DanAgent,
     EvaAgent,
     MaxAgent,
+    TinaAgent,
 )
 
 # Реестр: ключ → (класс агента, webhook-суффикс)
@@ -44,6 +45,7 @@ AGENTS: dict[str, tuple] = {
     "dan":    (DanAgent,    "dan"),
     "eva":    (EvaAgent,    "eva"),
     "max":    (MaxAgent,    "max"),
+    "tina":   (TinaAgent,   "tina"),
 }
 
 
@@ -335,10 +337,51 @@ async def run_all_async() -> None:
                 await asyncio.sleep(60)
 
     asyncio.create_task(_weekly_audit_loop())
+
+    tina_agent = next((a for a in started if isinstance(a, TinaAgent)), None)
+
+    async def _tender_digest_loop():
+        """Ежедневно в 05:00 UTC (08:00 МСК) — тендерный дайджест."""
+        from datetime import datetime, timezone, timedelta
+        from db import get_all_active_shops
+
+        while True:
+            try:
+                now    = datetime.now(timezone.utc)
+                target = now.replace(hour=config.TENDER_SCAN_HOUR_UTC, minute=0, second=0, microsecond=0)
+                if target <= now:
+                    target += timedelta(days=1)
+                wait_seconds = (target - now).total_seconds()
+                logger.info(f"[tender_scheduler] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
+                await asyncio.sleep(wait_seconds)
+
+                if tina_agent is None:
+                    continue
+
+                shops = await get_all_active_shops()
+                unique_chats = list({s["chat_id"] for s in shops})
+                if not unique_chats:
+                    logger.info("[tender_scheduler] нет активных пользователей — пропускаем")
+                    continue
+
+                logger.info(f"[tender_scheduler] запуск дайджеста для {len(unique_chats)} пользователей")
+                for user_chat_id in unique_chats:
+                    try:
+                        await tina_agent.send_daily_digest(user_chat_id)
+                    except Exception as e:
+                        logger.error(f"[tender_scheduler] user={user_chat_id} error: {e}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[tender_scheduler] ошибка: {e}")
+                await asyncio.sleep(60)
+
+    asyncio.create_task(_tender_digest_loop())
     logger.info("[main] Negative reviews task запущен (каждые 15 минут)")
     logger.info("[main] Scheduled reviews task запущен (06:00, 11:00, 17:00 UTC)")
     logger.info("[main] Adv sync task запущен (03:00 UTC / 06:00 МСК)")
     logger.info("[main] Weekly audit task запущен (пн 07:00 UTC / 10:00 МСК)")
+    logger.info(f"[main] Tender digest task запущен ({config.TENDER_SCAN_HOUR_UTC}:00 UTC / 08:00 МСК)")
 
     try:
         await stop_event.wait()
