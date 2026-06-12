@@ -99,6 +99,7 @@ chain_id, priority, retry, notion_page_id
 | Схема БД, таблицы, VIEW | `.claude/skills/db-schema/SKILL.md` |
 | Деплой Railway, переменные, отладка | `.claude/skills/deploy-railway/SKILL.md` |
 | Аналитика Питера, ДРР, рентабельность | `.claude/skills/peter-analytics/SKILL.md` |
+| Многошаговые задачи, текущий план работ | `plans/` |
 
 ---
 
