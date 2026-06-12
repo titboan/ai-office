@@ -1067,7 +1067,8 @@ class MartaAgent(BaseAgent):
         lines = ["📂 <b>Проекты:</b>\n"]
         for p in projects:
             pid = p["notion_page_id"]
-            link = f' <a href="https://notion.so/{pid.replace(\"-\", \"\")}">[→ Notion]</a>' if pid else ""
+            pid_clean = pid.replace("-", "") if pid else ""
+            link = f' <a href="https://notion.so/{pid_clean}">[→ Notion]</a>' if pid else ""
             lines.append(f"• {p['name']}{link}")
         await update.message.reply_text(
             "\n".join(lines),
