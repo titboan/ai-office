@@ -6,7 +6,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from loguru import logger
-from db import get_pool
+from db import get_pool, log_event
 
 
 class Task:
@@ -74,6 +74,12 @@ async def create_task(
             logger.info(
                 f"[task_queue] ✅ Задача id={task_id} "
                 f"corr={corr_id[:8]}… agent={assigned_agent!r}"
+            )
+            await log_event(
+                "TASK_CREATED",
+                task_id=task_id,
+                agent_key=assigned_agent,
+                payload={"from_agent": from_agent, "task_type": task_type, "priority": priority},
             )
             return task_id, corr_id
     except Exception as e:
@@ -238,6 +244,13 @@ async def enqueue_chain_task(
             logger.info(
                 f"[task_queue] chain_enqueue | chain_id={chain_id[:8]} | "
                 f"idx={chain_index}/{chain_total-1} | agent={agent_key!r} | task_id={task_id}"
+            )
+            await log_event(
+                "TASK_CREATED",
+                task_id=task_id,
+                agent_key=agent_key,
+                chain_id=chain_id,
+                payload={"chain_index": chain_index, "chain_total": chain_total, "from_agent": from_agent},
             )
             return task_id
     except Exception as e:

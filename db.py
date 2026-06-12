@@ -259,7 +259,27 @@ async def _create_schema() -> None:
             CREATE INDEX IF NOT EXISTS idx_tender_opp_chat_rec
                 ON tender_opportunities (chat_id, recommendation, created_at DESC);
         """)
-        logger.info("[db] Схема tasks + projects + digest_channels + product_adv_stats + tender_opportunities готова ✓")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS task_events (
+                id          BIGSERIAL PRIMARY KEY,
+                task_id     BIGINT,
+                chain_id    TEXT,
+                agent_key   TEXT,
+                event_type  TEXT        NOT NULL,
+                payload     JSONB,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_task_events_task
+                ON task_events (task_id, created_at);
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_task_events_chain
+                ON task_events (chain_id, created_at)
+                WHERE chain_id IS NOT NULL;
+        """)
+        logger.info("[db] Схема tasks + projects + digest_channels + product_adv_stats + tender_opportunities + task_events готова ✓")
 
 async def save_project(
     chat_id: int,
@@ -904,6 +924,33 @@ async def get_top_negative_products(
             owner_chat_id, str(days), limit,
         )
         return [dict(r) for r in rows]
+
+
+async def log_event(
+    event_type: str,
+    task_id: int | None = None,
+    agent_key: str | None = None,
+    chain_id: str | None = None,
+    payload: dict | None = None,
+) -> None:
+    """Записать событие в task_events. Ошибки подавляются — трейсинг не должен ломать основной поток."""
+    import json as _json
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO task_events (task_id, chain_id, agent_key, event_type, payload)
+                VALUES ($1, $2, $3, $4, $5::jsonb)
+                """,
+                task_id,
+                chain_id,
+                agent_key,
+                event_type,
+                _json.dumps(payload, ensure_ascii=False, default=str) if payload else None,
+            )
+    except Exception as e:
+        logger.debug(f"[log_event] {event_type} task_id={task_id}: {e}")
 
 
 async def get_distinct_digest_users() -> list[int]:

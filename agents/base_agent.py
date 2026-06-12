@@ -21,6 +21,7 @@ from telegram.ext import (
 )
 
 from config import config
+from db import log_event
 from task_queue import (
     get_next_task,
     mark_running,
@@ -610,6 +611,13 @@ class BaseAgent(ABC):
                     await asyncio.sleep(2)
                     continue
                 await mark_running(task.id)
+                await log_event(
+                    "TASK_STARTED",
+                    task_id=task.id,
+                    agent_key=self.agent_key,
+                    chain_id=task.chain_id,
+                    payload={"from_agent": task.from_agent, "chain_index": task.chain_index},
+                )
                 logger.info(
                     f"[{self.name}] corr={task.correlation_id[:8]} | "
                     f"task_id={task.id} | payload={task.payload[:60]!r}"
@@ -623,6 +631,13 @@ class BaseAgent(ABC):
                         timeout=float(task.timeout_seconds),
                     )
                     await mark_completed(task.id, result)
+                    await log_event(
+                        "TASK_COMPLETED",
+                        task_id=task.id,
+                        agent_key=self.agent_key,
+                        chain_id=task.chain_id,
+                        payload={"result_len": len(result)},
+                    )
                     task.result = result  # обновляем объект — нужно для _advance_chain → Notion
                     if task.chain_id:
                         await self._advance_chain(task)
@@ -635,12 +650,26 @@ class BaseAgent(ABC):
                         await self.post_to_group(f"✅ Задача #{task.id} завершена")
                 except asyncio.TimeoutError:
                     await mark_failed(task.id, f"Таймаут {task.timeout_seconds}с", retry=False)
+                    await log_event(
+                        "TASK_FAILED",
+                        task_id=task.id,
+                        agent_key=self.agent_key,
+                        chain_id=task.chain_id,
+                        payload={"reason": "timeout", "timeout_seconds": task.timeout_seconds},
+                    )
                     if task.chain_id:
                         await self._handle_chain_failure(task)
                     elif task.chat_id:
                         await self._notify_user(task.chat_id, f"⏱️ {self.emoji} *{self.name}*: задача превысила лимит времени.\n\nПопробуй разбить задачу на части.")
                 except Exception as e:
                     await mark_failed(task.id, f"{type(e).__name__}: {e}", retry=True)
+                    await log_event(
+                        "TASK_FAILED",
+                        task_id=task.id,
+                        agent_key=self.agent_key,
+                        chain_id=task.chain_id,
+                        payload={"reason": f"{type(e).__name__}: {str(e)[:200]}"},
+                    )
                     if task.chain_id and task.retry_count + 1 >= task.max_retries:
                         await self._handle_chain_failure(task)
                     elif task.chat_id and task.retry_count + 1 >= task.max_retries:
@@ -871,6 +900,13 @@ class BaseAgent(ABC):
             correlation_id=completed_task.correlation_id,
             priority=getattr(completed_task, "priority", 0),
             timeout_seconds=600 if next_agent == "dan" else 300,
+        )
+        await log_event(
+            "CHAIN_ADVANCED",
+            task_id=completed_task.id,
+            agent_key=self.agent_key,
+            chain_id=chain_id,
+            payload={"from_index": chain_index, "to_index": next_index, "next_agent": next_agent, "next_task_id": task_id},
         )
         logger.info(
             f"chain_advance | chain_id={chain_id[:8]} | "
