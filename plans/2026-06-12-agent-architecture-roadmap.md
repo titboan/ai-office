@@ -1,6 +1,6 @@
 # Дорожная карта и визуализация архитектуры AI Office
 
-Статус: в работе (ждёт пуш)
+Статус: завершён
 
 ## Задача
 
@@ -14,7 +14,7 @@
 - [x] Фаза 3: Обновить `CLAUDE.md` — добавить ссылку на ROADMAP.md
 - [x] Фаза 4: Обновить `README.md` — Mermaid-схема + ссылка на ROADMAP.md
 - [x] Фаза 5: Создать `docs/index.html` — интерактивная vis-network визуализация
-- [ ] Фаза 6: Коммит и пуш на `claude/agent-architecture-roadmap-e9t06j`
+- [x] Фаза 6: Коммит и пуш на `claude/agent-architecture-roadmap-e9t06j`
 
 ## Файлы
 
