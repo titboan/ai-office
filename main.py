@@ -13,9 +13,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import hmac
+import json as _json
 import os
 import signal
 from contextlib import suppress
+from decimal import Decimal
+from urllib.parse import parse_qsl
+
+from aiohttp import web
 
 from loguru import logger
 
@@ -47,6 +54,37 @@ AGENTS: dict[str, tuple] = {
     "max":    (MaxAgent,    "max"),
     "tina":   (TinaAgent,   "tina"),
 }
+
+
+# ────────────────────────────────────────────────────────────────────────────
+#  Dashboard API helpers
+# ────────────────────────────────────────────────────────────────────────────
+
+def _validate_init_data(init_data: str, bot_token: str) -> dict | None:
+    """Validate Telegram WebApp initData with HMAC-SHA256. Returns parsed dict or None."""
+    parsed = dict(parse_qsl(init_data, keep_blank_values=True))
+    received_hash = parsed.pop("hash", None)
+    if not received_hash:
+        return None
+    data_check = "\n".join(f"{k}={v}" for k, v in sorted(parsed.items()))
+    secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+    expected = hmac.new(secret_key, data_check.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, received_hash):
+        return None
+    return parsed
+
+
+def _to_json_safe(obj):
+    """Recursively convert asyncpg/Decimal/date objects to JSON-serializable types."""
+    if isinstance(obj, dict):
+        return {k: _to_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_json_safe(v) for v in obj]
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if hasattr(obj, "isoformat"):  # date / datetime
+        return obj.isoformat()
+    return obj
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -377,6 +415,69 @@ async def run_all_async() -> None:
                 await asyncio.sleep(60)
 
     asyncio.create_task(_tender_digest_loop())
+
+    # ── Dashboard API (aiohttp) ───────────────────────────────────────────────
+    _CORS_ORIGIN = config.DASHBOARD_URL or "*"
+
+    async def _handle_dashboard(request: web.Request) -> web.Response:
+        cors = {"Access-Control-Allow-Origin": _CORS_ORIGIN}
+        if request.method == "OPTIONS":
+            return web.Response(headers={
+                **cors,
+                "Access-Control-Allow-Headers": "X-Telegram-Init-Data",
+                "Access-Control-Allow-Methods": "GET, OPTIONS",
+            })
+        init_data = request.headers.get("X-Telegram-Init-Data", "")
+        parsed = _validate_init_data(init_data, config.PETER_BOT_TOKEN)
+        if parsed is None:
+            return web.Response(status=401, text="Unauthorized", headers=cors)
+        try:
+            user = _json.loads(parsed.get("user", "{}"))
+            chat_id = int(user["id"])
+        except Exception:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if peter_agent is None:
+            return web.Response(status=503, text="Peter agent not running", headers=cors)
+        try:
+            days = min(int(request.rel_url.query.get("days", "14")), 90)
+            data = await peter_agent._collect_data(chat_id, days=days)
+            adv = await peter_agent._collect_advanced_data(chat_id, days=days)
+            # Добавляем выручку по дням для LineChart
+            from db import get_pool
+            from datetime import datetime, timedelta, timezone
+            pool = await get_pool()
+            date_from = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+            async with pool.acquire() as conn:
+                daily_rows = await conn.fetch("""
+                    SELECT order_date::text AS date,
+                           marketplace,
+                           SUM(seller_price * quantity)::numeric(12,2) AS revenue
+                    FROM marketplace_orders
+                    WHERE chat_id = $1 AND order_date >= $2
+                    GROUP BY order_date, marketplace
+                    ORDER BY order_date
+                """, chat_id, date_from)
+            # Pivot: [{date, wb, ozon}, ...]
+            pivot: dict[str, dict] = {}
+            for row in daily_rows:
+                d = row["date"]
+                pivot.setdefault(d, {"date": d, "wb": 0.0, "ozon": 0.0})
+                pivot[d][row["marketplace"]] = float(row["revenue"])
+            data["revenue_by_day"] = list(pivot.values())
+        except Exception as e:
+            logger.error(f"[dashboard] data error: {e}", exc_info=True)
+            return web.Response(status=500, text="Internal Error", headers=cors)
+        return web.json_response(_to_json_safe({**data, **adv}), headers=cors)
+
+    dash_app = web.Application()
+    dash_app.router.add_get("/api/dashboard", _handle_dashboard)
+    dash_app.router.add_route("OPTIONS", "/api/dashboard", _handle_dashboard)
+    dash_app.router.add_get("/health", lambda r: web.Response(text="ok"))
+    dash_runner = web.AppRunner(dash_app)
+    await dash_runner.setup()
+    await web.TCPSite(dash_runner, "0.0.0.0", config.PORT).start()
+    logger.info(f"[main] Dashboard API: http://0.0.0.0:{config.PORT}/api/dashboard")
+
     logger.info("[main] Negative reviews task запущен (каждые 15 минут)")
     logger.info("[main] Scheduled reviews task запущен (06:00, 11:00, 17:00 UTC)")
     logger.info("[main] Adv sync task запущен (03:00 UTC / 06:00 МСК)")
@@ -397,6 +498,7 @@ async def run_all_async() -> None:
             pass
 
     logger.info("Получен сигнал остановки — завершаем агентов...")
+    await dash_runner.cleanup()
     for agent in reversed(started):
         await agent.stop_async()
     logger.info("Все агенты остановлены.")

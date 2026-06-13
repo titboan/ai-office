@@ -6,7 +6,7 @@
 
 DataLens (Yandex) подключён к Railway Postgres через TCP-прокси (`maglev.proxy.rlwy.net:12614`). Проблема: много лишних шагов, непонятный UI, нет интеграции в Telegram. Питер генерирует text-only отчёты без графиков.
 
-Цель: красивый и простой визуал с минимальным трением. Делаем параллельно Grafana Cloud (быстрый win) и Telegram Mini App (правильное решение).
+Цель: красивые графики прямо в Telegram Mini App. Grafana Cloud — опционально, по необходимости.
 
 **Данные для визуализации:**
 - `marketplace_orders` — выручка, заказы по дням/товарам/маркетплейсам
@@ -22,45 +22,41 @@ DataLens (Yandex) подключён к Railway Postgres через TCP-прок
 
 - [ ] Зарегистрироваться на cloud.grafana.com (free tier, 3 юзера)
 - [ ] Добавить Data Source → PostgreSQL, хост `maglev.proxy.rlwy.net:12614`, SSL require
-- [ ] Панель: Выручка WB vs Ozon (Time Series, 30 дней)
-- [ ] Панель: Топ-10 товаров по выручке (Horizontal Bar, 14 дней)
-- [ ] Панель: ДРР по площадкам (Gauge, пороги 20% жёлтый / 30% красный)
-- [ ] Панель: CTR по товарам (Bar, <1% красный / >3% зелёный)
-- [ ] Панель: ROAS по товарам (Bar, <2 красный / 2-5 жёлтый / >5 зелёный)
-- [ ] Панель: Остатки в днях (Table, <7 🔴 / 7-14 🟡 / >14 🟢)
+- [ ] Панели: Выручка, Топ-10, ДРР, CTR, ROAS, Остатки
 - [ ] Обновить URL в `.claude/skills/max-api/SKILL.md`
+
+> Пропустили — делаем Mini App напрямую.
 
 ---
 
-## Фаза 2 — Backend API endpoint (Python, ~2 часа)
+## Фаза 2 — Backend API endpoint ✅
 
-Файл: `main.py` — добавить aiohttp route `/api/dashboard`
+Файл: `main.py`
 
-- [ ] Добавить `DASHBOARD_URL` в `config.py` (секция CONSTANTS): `os.getenv("DASHBOARD_URL", "")`
-- [ ] Написать `_validate_telegram_init_data(init_data, bot_token)` — HMAC-SHA256
-- [ ] Написать `handle_dashboard(request)` — извлечь `chat_id` из `initData`, вернуть JSON
-- [ ] Реализовать `_get_dashboard_data(chat_id, days)` — SQL из `peter.py:_collect_data()` + `_collect_advanced_data()` адаптированные для JSON-ответа
-- [ ] Добавить CORS header для origin Vercel
-- [ ] Зарегистрировать route в существующем aiohttp app
+- [x] Добавить `DASHBOARD_URL` в `config.py` (секция CONSTANTS)
+- [x] Написать `_validate_init_data(init_data, bot_token)` — HMAC-SHA256
+- [x] Написать `handle_dashboard(request)` — извлечь `chat_id` из `initData`, вернуть JSON
+- [x] Реализовать данные через `peter_agent._collect_data()` + `_collect_advanced_data()` + `revenue_by_day`
+- [x] Добавить CORS header для origin Vercel
+- [x] Зарегистрировать route в aiohttp + `/health`
 - [ ] Добавить переменную `DASHBOARD_URL` в Railway (с явного разрешения Бориса)
 
 ---
 
-## Фаза 3 — Telegram Mini App Frontend (React, ~4 часа)
+## Фаза 3 — Telegram Mini App Frontend ✅
 
-Новая папка `dashboard/` в корне репо
+Папка `dashboard/` в корне репо
 
-- [ ] `npm create vite@latest dashboard -- --template react-ts`
-- [ ] Добавить зависимости: `recharts`, `@telegram-apps/sdk`, `tailwindcss`
-- [ ] `src/api.ts` — fetch `/api/dashboard` с `initData` в заголовке
-- [ ] `src/App.tsx` — layout, 6 карточек, mobile-first
-- [ ] `src/charts/RevenueChart.tsx` — LineChart (выручка по дням, 2 линии WB/Ozon)
-- [ ] `src/charts/TopProducts.tsx` — BarChart horizontal (топ-10 товаров)
-- [ ] `src/charts/DrrGauge.tsx` — RadialBarChart (ДРР WB и Ozon)
-- [ ] `src/charts/CtrRoas.tsx` — BarChart с цветовой шкалой
-- [ ] `src/charts/StockTable.tsx` — Table с условным форматированием
-- [ ] `vite.config.ts` — base path для Vercel
-- [ ] Деплой на Vercel, получить `DASHBOARD_URL`
+- [x] Vite + React + TypeScript + recharts + tailwindcss
+- [x] `src/api.ts` — fetch `/api/dashboard` с `initData` в заголовке
+- [x] `src/App.tsx` — layout, KPI-карточки, переключатель периода (7/14/30д), mobile-first
+- [x] `src/charts/RevenueChart.tsx` — LineChart (выручка по дням, 2 линии WB/Ozon)
+- [x] `src/charts/TopProducts.tsx` — BarChart horizontal (топ-10 товаров)
+- [x] `src/charts/DrrGauge.tsx` — цветовые карточки (ДРР WB и Ozon)
+- [x] `src/charts/CtrRoas.tsx` — BarChart CTR + ROAS с цветовой шкалой
+- [x] `src/charts/StockTable.tsx` — Table с условным форматированием 🔴🟡🟢
+- [x] `vercel.json` — конфиг деплоя
+- [ ] Деплой на Vercel, получить `DASHBOARD_URL` — **ждёт Бориса**
 
 ---
 
@@ -75,23 +71,32 @@ DataLens (Yandex) подключён к Railway Postgres через TCP-прок
 
 ---
 
-## Файлы для изменения
+## Файлы изменены
 
 | Файл | Изменение |
 |---|---|
-| `main.py` | Route `/api/dashboard` + CORS |
-| `agents/peter.py` | WebApp кнопка в 3 методах |
+| `main.py` | Route `/api/dashboard` + CORS + HMAC-валидация |
 | `config.py` | `DASHBOARD_URL` в CONSTANTS |
-| `.claude/skills/max-api/SKILL.md` | URL Grafana дашборда |
-| `dashboard/` (новая папка) | Vite + React + Recharts проект |
+| `dashboard/` | Vite + React + Recharts проект (новая папка) |
+| `agents/peter.py` | WebApp кнопка — **ещё не сделано** |
+
+---
+
+## Следующие шаги
+
+1. `cd dashboard && npm install && npm run build` — убедиться что билд проходит
+2. Деплой `dashboard/` на Vercel → получить URL
+3. Добавить `DASHBOARD_URL=<vercel-url>` в Railway (с разрешения Бориса)
+4. Фаза 4: добавить кнопку "📊 Дашборд" в `peter.py`
+5. `railway up` (с явного разрешения Бориса)
 
 ---
 
 ## Верификация
 
-- [ ] Grafana: все 6 панелей показывают реальные данные, ссылка доступна
+- [ ] `npm run build` в `dashboard/` — без ошибок
 - [ ] `GET /api/dashboard` с валидным Telegram `initData` → 200 JSON
 - [ ] `GET /api/dashboard` с невалидным `initData` → 401
 - [ ] `/report` → кнопка "📊 Дашборд" → открывается WebApp → 6 графиков рендерятся
-- [ ] Тест на реальном телефоне в Telegram — мобильная адаптация корректна
+- [ ] `GET /health` → 200 ok
 - [ ] `railway up` (с явного разрешения Бориса) — деплой успешен, endpoint доступен
