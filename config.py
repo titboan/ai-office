@@ -73,15 +73,19 @@ class Config:
     TELEGRAM_API_HASH: str = os.getenv("TELEGRAM_API_HASH", "")
     TELETHON_SESSION: str = os.getenv("TELETHON_SESSION", "")
 
-    # Ева — Email дайджест (IMAP, App Password)
-    # Ящик 1 (Gmail по умолчанию)
+    # Ева — Email дайджест
+    # Ящик 1 (Gmail)
     EMAIL_IMAP_HOST: str = os.getenv("EMAIL_IMAP_HOST", "imap.gmail.com")
     EMAIL_USER:      str = os.getenv("EMAIL_USER", "")
     EMAIL_APP_PASS:  str = os.getenv("EMAIL_APP_PASS", "")
-    # Ящик 2 (Яндекс или второй Gmail)
+    # Ящик 2 (Яндекс — IMAP, работает только локально)
     EMAIL_IMAP_HOST_2: str = os.getenv("EMAIL_IMAP_HOST_2", "imap.yandex.ru")
     EMAIL_USER_2:      str = os.getenv("EMAIL_USER_2", "")
     EMAIL_APP_PASS_2:  str = os.getenv("EMAIL_APP_PASS_2", "")
+    # Gmail API (OAuth2) — нужен для Railway (IMAP порт 993 заблокирован)
+    GMAIL_CLIENT_ID:     str = os.getenv("GMAIL_CLIENT_ID", "")
+    GMAIL_CLIENT_SECRET: str = os.getenv("GMAIL_CLIENT_SECRET", "")
+    GMAIL_REFRESH_TOKEN: str = os.getenv("GMAIL_REFRESH_TOKEN", "")
 
     # Тина — тендерный агент (44-ФЗ, Краснодарский край)
     TINA_BOT_TOKEN: str = os.getenv("TINA_BOT_TOKEN", "")
