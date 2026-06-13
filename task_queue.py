@@ -417,6 +417,19 @@ async def cancel_task(task_id: int) -> bool:
         return False
 
 
+async def update_task_cost(task_id: int, cost_usd: float, latency_ms: int) -> None:
+    """Записать расчётную стоимость и латентность после завершения задачи."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE tasks SET estimated_cost=$2, latency_ms=$3 WHERE id=$1",
+                task_id, cost_usd, latency_ms,
+            )
+    except Exception as e:
+        logger.debug(f"[task_queue] update_task_cost task_id={task_id}: {e}")
+
+
 async def _set_status(task_id: int, status: str) -> None:
     try:
         pool = await get_pool()

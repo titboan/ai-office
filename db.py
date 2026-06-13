@@ -85,6 +85,12 @@ async def _create_schema() -> None:
             ALTER TABLE tasks ADD COLUMN IF NOT EXISTS notion_page_id TEXT;
         """)
         await conn.execute("""
+            ALTER TABLE tasks ADD COLUMN IF NOT EXISTS estimated_cost NUMERIC(10,6);
+        """)
+        await conn.execute("""
+            ALTER TABLE tasks ADD COLUMN IF NOT EXISTS latency_ms INT;
+        """)
+        await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_tasks_agent_status
                 ON tasks (assigned_agent, status, created_at);
         """)
@@ -279,7 +285,7 @@ async def _create_schema() -> None:
                 ON task_events (chain_id, created_at)
                 WHERE chain_id IS NOT NULL;
         """)
-        logger.info("[db] Схема tasks + projects + digest_channels + product_adv_stats + tender_opportunities + task_events готова ✓")
+        logger.info("[db] Схема готова ✓ (tasks + cost_tracking + projects + task_events + marketplace)")
 
 async def save_project(
     chat_id: int,
