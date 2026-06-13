@@ -340,151 +340,172 @@ class EvaAgent(BaseAgent):
         except Exception as e:
             logger.warning(f"[Ева] Notion save_content: {e}")
 
+    def _email_accounts(self) -> list[dict]:
+        """Вернуть список настроенных почтовых ящиков."""
+        accounts = []
+        if config.EMAIL_USER and config.EMAIL_APP_PASS:
+            accounts.append({
+                "host": config.EMAIL_IMAP_HOST,
+                "user": config.EMAIL_USER,
+                "password": config.EMAIL_APP_PASS,
+            })
+        if config.EMAIL_USER_2 and config.EMAIL_APP_PASS_2:
+            accounts.append({
+                "host": config.EMAIL_IMAP_HOST_2,
+                "user": config.EMAIL_USER_2,
+                "password": config.EMAIL_APP_PASS_2,
+            })
+        return accounts
+
     async def run_email_digest(self, user_chat_id: int, since_days: int = 1) -> None:
-        """Прочитать почту и отправить дайджест в Telegram."""
+        """Прочитать почту всех ящиков и отправить дайджест в Telegram."""
         from tools.email_reader import fetch_inbox_messages
 
-        if not config.EMAIL_USER or not config.EMAIL_APP_PASS:
+        accounts = self._email_accounts()
+        if not accounts:
             await self._notify_user(
                 user_chat_id,
                 "⚠️ EMAIL_USER / EMAIL_APP_PASS не заданы — почтовый дайджест недоступен."
             )
             return
 
-        await self._notify_user(user_chat_id, f"📧 Читаю почту за {since_days} д…")
-        try:
-            messages = await fetch_inbox_messages(
-                host=config.EMAIL_IMAP_HOST,
-                user=config.EMAIL_USER,
-                password=config.EMAIL_APP_PASS,
-                since_days=since_days,
-                max_messages=60,
-            )
-        except Exception as e:
-            logger.error(f"[Ева] IMAP ошибка: {e}")
-            await self._notify_user(user_chat_id, f"❌ Не удалось подключиться к почте: {e}")
-            return
+        for account in accounts:
+            await self._notify_user(user_chat_id, f"📧 Читаю {account['user']} за {since_days} д…")
+            try:
+                messages = await fetch_inbox_messages(
+                    host=account["host"],
+                    user=account["user"],
+                    password=account["password"],
+                    since_days=since_days,
+                    max_messages=60,
+                )
+            except Exception as e:
+                logger.error(f"[Ева] IMAP ошибка {account['user']}: {e}")
+                await self._notify_user(user_chat_id, f"❌ {account['user']}: не удалось подключиться: {e}")
+                continue
 
-        if not messages:
-            await self._notify_user(user_chat_id, "📭 Новых писем нет.")
-            return
+            if not messages:
+                await self._notify_user(user_chat_id, f"📭 {account['user']}: новых писем нет.")
+                continue
 
-        lines = []
-        for m in messages:
-            lines.append(f"От: {m['from_']}\nТема: {m['subject']}\nДата: {m['date']}\n{m['body_preview']}")
-        messages_text = "\n\n---\n\n".join(lines)
+            lines = []
+            for m in messages:
+                lines.append(f"От: {m['from_']}\nТема: {m['subject']}\nДата: {m['date']}\n{m['body_preview']}")
+            messages_text = "\n\n---\n\n".join(lines)
 
-        prompt = _EMAIL_DIGEST_PROMPT.format(messages=messages_text)
-        try:
-            response = await self.claude.messages.create(
-                model=config.CLAUDE_MODEL,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            digest_text = response.content[0].text
-        except Exception as e:
-            logger.error(f"[Ева] Claude API (email): {e}")
-            await self._notify_user(user_chat_id, f"❌ Ошибка генерации email-дайджеста: {e}")
-            return
+            prompt = _EMAIL_DIGEST_PROMPT.format(messages=messages_text)
+            try:
+                response = await self.claude.messages.create(
+                    model=config.CLAUDE_MODEL,
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                digest_text = response.content[0].text
+            except Exception as e:
+                logger.error(f"[Ева] Claude API (email) {account['user']}: {e}")
+                await self._notify_user(user_chat_id, f"❌ {account['user']}: ошибка генерации дайджеста: {e}")
+                continue
 
-        header = f"📧 <b>Дайджест почты</b> — за {since_days} д. ({len(messages)} писем)\n\n"
-        parts = _split_digest(header + digest_text)
-        for part in parts:
-            await self._notify_user(user_chat_id, part)
-        logger.info(f"[Ева] Email-дайджест отправлен user={user_chat_id}, писем={len(messages)}")
+            header = f"📧 <b>Дайджест почты</b> {account['user']} — за {since_days} д. ({len(messages)} писем)\n\n"
+            parts = _split_digest(header + digest_text)
+            for part in parts:
+                await self._notify_user(user_chat_id, part)
+            logger.info(f"[Ева] Email-дайджест {account['user']} отправлен user={user_chat_id}, писем={len(messages)}")
 
     async def run_sort_emails(self, user_chat_id: int, since_days: int = 1) -> None:
-        """Категоризировать письма через Claude и разложить по IMAP-папкам."""
+        """Категоризировать письма всех ящиков через Claude и разложить по IMAP-папкам."""
         from tools.email_reader import fetch_inbox_messages, sort_emails_to_folders
 
-        if not config.EMAIL_USER or not config.EMAIL_APP_PASS:
+        accounts = self._email_accounts()
+        if not accounts:
             await self._notify_user(
                 user_chat_id,
                 "⚠️ EMAIL_USER / EMAIL_APP_PASS не заданы — сортировка недоступна."
             )
             return
 
-        await self._notify_user(user_chat_id, f"📂 Читаю почту за {since_days} д…")
-        try:
-            messages = await fetch_inbox_messages(
-                host=config.EMAIL_IMAP_HOST,
-                user=config.EMAIL_USER,
-                password=config.EMAIL_APP_PASS,
-                since_days=since_days,
-                max_messages=60,
-            )
-        except Exception as e:
-            logger.error(f"[Ева] IMAP ошибка: {e}")
-            await self._notify_user(user_chat_id, f"❌ Не удалось подключиться к почте: {e}")
-            return
+        for account in accounts:
+            await self._notify_user(user_chat_id, f"📂 {account['user']}: читаю за {since_days} д…")
+            try:
+                messages = await fetch_inbox_messages(
+                    host=account["host"],
+                    user=account["user"],
+                    password=account["password"],
+                    since_days=since_days,
+                    max_messages=60,
+                )
+            except Exception as e:
+                logger.error(f"[Ева] IMAP ошибка {account['user']}: {e}")
+                await self._notify_user(user_chat_id, f"❌ {account['user']}: не удалось подключиться: {e}")
+                continue
 
-        if not messages:
-            await self._notify_user(user_chat_id, "📭 Новых писем нет.")
-            return
+            if not messages:
+                await self._notify_user(user_chat_id, f"📭 {account['user']}: новых писем нет.")
+                continue
 
-        await self._notify_user(user_chat_id, f"🧠 Категоризирую {len(messages)} писем…")
-        lines = [
-            f"uid={msg['uid']} | От: {msg['from_']} | Тема: {msg['subject']}"
-            for msg in messages
-        ]
-        prompt = _EMAIL_SORT_PROMPT.format(messages="\n".join(lines))
+            await self._notify_user(user_chat_id, f"🧠 {account['user']}: категоризирую {len(messages)} писем…")
+            lines = [
+                f"uid={msg['uid']} | От: {msg['from_']} | Тема: {msg['subject']}"
+                for msg in messages
+            ]
+            prompt = _EMAIL_SORT_PROMPT.format(messages="\n".join(lines))
 
-        try:
-            response = await self.claude.messages.create(
-                model=config.CLAUDE_MODEL,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            match = re.search(r'\[[\s\S]*\]', response.content[0].text)
-            if not match:
-                raise ValueError("JSON не найден в ответе Claude")
-            categorized: list[dict] = json.loads(match.group(0))
-        except Exception as e:
-            logger.error(f"[Ева] Claude sort error: {e}")
-            await self._notify_user(user_chat_id, f"❌ Ошибка категоризации: {e}")
-            return
+            try:
+                response = await self.claude.messages.create(
+                    model=config.CLAUDE_MODEL,
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                match = re.search(r'\[[\s\S]*\]', response.content[0].text)
+                if not match:
+                    raise ValueError("JSON не найден в ответе Claude")
+                categorized: list[dict] = json.loads(match.group(0))
+            except Exception as e:
+                logger.error(f"[Ева] Claude sort error {account['user']}: {e}")
+                await self._notify_user(user_chat_id, f"❌ {account['user']}: ошибка категоризации: {e}")
+                continue
 
-        moves = [
-            {"uid": item["uid"], "folder": _SORT_FOLDERS[item["category"]]}
-            for item in categorized
-            if isinstance(item, dict) and item.get("category") in _SORT_FOLDERS
-        ]
+            moves = [
+                {"uid": item["uid"], "folder": _SORT_FOLDERS[item["category"]]}
+                for item in categorized
+                if isinstance(item, dict) and item.get("category") in _SORT_FOLDERS
+            ]
 
-        if not moves:
-            await self._notify_user(
-                user_chat_id,
-                "📌 Все письма в категории «Прочее» — перемещение не требуется."
-            )
-            return
+            if not moves:
+                await self._notify_user(
+                    user_chat_id,
+                    f"📌 {account['user']}: все письма «Прочее» — перемещение не требуется."
+                )
+                continue
 
-        await self._notify_user(user_chat_id, f"📁 Перемещаю {len(moves)} писем…")
-        try:
-            result = await sort_emails_to_folders(
-                host=config.EMAIL_IMAP_HOST,
-                user=config.EMAIL_USER,
-                password=config.EMAIL_APP_PASS,
-                moves=moves,
-            )
-        except Exception as e:
-            logger.error(f"[Ева] sort_emails_to_folders: {e}")
-            await self._notify_user(user_chat_id, f"❌ Ошибка при перемещении: {e}")
-            return
+            await self._notify_user(user_chat_id, f"📁 {account['user']}: перемещаю {len(moves)} писем…")
+            try:
+                result = await sort_emails_to_folders(
+                    host=account["host"],
+                    user=account["user"],
+                    password=account["password"],
+                    moves=moves,
+                )
+            except Exception as e:
+                logger.error(f"[Ева] sort_emails_to_folders {account['user']}: {e}")
+                await self._notify_user(user_chat_id, f"❌ {account['user']}: ошибка при перемещении: {e}")
+                continue
 
-        folder_counts: dict[str, int] = {}
-        for move in moves:
-            folder_counts[move["folder"]] = folder_counts.get(move["folder"], 0) + 1
+            folder_counts: dict[str, int] = {}
+            for move in moves:
+                folder_counts[move["folder"]] = folder_counts.get(move["folder"], 0) + 1
 
-        report = [f"📂 <b>Сортировка завершена</b> — {result['moved']} писем перемещено\n"]
-        for folder, count in sorted(folder_counts.items()):
-            report.append(f"• {_SORT_LABELS.get(folder, folder)}: {count}")
-        stayed = len(messages) - result["moved"]
-        if stayed > 0:
-            report.append(f"• Прочее (INBOX): {stayed}")
-        if result["errors"]:
-            report.append(f"\n⚠️ Ошибок: {len(result['errors'])}")
+            report = [f"📂 <b>Сортировка {account['user']}</b> — {result['moved']} писем перемещено\n"]
+            for folder, count in sorted(folder_counts.items()):
+                report.append(f"• {_SORT_LABELS.get(folder, folder)}: {count}")
+            stayed = len(messages) - result["moved"]
+            if stayed > 0:
+                report.append(f"• Прочее (INBOX): {stayed}")
+            if result["errors"]:
+                report.append(f"\n⚠️ Ошибок: {len(result['errors'])}")
 
-        await self._notify_user(user_chat_id, "\n".join(report))
-        logger.info(f"[Ева] Сортировка: moved={result['moved']}, errors={len(result['errors'])}")
+            await self._notify_user(user_chat_id, "\n".join(report))
+            logger.info(f"[Ева] Сортировка {account['user']}: moved={result['moved']}, errors={len(result['errors'])}")
 
     # ------------------------------------------------------------------ #
     #  Команды бота                                                        #
