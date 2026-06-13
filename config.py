@@ -86,6 +86,10 @@ class Config:
     GMAIL_CLIENT_ID:     str = os.getenv("GMAIL_CLIENT_ID", "")
     GMAIL_CLIENT_SECRET: str = os.getenv("GMAIL_CLIENT_SECRET", "")
     GMAIL_REFRESH_TOKEN: str = os.getenv("GMAIL_REFRESH_TOKEN", "")
+    # Яндекс OAuth2 (XOAUTH2 для IMAP) — альтернатива App Password
+    YANDEX_CLIENT_ID:     str = os.getenv("YANDEX_CLIENT_ID", "")
+    YANDEX_CLIENT_SECRET: str = os.getenv("YANDEX_CLIENT_SECRET", "")
+    YANDEX_REFRESH_TOKEN: str = os.getenv("YANDEX_REFRESH_TOKEN", "")
 
     # Тина — тендерный агент (44-ФЗ, Краснодарский край)
     TINA_BOT_TOKEN: str = os.getenv("TINA_BOT_TOKEN", "")

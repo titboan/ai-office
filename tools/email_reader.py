@@ -243,7 +243,89 @@ def _sort_sync(host: str, user: str, password: str, moves: list[dict]) -> dict:
     return {"moved": moved, "errors": errors}
 
 
-# ── routing: Gmail API vs IMAP ────────────────────────────────────────────────
+# ── Yandex XOAUTH2 helpers ───────────────────────────────────────────────────
+
+async def _yandex_access_token(client_id: str, client_secret: str, refresh_token: str) -> str:
+    import aiohttp
+    async with aiohttp.ClientSession() as s:
+        resp = await s.post(
+            "https://oauth.yandex.ru/token",
+            data={
+                "grant_type":    "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id":     client_id,
+                "client_secret": client_secret,
+            },
+        )
+        data = await resp.json()
+    if "access_token" not in data:
+        raise RuntimeError(f"Yandex token error: {data.get('error_description', data)}")
+    return data["access_token"]
+
+
+def _xoauth2_string(user: str, access_token: str) -> bytes:
+    return f"user={user}\x01auth=Bearer {access_token}\x01\x01".encode()
+
+
+def _fetch_sync_xoauth2(host: str, user: str, access_token: str,
+                        since_days: int, max_messages: int) -> list[dict]:
+    since_date = (datetime.now(timezone.utc) - timedelta(days=since_days)).strftime("%d-%b-%Y")
+    messages: list[dict] = []
+    with imaplib.IMAP4_SSL(host) as imap:
+        imap.authenticate("XOAUTH2", lambda x: _xoauth2_string(user, access_token))
+        imap.select("INBOX", readonly=True)
+        _, data = imap.uid("search", None, f'SINCE "{since_date}"')
+        uid_list = data[0].split()
+        if len(uid_list) > max_messages:
+            uid_list = uid_list[-max_messages:]
+        for uid_bytes in reversed(uid_list):
+            try:
+                uid = uid_bytes.decode()
+                _, raw = imap.uid("fetch", uid_bytes, "(RFC822)")
+                if not raw or not raw[0]:
+                    continue
+                msg = BytesParser(policy=_email_policy).parsebytes(raw[0][1])
+                messages.append({
+                    "uid":          uid,
+                    "from_":        _decode_header(msg.get("From", "")),
+                    "subject":      _decode_header(msg.get("Subject", "(без темы)")),
+                    "date":         msg.get("Date", ""),
+                    "body_preview": _get_body_preview(msg),
+                })
+            except Exception:
+                continue
+    return messages
+
+
+def _sort_sync_xoauth2(host: str, user: str, access_token: str, moves: list[dict]) -> dict:
+    moved = 0
+    errors: list[str] = []
+    with imaplib.IMAP4_SSL(host) as imap:
+        imap.authenticate("XOAUTH2", lambda x: _xoauth2_string(user, access_token))
+        imap.select("INBOX")
+        for folder in {m["folder"] for m in moves}:
+            try:
+                imap.create(folder)
+            except Exception:
+                pass
+        for move in moves:
+            uid = move["uid"]
+            folder = move["folder"]
+            try:
+                res, _ = imap.uid("copy", uid, folder)
+                if res == "OK":
+                    imap.uid("store", uid, "+FLAGS", "(\\Deleted)")
+                    moved += 1
+                else:
+                    errors.append(f"UID {uid}: copy failed")
+            except Exception as e:
+                errors.append(f"UID {uid}: {e}")
+        if moved > 0:
+            imap.expunge()
+    return {"moved": moved, "errors": errors}
+
+
+# ── routing: Gmail API / Yandex XOAUTH2 / IMAP password ──────────────────────
 
 def _use_gmail_api(host: str) -> tuple[bool, str, str, str]:
     """Returns (use_api, client_id, client_secret, refresh_token)."""
@@ -252,6 +334,16 @@ def _use_gmail_api(host: str) -> tuple[bool, str, str, str]:
     from config import config
     if config.GMAIL_CLIENT_ID and config.GMAIL_CLIENT_SECRET and config.GMAIL_REFRESH_TOKEN:
         return True, config.GMAIL_CLIENT_ID, config.GMAIL_CLIENT_SECRET, config.GMAIL_REFRESH_TOKEN
+    return False, "", "", ""
+
+
+def _use_yandex_oauth(host: str) -> tuple[bool, str, str, str]:
+    """Returns (use_oauth, client_id, client_secret, refresh_token)."""
+    if host != "imap.yandex.ru":
+        return False, "", "", ""
+    from config import config
+    if config.YANDEX_CLIENT_ID and config.YANDEX_CLIENT_SECRET and config.YANDEX_REFRESH_TOKEN:
+        return True, config.YANDEX_CLIENT_ID, config.YANDEX_CLIENT_SECRET, config.YANDEX_REFRESH_TOKEN
     return False, "", "", ""
 
 
@@ -268,6 +360,12 @@ async def fetch_inbox_messages(
     use_api, cid, csec, rtok = _use_gmail_api(host)
     if use_api:
         return await _gmail_fetch(cid, csec, rtok, since_days, max_messages)
+
+    use_oauth, cid, csec, rtok = _use_yandex_oauth(host)
+    if use_oauth:
+        token = await _yandex_access_token(cid, csec, rtok)
+        return await asyncio.to_thread(_fetch_sync_xoauth2, host, user, token, since_days, max_messages)
+
     return await asyncio.to_thread(_fetch_sync, host, user, password, since_days, max_messages)
 
 
@@ -281,4 +379,10 @@ async def sort_emails_to_folders(
     use_api, cid, csec, rtok = _use_gmail_api(host)
     if use_api:
         return await _gmail_sort(cid, csec, rtok, moves)
+
+    use_oauth, cid, csec, rtok = _use_yandex_oauth(host)
+    if use_oauth:
+        token = await _yandex_access_token(cid, csec, rtok)
+        return await asyncio.to_thread(_sort_sync_xoauth2, host, user, token, moves)
+
     return await asyncio.to_thread(_sort_sync, host, user, password, moves)
