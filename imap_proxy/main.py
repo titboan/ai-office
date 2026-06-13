@@ -1,24 +1,34 @@
 """
-Email reader.
+IMAP proxy — Fly.io microservice.
+Railway calls this via HTTPS; this service connects to IMAP on port 993.
 
-Production (Railway): calls IMAP proxy on Fly.io via HTTPS.
-  Requires: IMAP_PROXY_URL, IMAP_PROXY_SECRET in env.
-
-Local dev: connects to IMAP directly (port 993).
-  Requires: EMAIL_USER, EMAIL_APP_PASS (and EMAIL_USER_2, EMAIL_APP_PASS_2).
+POST /fetch  {"host":..,"user":..,"password":..,"since_days":..,"max_messages":..}
+POST /sort   {"host":..,"user":..,"password":..,"moves":[{"uid":..,"folder":..}]}
 """
 from __future__ import annotations
 
-import asyncio
 import email
 import email.header
 import imaplib
+import os
 from datetime import datetime, timedelta, timezone
 from email.parser import BytesParser
 from email.policy import default as _email_policy
 
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
 
-# ── IMAP (local dev fallback) ─────────────────────────────────────────────────
+SECRET = os.environ.get("IMAP_PROXY_SECRET", "")
+
+app = FastAPI()
+
+
+def _verify(request: Request) -> None:
+    if SECRET and request.headers.get("X-Secret") != SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+# ── IMAP helpers ──────────────────────────────────────────────────────────────
 
 def _imap_login(imap: imaplib.IMAP4_SSL, user: str, password: str) -> None:
     try:
@@ -59,7 +69,7 @@ def _get_body_preview(msg, max_chars: int = 400) -> str:
     return ""
 
 
-def _fetch_sync(host: str, user: str, password: str, since_days: int, max_messages: int) -> list[dict]:
+def _do_fetch(host: str, user: str, password: str, since_days: int, max_messages: int) -> list[dict]:
     since_date = (datetime.now(timezone.utc) - timedelta(days=since_days)).strftime("%d-%b-%Y")
     messages: list[dict] = []
     with imaplib.IMAP4_SSL(host) as imap:
@@ -88,7 +98,7 @@ def _fetch_sync(host: str, user: str, password: str, since_days: int, max_messag
     return messages
 
 
-def _sort_sync(host: str, user: str, password: str, moves: list[dict]) -> dict:
+def _do_sort(host: str, user: str, password: str, moves: list[dict]) -> dict:
     moved = 0
     errors: list[str] = []
     with imaplib.IMAP4_SSL(host) as imap:
@@ -116,68 +126,41 @@ def _sort_sync(host: str, user: str, password: str, moves: list[dict]) -> dict:
     return {"moved": moved, "errors": errors}
 
 
-# ── Proxy (production) ────────────────────────────────────────────────────────
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
-def _proxy_headers() -> dict:
-    from config import config
-    return {"X-Secret": config.IMAP_PROXY_SECRET, "Content-Type": "application/json"}
-
-
-async def _proxy_fetch(host: str, user: str, password: str,
-                       since_days: int, max_messages: int) -> list[dict]:
-    import aiohttp
-    from config import config
-    url = config.IMAP_PROXY_URL.rstrip("/") + "/fetch"
-    payload = {"host": host, "user": user, "password": password,
-                "since_days": since_days, "max_messages": max_messages}
-    async with aiohttp.ClientSession() as s:
-        resp = await s.post(url, json=payload, headers=_proxy_headers(), timeout=aiohttp.ClientTimeout(total=60))
-        if resp.status != 200:
-            text = await resp.text()
-            raise RuntimeError(f"IMAP proxy error {resp.status}: {text}")
-        return await resp.json()
+class FetchRequest(BaseModel):
+    host: str
+    user: str
+    password: str
+    since_days: int = 1
+    max_messages: int = 50
 
 
-async def _proxy_sort(host: str, user: str, password: str, moves: list[dict]) -> dict:
-    import aiohttp
-    from config import config
-    url = config.IMAP_PROXY_URL.rstrip("/") + "/sort"
-    payload = {"host": host, "user": user, "password": password, "moves": moves}
-    async with aiohttp.ClientSession() as s:
-        resp = await s.post(url, json=payload, headers=_proxy_headers(), timeout=aiohttp.ClientTimeout(total=120))
-        if resp.status != 200:
-            text = await resp.text()
-            raise RuntimeError(f"IMAP proxy error {resp.status}: {text}")
-        return await resp.json()
+class SortRequest(BaseModel):
+    host: str
+    user: str
+    password: str
+    moves: list[dict]
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
-
-def _use_proxy() -> bool:
-    from config import config
-    return bool(config.IMAP_PROXY_URL)
+@app.get("/health")
+def health():
+    return {"ok": True}
 
 
-async def fetch_inbox_messages(
-    host: str,
-    user: str,
-    password: str,
-    since_days: int = 1,
-    max_messages: int = 50,
-) -> list[dict]:
-    """Fetch emails from inbox. Uses IMAP proxy on Railway, direct IMAP locally."""
-    if _use_proxy():
-        return await _proxy_fetch(host, user, password, since_days, max_messages)
-    return await asyncio.to_thread(_fetch_sync, host, user, password, since_days, max_messages)
+@app.post("/fetch")
+def fetch(body: FetchRequest, request: Request):
+    _verify(request)
+    try:
+        return _do_fetch(body.host, body.user, body.password, body.since_days, body.max_messages)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
-async def sort_emails_to_folders(
-    host: str,
-    user: str,
-    password: str,
-    moves: list[dict],
-) -> dict:
-    """Move emails to folders by UID. Uses IMAP proxy on Railway, direct IMAP locally."""
-    if _use_proxy():
-        return await _proxy_sort(host, user, password, moves)
-    return await asyncio.to_thread(_sort_sync, host, user, password, moves)
+@app.post("/sort")
+def sort(body: SortRequest, request: Request):
+    _verify(request)
+    try:
+        return _do_sort(body.host, body.user, body.password, body.moves)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
