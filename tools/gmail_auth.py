@@ -1,51 +1,30 @@
 #!/usr/bin/env python3
 """
 Одноразовый скрипт для получения Gmail OAuth2 refresh_token.
-Запусти ОДИН раз локально: python tools/gmail_auth.py
-Затем добавь GMAIL_REFRESH_TOKEN в Railway Variables.
-
-Предварительно:
-1. console.cloud.google.com → Create Project
-2. APIs & Services → Enable → Gmail API
-3. OAuth consent screen → External → Add test user (свой email)
-4. Credentials → Create → OAuth 2.0 Client ID → Desktop app
-5. Скачай JSON → возьми client_id и client_secret → введи ниже
-6. В Authorized redirect URIs добавь: http://localhost:8080
+Запусти один раз локально: python tools/gmail_auth.py
 """
-import http.server
 import json
-import threading
+import sys
 import urllib.parse
 import urllib.request
-import webbrowser
+
+print("=" * 60)
+print("Gmail OAuth2 — получение refresh_token")
+print("=" * 60)
+print()
+print("Нужны client_id и client_secret из Google Cloud Console:")
+print("  console.cloud.google.com → Credentials → OAuth 2.0 Client IDs")
+print()
 
 CLIENT_ID     = input("GMAIL_CLIENT_ID:     ").strip()
 CLIENT_SECRET = input("GMAIL_CLIENT_SECRET: ").strip()
 
-PORT         = 8080
-REDIRECT_URI = f"http://localhost:{PORT}"
+if not CLIENT_ID or not CLIENT_SECRET:
+    print("❌ CLIENT_ID и CLIENT_SECRET обязательны")
+    sys.exit(1)
+
 SCOPE        = "https://www.googleapis.com/auth/gmail.modify"
-
-_auth_code: list[str] = []
-
-
-class _Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        code = params.get("code", [""])[0]
-        if code:
-            _auth_code.append(code)
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"<h1>OK! Wernuysya v terminal.</h1>")
-
-    def log_message(self, *args):
-        pass
-
-
-server = http.server.HTTPServer(("localhost", PORT), _Handler)
-t = threading.Thread(target=server.serve_forever, daemon=True)
-t.start()
+REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
 
 auth_url = (
     "https://accounts.google.com/o/oauth2/auth"
@@ -57,16 +36,22 @@ auth_url = (
     "&prompt=consent"
 )
 
-print(f"\nОткрываю браузер для авторизации Gmail...")
-webbrowser.open(auth_url)
-print("Авторизуйся в браузере и дождись страницы 'OK'...\n")
+print()
+print("Шаг 1: Открой эту ссылку в браузере:")
+print()
+print(auth_url)
+print()
+print("Шаг 2: Авторизуйся под своим Gmail-аккаунтом.")
+print("Шаг 3: Google покажет страницу с кодом — скопируй его.")
+print()
 
-import time
-while not _auth_code:
-    time.sleep(0.3)
+code = input("Вставь код от Google: ").strip()
 
-server.shutdown()
-code = _auth_code[0]
+if not code:
+    print("❌ Код не введён")
+    sys.exit(1)
+
+print("\nОбмениваю код на токены...")
 
 req = urllib.request.Request(
     "https://oauth2.googleapis.com/token",
@@ -81,14 +66,26 @@ req = urllib.request.Request(
 )
 req.add_header("Content-Type", "application/x-www-form-urlencoded")
 
-with urllib.request.urlopen(req) as resp:
-    data = json.loads(resp.read())
+try:
+    with urllib.request.urlopen(req) as resp:
+        data = json.loads(resp.read())
+except urllib.error.HTTPError as e:
+    body = e.read().decode()
+    print(f"❌ HTTP {e.code}: {body}")
+    sys.exit(1)
 
-if "refresh_token" in data:
-    print("✅ Успешно!\n")
-    print(f"GMAIL_CLIENT_ID={CLIENT_ID}")
-    print(f"GMAIL_CLIENT_SECRET={CLIENT_SECRET}")
-    print(f"GMAIL_REFRESH_TOKEN={data['refresh_token']}")
-    print("\nДобавь все три значения в Railway → Variables.")
-else:
-    print(f"❌ Ошибка: {data}")
+if "refresh_token" not in data:
+    print(f"❌ refresh_token не получен. Ответ Google: {data}")
+    print()
+    print("Попробуй: myaccount.google.com/permissions → найди приложение → Remove Access")
+    print("Затем запусти скрипт снова.")
+    sys.exit(1)
+
+print()
+print("✅ Успешно! Добавь в Railway Variables:")
+print()
+print(f"GMAIL_CLIENT_ID={CLIENT_ID}")
+print(f"GMAIL_CLIENT_SECRET={CLIENT_SECRET}")
+print(f"GMAIL_REFRESH_TOKEN={data['refresh_token']}")
+print()
+print("После добавления переменных — railway up → /email_digest 1d")
