@@ -174,7 +174,11 @@ async def run_all_async() -> None:
                     try:
                         await eva_agent.run_digest(user_chat_id, since=None)
                     except Exception as e:
-                        logger.error(f"[digest_scheduler] user={user_chat_id} error: {e}")
+                        logger.error(f"[digest_scheduler] tg user={user_chat_id} error: {e}")
+                    try:
+                        await eva_agent.run_email_digest(user_chat_id, since_days=1)
+                    except Exception as e:
+                        logger.error(f"[digest_scheduler] email user={user_chat_id} error: {e}")
             except asyncio.CancelledError:
                 break
             except Exception as e:
