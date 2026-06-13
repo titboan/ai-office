@@ -313,6 +313,59 @@ class EvaAgent(BaseAgent):
         except Exception as e:
             logger.warning(f"[Ева] Notion save_content: {e}")
 
+    async def run_email_digest(self, user_chat_id: int, since_days: int = 1) -> None:
+        """Прочитать почту и отправить дайджест в Telegram."""
+        from tools.email_reader import fetch_inbox_messages
+
+        if not config.EMAIL_USER or not config.EMAIL_APP_PASS:
+            await self._notify_user(
+                user_chat_id,
+                "⚠️ EMAIL_USER / EMAIL_APP_PASS не заданы — почтовый дайджест недоступен."
+            )
+            return
+
+        await self._notify_user(user_chat_id, f"📧 Читаю почту за {since_days} д…")
+        try:
+            messages = await fetch_inbox_messages(
+                host=config.EMAIL_IMAP_HOST,
+                user=config.EMAIL_USER,
+                password=config.EMAIL_APP_PASS,
+                since_days=since_days,
+                max_messages=60,
+            )
+        except Exception as e:
+            logger.error(f"[Ева] IMAP ошибка: {e}")
+            await self._notify_user(user_chat_id, f"❌ Не удалось подключиться к почте: {e}")
+            return
+
+        if not messages:
+            await self._notify_user(user_chat_id, "📭 Новых писем нет.")
+            return
+
+        lines = []
+        for m in messages:
+            lines.append(f"От: {m['from_']}\nТема: {m['subject']}\nДата: {m['date']}\n{m['body_preview']}")
+        messages_text = "\n\n---\n\n".join(lines)
+
+        prompt = _EMAIL_DIGEST_PROMPT.format(messages=messages_text)
+        try:
+            response = await self.claude.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=2000,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            digest_text = response.content[0].text
+        except Exception as e:
+            logger.error(f"[Ева] Claude API (email): {e}")
+            await self._notify_user(user_chat_id, f"❌ Ошибка генерации email-дайджеста: {e}")
+            return
+
+        header = f"📧 <b>Дайджест почты</b> — за {since_days} д. ({len(messages)} писем)\n\n"
+        parts = _split_digest(header + digest_text)
+        for part in parts:
+            await self._notify_user(user_chat_id, part)
+        logger.info(f"[Ева] Email-дайджест отправлен user={user_chat_id}, писем={len(messages)}")
+
     # ------------------------------------------------------------------ #
     #  Команды бота                                                        #
     # ------------------------------------------------------------------ #
@@ -343,6 +396,23 @@ class EvaAgent(BaseAgent):
         since_str = since.astimezone(_MSK).strftime("%d.%m %H:%M МСК")
         await update.message.reply_text(f"📰 Собираю дайджест с {since_str}…")
         await self.run_digest(user_id, since=since)
+
+    async def cmd_email_digest(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/email_digest [Nd] — дайджест почты в Telegram."""
+        arg = context.args[0] if context.args else None
+        since_days = 1
+
+        if arg:
+            m = re.fullmatch(r"(\d+)d", arg, re.IGNORECASE)
+            if m:
+                since_days = int(m.group(1))
+            else:
+                await update.message.reply_text(
+                    "❌ Неверный параметр. Используй: /email_digest 3d"
+                )
+                return
+
+        await self.run_email_digest(update.effective_user.id, since_days=since_days)
 
     async def cmd_add_channel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/add_channel @username — добавить канал."""
@@ -420,30 +490,36 @@ class EvaAgent(BaseAgent):
 
     def _help_text(self) -> str:
         return (
-            "📰 <b>Ева</b> — редактор дайджеста\n\n"
-            "Собираю дайджест из Telegram-каналов, которые вы добавите.\n\n"
+            "📰 <b>Ева</b> — личный секретарь\n\n"
+            "Каждый день в 09:30 МСК автоматически:\n"
+            "• дайджест Telegram-каналов → в этот чат\n"
+            "• дайджест почты → в этот чат\n\n"
             "📌 <b>Команды:</b>\n"
-            "/digest — сгенерировать дайджест\n"
+            "/digest [3d|12h|YYYY-MM-DD] — дайджест каналов прямо сейчас\n"
+            "/email_digest [Nd] — дайджест почты прямо сейчас\n"
             "/add_channel @username — добавить канал\n"
             "/remove_channel @username — удалить канал\n"
             "/channels — список подключённых каналов\n"
             "/reset — очистить историю\n\n"
-            "💡 Пример: /add_channel @wildberries_sellers"
+            "💡 Пример: /add_channel @wildberries_sellers\n"
+            "💡 Пример: /email_digest 3d"
         )
 
     def _bot_commands(self) -> list:
         from telegram import BotCommand
         return [
-            BotCommand("start", "Запуск и помощь"),
-            BotCommand("digest", "Сгенерировать дайджест"),
-            BotCommand("add_channel", "Добавить канал"),
+            BotCommand("start",          "Запуск и помощь"),
+            BotCommand("digest",         "Дайджест Telegram-каналов"),
+            BotCommand("email_digest",   "Дайджест почты"),
+            BotCommand("add_channel",    "Добавить канал"),
             BotCommand("remove_channel", "Удалить канал"),
-            BotCommand("channels", "Список подключённых каналов"),
-            BotCommand("reset", "Очистить историю диалога"),
+            BotCommand("channels",       "Список каналов"),
+            BotCommand("reset",          "Очистить историю диалога"),
         ]
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("digest",         self.cmd_digest))
+        self.app.add_handler(CommandHandler("email_digest",   self.cmd_email_digest))
         self.app.add_handler(CommandHandler("add_channel",    self.cmd_add_channel))
         self.app.add_handler(CommandHandler("remove_channel", self.cmd_remove_channel))
         self.app.add_handler(CommandHandler("channels",       self.cmd_channels))
