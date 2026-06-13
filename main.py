@@ -164,21 +164,28 @@ async def run_all_async() -> None:
                 logger.info(f"[digest_scheduler] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
                 await asyncio.sleep(wait_seconds)
 
-                if eva_agent is None or not eva_agent._telethon_ready:
-                    logger.warning("[digest_scheduler] Ева не готова, пропускаем")
+                if eva_agent is None:
+                    logger.warning("[digest_scheduler] Ева не найдена, пропускаем")
                     continue
 
                 users = await get_distinct_digest_users()
                 logger.info(f"[digest_scheduler] запуск дайджеста для {len(users)} пользователей")
                 for user_chat_id in users:
-                    try:
-                        await eva_agent.run_digest(user_chat_id, since=None)
-                    except Exception as e:
-                        logger.error(f"[digest_scheduler] tg user={user_chat_id} error: {e}")
+                    # TG-каналы — только если Telethon подключён
+                    if eva_agent._telethon_ready:
+                        try:
+                            await eva_agent.run_digest(user_chat_id, since=None)
+                        except Exception as e:
+                            logger.error(f"[digest_scheduler] tg user={user_chat_id} error: {e}")
+                    # Email-дайджест и сортировка — не зависят от Telethon
                     try:
                         await eva_agent.run_email_digest(user_chat_id, since_days=1)
                     except Exception as e:
                         logger.error(f"[digest_scheduler] email user={user_chat_id} error: {e}")
+                    try:
+                        await eva_agent.run_sort_emails(user_chat_id, since_days=1)
+                    except Exception as e:
+                        logger.error(f"[digest_scheduler] sort user={user_chat_id} error: {e}")
             except asyncio.CancelledError:
                 break
             except Exception as e:
