@@ -59,19 +59,21 @@ def _fetch_sync(
     with imaplib.IMAP4_SSL(host) as imap:
         imap.login(user, password)
         imap.select("INBOX", readonly=True)
-        _, data = imap.search(None, f'SINCE "{since_date}"')
-        msg_ids = data[0].split()
+        _, data = imap.uid("search", None, f'SINCE "{since_date}"')
+        uid_list = data[0].split()
 
-        if len(msg_ids) > max_messages:
-            msg_ids = msg_ids[-max_messages:]
+        if len(uid_list) > max_messages:
+            uid_list = uid_list[-max_messages:]
 
-        for msg_id in reversed(msg_ids):
+        for uid_bytes in reversed(uid_list):
             try:
-                _, raw = imap.fetch(msg_id, "(RFC822)")
+                uid = uid_bytes.decode()
+                _, raw = imap.uid("fetch", uid_bytes, "(RFC822)")
                 if not raw or not raw[0]:
                     continue
                 msg = BytesParser(policy=_email_policy).parsebytes(raw[0][1])
                 messages.append({
+                    "uid":          uid,
                     "from_":        _decode_header(msg.get("From", "")),
                     "subject":      _decode_header(msg.get("Subject", "(без темы)")),
                     "date":         msg.get("Date", ""),
@@ -81,6 +83,45 @@ def _fetch_sync(
                 continue
 
     return messages
+
+
+def _sort_sync(
+    host: str,
+    user: str,
+    password: str,
+    moves: list[dict],
+) -> dict:
+    """Move emails to IMAP folders. moves = [{"uid": "123", "folder": "Eva-Work"}, ...]"""
+    moved = 0
+    errors: list[str] = []
+
+    with imaplib.IMAP4_SSL(host) as imap:
+        imap.login(user, password)
+        imap.select("INBOX")
+
+        for folder in {m["folder"] for m in moves}:
+            try:
+                imap.create(folder)
+            except Exception:
+                pass  # уже существует
+
+        for move in moves:
+            uid = move["uid"]
+            folder = move["folder"]
+            try:
+                res, _ = imap.uid("copy", uid, folder)
+                if res == "OK":
+                    imap.uid("store", uid, "+FLAGS", "(\\Deleted)")
+                    moved += 1
+                else:
+                    errors.append(f"UID {uid}: copy failed")
+            except Exception as e:
+                errors.append(f"UID {uid}: {e}")
+
+        if moved > 0:
+            imap.expunge()
+
+    return {"moved": moved, "errors": errors}
 
 
 async def fetch_inbox_messages(
@@ -94,3 +135,13 @@ async def fetch_inbox_messages(
     return await asyncio.to_thread(
         _fetch_sync, host, user, password, since_days, max_messages
     )
+
+
+async def sort_emails_to_folders(
+    host: str,
+    user: str,
+    password: str,
+    moves: list[dict],
+) -> dict:
+    """Move emails to IMAP folders by UID. Returns {"moved": int, "errors": list}."""
+    return await asyncio.to_thread(_sort_sync, host, user, password, moves)

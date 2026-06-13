@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -36,6 +37,32 @@ _EMAIL_DIGEST_PROMPT = """\
 - <b>🔴 Срочное</b> — заголовок категории
 - Список писем под ним
 - НЕ используй Markdown
+
+Письма:
+{messages}"""
+
+_SORT_FOLDERS: dict[str, str] = {
+    "Срочное":      "Eva-Urgent",
+    "Работа":       "Eva-Work",
+    "Маркетплейсы": "Eva-Markets",
+    "Рассылки":     "Eva-Newsletter",
+    # "Прочее" — не перемещается, остаётся в INBOX
+}
+
+_SORT_LABELS: dict[str, str] = {v: k for k, v in _SORT_FOLDERS.items()}
+
+_EMAIL_SORT_PROMPT = """\
+Ты — почтовый сортировщик. Тебе дан список писем из INBOX.
+
+Для каждого письма определи одну категорию:
+- Срочное — требует ответа или действия сегодня
+- Работа — рабочая переписка, контрагенты, партнёры, сервисы
+- Маркетплейсы — WB, Ozon, поставщики, логистика, маркетплейс-уведомления
+- Рассылки — newsletters, рекламные рассылки, автоматические уведомления
+- Прочее — всё остальное (останется в INBOX без перемещения)
+
+Верни ТОЛЬКО валидный JSON-массив, без пояснений, без markdown-обёртки:
+[{{"uid": "123", "category": "Рассылки"}}, ...]
 
 Письма:
 {messages}"""
@@ -366,6 +393,99 @@ class EvaAgent(BaseAgent):
             await self._notify_user(user_chat_id, part)
         logger.info(f"[Ева] Email-дайджест отправлен user={user_chat_id}, писем={len(messages)}")
 
+    async def run_sort_emails(self, user_chat_id: int, since_days: int = 1) -> None:
+        """Категоризировать письма через Claude и разложить по IMAP-папкам."""
+        from tools.email_reader import fetch_inbox_messages, sort_emails_to_folders
+
+        if not config.EMAIL_USER or not config.EMAIL_APP_PASS:
+            await self._notify_user(
+                user_chat_id,
+                "⚠️ EMAIL_USER / EMAIL_APP_PASS не заданы — сортировка недоступна."
+            )
+            return
+
+        await self._notify_user(user_chat_id, f"📂 Читаю почту за {since_days} д…")
+        try:
+            messages = await fetch_inbox_messages(
+                host=config.EMAIL_IMAP_HOST,
+                user=config.EMAIL_USER,
+                password=config.EMAIL_APP_PASS,
+                since_days=since_days,
+                max_messages=60,
+            )
+        except Exception as e:
+            logger.error(f"[Ева] IMAP ошибка: {e}")
+            await self._notify_user(user_chat_id, f"❌ Не удалось подключиться к почте: {e}")
+            return
+
+        if not messages:
+            await self._notify_user(user_chat_id, "📭 Новых писем нет.")
+            return
+
+        await self._notify_user(user_chat_id, f"🧠 Категоризирую {len(messages)} писем…")
+        lines = [
+            f"uid={msg['uid']} | От: {msg['from_']} | Тема: {msg['subject']}"
+            for msg in messages
+        ]
+        prompt = _EMAIL_SORT_PROMPT.format(messages="\n".join(lines))
+
+        try:
+            response = await self.claude.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=2000,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            match = re.search(r'\[[\s\S]*\]', response.content[0].text)
+            if not match:
+                raise ValueError("JSON не найден в ответе Claude")
+            categorized: list[dict] = json.loads(match.group(0))
+        except Exception as e:
+            logger.error(f"[Ева] Claude sort error: {e}")
+            await self._notify_user(user_chat_id, f"❌ Ошибка категоризации: {e}")
+            return
+
+        moves = [
+            {"uid": item["uid"], "folder": _SORT_FOLDERS[item["category"]]}
+            for item in categorized
+            if isinstance(item, dict) and item.get("category") in _SORT_FOLDERS
+        ]
+
+        if not moves:
+            await self._notify_user(
+                user_chat_id,
+                "📌 Все письма в категории «Прочее» — перемещение не требуется."
+            )
+            return
+
+        await self._notify_user(user_chat_id, f"📁 Перемещаю {len(moves)} писем…")
+        try:
+            result = await sort_emails_to_folders(
+                host=config.EMAIL_IMAP_HOST,
+                user=config.EMAIL_USER,
+                password=config.EMAIL_APP_PASS,
+                moves=moves,
+            )
+        except Exception as e:
+            logger.error(f"[Ева] sort_emails_to_folders: {e}")
+            await self._notify_user(user_chat_id, f"❌ Ошибка при перемещении: {e}")
+            return
+
+        folder_counts: dict[str, int] = {}
+        for move in moves:
+            folder_counts[move["folder"]] = folder_counts.get(move["folder"], 0) + 1
+
+        report = [f"📂 <b>Сортировка завершена</b> — {result['moved']} писем перемещено\n"]
+        for folder, count in sorted(folder_counts.items()):
+            report.append(f"• {_SORT_LABELS.get(folder, folder)}: {count}")
+        stayed = len(messages) - result["moved"]
+        if stayed > 0:
+            report.append(f"• Прочее (INBOX): {stayed}")
+        if result["errors"]:
+            report.append(f"\n⚠️ Ошибок: {len(result['errors'])}")
+
+        await self._notify_user(user_chat_id, "\n".join(report))
+        logger.info(f"[Ева] Сортировка: moved={result['moved']}, errors={len(result['errors'])}")
+
     # ------------------------------------------------------------------ #
     #  Команды бота                                                        #
     # ------------------------------------------------------------------ #
@@ -413,6 +533,23 @@ class EvaAgent(BaseAgent):
                 return
 
         await self.run_email_digest(update.effective_user.id, since_days=since_days)
+
+    async def cmd_sort_emails(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/sort_emails [Nd] — разложить письма по папкам Eva-Urgent/Work/Markets/Newsletter."""
+        arg = context.args[0] if context.args else None
+        since_days = 1
+
+        if arg:
+            m = re.fullmatch(r"(\d+)d", arg, re.IGNORECASE)
+            if m:
+                since_days = int(m.group(1))
+            else:
+                await update.message.reply_text(
+                    "❌ Неверный параметр. Используй: /sort_emails 3d"
+                )
+                return
+
+        await self.run_sort_emails(update.effective_user.id, since_days=since_days)
 
     async def cmd_add_channel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/add_channel @username — добавить канал."""
@@ -497,12 +634,12 @@ class EvaAgent(BaseAgent):
             "📌 <b>Команды:</b>\n"
             "/digest [3d|12h|YYYY-MM-DD] — дайджест каналов прямо сейчас\n"
             "/email_digest [Nd] — дайджест почты прямо сейчас\n"
+            "/sort_emails [Nd] — разложить письма по папкам (Eva-Urgent/Work/Markets/Newsletter)\n"
             "/add_channel @username — добавить канал\n"
             "/remove_channel @username — удалить канал\n"
             "/channels — список подключённых каналов\n"
             "/reset — очистить историю\n\n"
-            "💡 Пример: /add_channel @wildberries_sellers\n"
-            "💡 Пример: /email_digest 3d"
+            "💡 Пример: /sort_emails 3d"
         )
 
     def _bot_commands(self) -> list:
@@ -511,6 +648,7 @@ class EvaAgent(BaseAgent):
             BotCommand("start",          "Запуск и помощь"),
             BotCommand("digest",         "Дайджест Telegram-каналов"),
             BotCommand("email_digest",   "Дайджест почты"),
+            BotCommand("sort_emails",    "Разложить письма по папкам"),
             BotCommand("add_channel",    "Добавить канал"),
             BotCommand("remove_channel", "Удалить канал"),
             BotCommand("channels",       "Список каналов"),
@@ -520,6 +658,7 @@ class EvaAgent(BaseAgent):
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("digest",         self.cmd_digest))
         self.app.add_handler(CommandHandler("email_digest",   self.cmd_email_digest))
+        self.app.add_handler(CommandHandler("sort_emails",    self.cmd_sort_emails))
         self.app.add_handler(CommandHandler("add_channel",    self.cmd_add_channel))
         self.app.add_handler(CommandHandler("remove_channel", self.cmd_remove_channel))
         self.app.add_handler(CommandHandler("channels",       self.cmd_channels))
