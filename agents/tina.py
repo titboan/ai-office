@@ -339,7 +339,7 @@ class TinaAgent(BaseAgent):
             response = await self.claude.messages.create(
                 model=config.CLAUDE_MODEL,
                 max_tokens=4096,
-                system=self.system_prompt,
+                system=self._effective_system,
                 tools=self._TOOLS,
                 messages=messages,
             )

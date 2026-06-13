@@ -110,6 +110,13 @@ class BaseAgent(ABC):
     agent_key: str = ""  # латиница для БД: "kasper", "kevin", etc.
     system_prompt: str = ""
 
+    @property
+    def _effective_system(self) -> str:
+        ctx = getattr(config, "COMPANY_CONTEXT", "")
+        if ctx:
+            return self.system_prompt + "\n\n" + ctx
+        return self.system_prompt
+
     def __init__(self, bot_token: str) -> None:
         self.bot_token = bot_token
         self.claude = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -329,7 +336,7 @@ class BaseAgent(ABC):
             response = await self.claude.messages.create(
                 model=getattr(self, "claude_model", None) or config.CLAUDE_MODEL,
                 max_tokens=max_tokens or config.MAX_TOKENS,
-                system=self.system_prompt,
+                system=self._effective_system,
                 messages=history,
             )
             answer = response.content[0].text
