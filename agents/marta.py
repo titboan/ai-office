@@ -109,6 +109,13 @@ agent: kasper/kevin/peter/elina/alex
 task: конкретная задача для агента
 ##END##
 
+Форматируй собственные ответы в HTML для Telegram:
+- <b>текст</b> — заголовки и акценты
+- <i>текст</i> — пояснения
+- <code>текст</code> — команды, ID
+- Эмодзи в начале разделов
+- НЕ используй Markdown: никаких *звёздочек*, ##заголовков
+
 Общайся по-русски."""
 
 
@@ -568,6 +575,12 @@ class MartaAgent(BaseAgent):
             if agent:
                 prio = _detect_priority(user_text)
                 prio_label = {20: " 🔴 СРОЧНО", 10: " 🟠 ВАЖНО", 0: ""}.get(prio, "")
+                _AGENT_LABEL_MAP = {
+                    "kasper": "🔍 Каспер", "kevin": "👨‍💻 Кевин", "peter": "📊 Питер",
+                    "elina": "✍️ Элина", "alex": "🗓️ Алекс", "dan": "🎨 Дэн",
+                    "max": "🛒 Макс", "tina": "📋 Тина",
+                }
+                label = _AGENT_LABEL_MAP.get(agent_key, agent_key)
                 task_id, corr_id = await enqueue_task(
                     assigned_agent=agent_key,
                     payload=task_text,
@@ -576,6 +589,10 @@ class MartaAgent(BaseAgent):
                     priority=prio,
                     timeout_seconds=600 if agent_key == "dan" else 300,
                 )
+                await reply_func(
+                    f"⏳ Передала задачу {label}{prio_label} — пришлю результат когда готово.",
+                    parse_mode="HTML",
+                )
                 return
 
         marta_response = await self.think(user_text, chat_id)
@@ -583,10 +600,10 @@ class MartaAgent(BaseAgent):
 
         if delegation is None:
             if len(marta_response) <= 4096:
-                await reply_func(marta_response)
+                await reply_func(marta_response, parse_mode="HTML")
             else:
                 for chunk in [marta_response[i:i+4000] for i in range(0, len(marta_response), 4000)]:
-                    await reply_func(chunk)
+                    await reply_func(chunk, parse_mode="HTML")
             await self.post_to_group(marta_response)
 
             if _PROJECT_TRIGGER_RE.search(user_text):
@@ -605,7 +622,7 @@ class MartaAgent(BaseAgent):
         agent_key, subtask = delegation
         preamble = self._strip_delegate_block(marta_response)
         if preamble:
-            await reply_func(preamble)
+            await reply_func(preamble, parse_mode="HTML")
 
         agent = self._get_agent(agent_key)
         if agent is None:
@@ -1050,9 +1067,11 @@ class MartaAgent(BaseAgent):
             return
 
         await update.message.reply_text("🔄 Анализирую задачу и делегирую…")
-        # Роутим через handle_message-логику повторно использовать весь цикл
         result = await self.handle_task(task, from_agent="команды /delegate")
-        await update.message.reply_text(f"✅ Готово:\n\n{result}")
+        try:
+            await update.message.reply_text(f"✅ Готово:\n\n{result}", parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text(f"✅ Готово:\n\n{result}")
 
     async def _cmd_projects(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Показать список сохранённых проектов пользователя."""
@@ -1078,35 +1097,114 @@ class MartaAgent(BaseAgent):
 
     def _help_text(self) -> str:
         return (
-            "👩‍💼 <b>Марта</b> — координатор команды\n\n"
-            "Принимаю задачи на русском языке и направляю нужному агенту.\n"
-            "Могу планировать цепочки задач и следить за статусом офиса.\n\n"
-            "📌 <b>Команды:</b>\n"
-            "/start — главное меню\n"
-            "/status — состояние офиса и активные задачи\n"
+            "👩‍💼 <b>Марта</b> — единая точка входа в AI Office\n\n"
+            "Пиши задачу на русском — я разберусь кому передать и соберу результат.\n\n"
+            "📌 <b>Мои команды:</b>\n"
+            "/status — активные задачи офиса\n"
             "/history — последние 10 выполненных задач\n"
-            "/delegate — явно передать задачу агенту\n"
-            "/cancel — отменить задачу из очереди\n"
-            "/reset — очистить историю\n\n"
-            "💡 Примеры: «напиши пост про наш товар», «исследуй конкурентов»"
+            "/delegate — явно передать задачу команде\n"
+            "/cancel &lt;id&gt; — отменить задачу из очереди\n"
+            "/reset — очистить историю диалога\n\n"
+            "🔍 <b>Каспер</b> — исследования и поиск\n"
+            "<i>«исследуй конкурентов», «найди статистику по рынку»</i>\n\n"
+            "👨‍💻 <b>Кевин</b> — разработка и GitHub\n"
+            "<i>«создай лендинг», «напиши бота», «задеплой на Pages»</i>\n\n"
+            "📊 <b>Питер</b> — аналитика маркетплейсов WB+Ozon\n"
+            "<i>«отчёт по продажам», «воронка конверсии», «ДРР»</i>\n\n"
+            "✍️ <b>Элина</b> — тексты и контент\n"
+            "<i>«напиши описание товара», «создай пост»</i>\n\n"
+            "🗓️ <b>Алекс</b> — планирование и напоминания\n"
+            "<i>«напомни в 18:00», «составь roadmap»</i>\n\n"
+            "🎨 <b>Дэн</b> — генерация изображений\n"
+            "<i>«нарисуй hero для лендинга», «иконки для секции»</i>\n\n"
+            "🛒 <b>Макс</b> — маркетплейсы WB+Ozon (синхронизация данных)\n"
+            "<i>«синхронизируй остатки», «обработай отзывы»</i>\n\n"
+            "💡 <b>Примеры запросов Марте:</b>\n"
+            "• «создай лендинг для кофейни с дизайном»\n"
+            "• «исследуй рынок умных колонок и напиши пост»\n"
+            "• «напомни мне проверить склад в 15:00»"
         )
 
     def _bot_commands(self) -> list:
         from telegram import BotCommand
         return [
-            BotCommand("start", "Главное меню"),
+            BotCommand("start", "Главное меню и помощь"),
             BotCommand("status", "Состояние офиса и активные задачи"),
             BotCommand("history", "Последние 10 задач"),
+            BotCommand("report", "📊 Отчёт по продажам (Питер)"),
+            BotCommand("reviews", "⭐ Обработать отзывы (Макс)"),
+            BotCommand("sync", "🔄 Синхронизировать данные (Макс)"),
+            BotCommand("research", "🔍 Исследование темы (Каспер)"),
+            BotCommand("write", "✍️ Написать текст (Элина)"),
+            BotCommand("remind", "⏰ Установить напоминание (Алекс)"),
             BotCommand("delegate", "Передать задачу агенту"),
             BotCommand("cancel", "Отменить задачу из очереди"),
             BotCommand("reset", "Очистить историю диалога"),
         ]
+
+    # ------------------------------------------------------------------ #
+    #  Proxy-команды — ярлыки для других агентов                         #
+    # ------------------------------------------------------------------ #
+
+    async def _proxy_cmd(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        agent_key: str,
+        default_task: str,
+    ) -> None:
+        """Общий обработчик proxy-команд: ставит задачу в очередь нужного агента."""
+        chat_id = update.effective_chat.id
+        args_text = " ".join(context.args) if context.args else ""
+        task = args_text or default_task
+        task_id, _ = await enqueue_task(
+            assigned_agent=agent_key,
+            payload=task,
+            from_agent="marta",
+            chat_id=chat_id,
+            priority=0,
+        )
+        _AGENT_LABEL = {
+            "peter": "📊 Питер", "max": "🛒 Макс", "kasper": "🔍 Каспер",
+            "elina": "✍️ Элина", "alex": "🗓️ Алекс", "kevin": "👨‍💻 Кевин",
+        }
+        label = _AGENT_LABEL.get(agent_key, agent_key)
+        await update.message.reply_text(
+            f"✅ Задача передана {label}\n<code>{task[:80]}</code>",
+            parse_mode="HTML",
+            reply_markup=self._main_keyboard(),
+        )
+
+    async def cmd_proxy_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "peter", "Дай сводный отчёт по продажам WB и Ozon за последние 7 дней")
+
+    async def cmd_proxy_reviews(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "Обработай новые отзывы на маркетплейсах")
+
+    async def cmd_proxy_sync(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "Синхронизируй данные: заказы, остатки, финансы")
+
+    async def cmd_proxy_research(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "kasper", "Исследуй тему")
+
+    async def cmd_proxy_write(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "elina", "Напиши текст")
+
+    async def cmd_proxy_remind(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "alex", "Установи напоминание")
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("delegate", self.cmd_delegate))
         self.app.add_handler(CommandHandler("status", self.cmd_status))
         self.app.add_handler(CommandHandler("cancel", self.cmd_cancel))
         self.app.add_handler(CommandHandler("history", self.cmd_history))
+        # Proxy-команды — ярлыки для других агентов
+        self.app.add_handler(CommandHandler("report", self.cmd_proxy_report))
+        self.app.add_handler(CommandHandler("reviews", self.cmd_proxy_reviews))
+        self.app.add_handler(CommandHandler("sync", self.cmd_proxy_sync))
+        self.app.add_handler(CommandHandler("research", self.cmd_proxy_research))
+        self.app.add_handler(CommandHandler("write", self.cmd_proxy_write))
+        self.app.add_handler(CommandHandler("remind", self.cmd_proxy_remind))
         self.app.add_handler(CallbackQueryHandler(
             self._handle_chain_callback,
             pattern="^chain_(confirm|cancel)$",

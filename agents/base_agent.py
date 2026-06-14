@@ -460,7 +460,10 @@ class BaseAgent(ABC):
         try:
             await context.bot.send_chat_action(chat_id=chat_id, action="typing")
             answer = await self.think(user_text, chat_id)
-            await update.message.reply_text(answer)
+            try:
+                await update.message.reply_text(answer, parse_mode="HTML")
+            except Exception:
+                await update.message.reply_text(answer)
             logger.info(f"[{self.name}] Ответ отправлен ({len(answer)} символов)")
 
             await self.post_to_group(answer)
@@ -827,37 +830,46 @@ class BaseAgent(ABC):
                     if repo_match:
                         github_repo_url = repo_match.group(0).rstrip(')/,. ')
 
-                # Формируем список шагов с эмодзи
                 _AGENT_EMOJI = {
                     "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
                     "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
                     "dan": "🎨", "tina": "📋", "digest": "📰",
                 }
-                steps_summary = ""
-                if plan and plan.get("steps"):
-                    for step in plan["steps"]:
-                        agent_k   = step.get("agent", "")
-                        task_text = step.get("task", "")
-                        emoji     = _AGENT_EMOJI.get(agent_k, "🤖")
-                        short_task = task_text[:60].strip()
-                        if len(task_text) > 60:
-                            short_task += "..."
-                        steps_summary += f"{emoji} {short_task}\n"
+                _AGENT_NAME = {
+                    "kasper": "Каспер", "kevin": "Кевин", "peter": "Питер",
+                    "elina": "Элина", "alex": "Алекс", "marta": "Марта",
+                    "dan": "Дэн", "tina": "Тина", "digest": "Дайджест",
+                }
+
+                # Формируем строки с кратким выводом каждого агента
+                result_lines = ""
+                if chain_results:
+                    for r in chain_results:
+                        agent_k = r.get("assigned_agent", "")
+                        r_result = (r.get("result") or "").strip()
+                        emoji = _AGENT_EMOJI.get(agent_k, "🤖")
+                        name  = _AGENT_NAME.get(agent_k, agent_k)
+                        # Берём первые 200 символов результата как выжимку
+                        excerpt = _re.sub(r"<[^>]+>", "", r_result)[:200].strip()
+                        if len(_re.sub(r"<[^>]+>", "", r_result)) > 200:
+                            excerpt += "…"
+                        if excerpt:
+                            result_lines += f"{emoji} <b>{name}:</b> {excerpt}\n\n"
 
                 notion_url = (
                     f"https://notion.so/{notion_page_id.replace('-', '')}"
                     if notion_page_id else None
                 )
 
-                final_msg = "🎉 *Команда завершила работу!*\n\n"
-                if steps_summary:
-                    final_msg += steps_summary + "\n"
+                final_msg = "🎉 <b>Команда завершила работу!</b>\n\n"
+                if result_lines:
+                    final_msg += result_lines
                 if github_pages_url:
-                    final_msg += f"🌐 [Открыть сайт]({github_pages_url})\n"
+                    final_msg += f'🌐 <a href="{github_pages_url}">Открыть сайт</a>\n'
                 elif github_repo_url:
-                    final_msg += f"📦 [Репозиторий]({github_repo_url})\n"
+                    final_msg += f'📦 <a href="{github_repo_url}">Репозиторий</a>\n'
                 if notion_url:
-                    final_msg += f"📋 [Открыть в Notion]({notion_url})"
+                    final_msg += f'📋 <a href="{notion_url}">Открыть в Notion</a>'
 
                 buttons = []
                 if github_pages_url:
