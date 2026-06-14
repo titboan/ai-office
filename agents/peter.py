@@ -8,7 +8,7 @@ from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
 from tools import save_research
-from utils.tg_format import MARKDOWN_FORMAT_RULES, strip_html as _strip_html
+from utils.tg_format import MARKDOWN_FORMAT_RULES, strip_html as _strip_html, strip_mdv2 as _strip_mdv2
 from .base_agent import BaseAgent
 
 _UTC = timezone.utc
@@ -386,6 +386,7 @@ class PeterAgent(BaseAgent):
         update: Update | None = None,
         chat_id: int | None = None,
         bot=None,
+        parse_mode: str = "MarkdownV2",
     ) -> None:
         notion_url = await save_research(
             title=notion_title,
@@ -394,14 +395,21 @@ class PeterAgent(BaseAgent):
             agent="Питер",
         )
         if notion_url:
-            answer = f'{answer}\n\n📄 <a href="{notion_url}">{notion_link_text}</a>'
+            if parse_mode == "HTML":
+                answer = f'{answer}\n\n📄 <a href="{notion_url}">{notion_link_text}</a>'
+            else:
+                answer = f'{answer}\n\n📄 [{notion_link_text}]({notion_url})'
+
+        async def _send_chunk(send_fn, chunk: str, **kwargs) -> None:
+            try:
+                await send_fn(chunk, parse_mode=parse_mode, **kwargs)
+            except Exception:
+                plain = _strip_mdv2(chunk) if parse_mode == "MarkdownV2" else chunk
+                await send_fn(plain, **kwargs)
 
         if update:
             for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
-                try:
-                    await update.message.reply_text(chunk, parse_mode="HTML")
-                except Exception:
-                    await update.message.reply_text(chunk)
+                await _send_chunk(update.message.reply_text, chunk)
             if show_dashboard and config.DASHBOARD_URL:
                 markup = InlineKeyboardMarkup([[
                     InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=config.DASHBOARD_URL))
@@ -410,7 +418,10 @@ class PeterAgent(BaseAgent):
         else:
             _bot = bot or self.app.bot
             for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
-                await _bot.send_message(chat_id=chat_id, text=chunk, parse_mode="HTML")
+                await _send_chunk(
+                    lambda text, **kw: _bot.send_message(chat_id=chat_id, text=text, **kw),
+                    chunk,
+                )
 
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
         logger.info(f"[Питер] Задача от {from_agent}: {task!r}")
@@ -439,7 +450,7 @@ class PeterAgent(BaseAgent):
             agent="Питер",
         )
         if notion_url:
-            answer = f'{answer}\n\n📄 <a href="{notion_url}">Анализ сохранён в Notion</a>'
+            answer = f'{answer}\n\n📄 [Анализ сохранён в Notion]({notion_url})'
         await self.post_to_group(f"📊 Анализ готов: {answer[:200]}…")
         return answer
 
@@ -593,6 +604,7 @@ class PeterAgent(BaseAgent):
             notion_source="cmd:audit",
             notion_link_text="Аудит сохранён в Notion",
             update=update,
+            parse_mode="HTML",
         )
 
     async def cmd_drr(
@@ -659,6 +671,7 @@ class PeterAgent(BaseAgent):
             notion_title=f"ДРР {datetime.now(_UTC).strftime('%d.%m.%Y')}",
             notion_source="cmd:drr",
             update=update,
+            parse_mode="HTML",
         )
 
     async def cmd_funnel(
@@ -781,7 +794,10 @@ class PeterAgent(BaseAgent):
         await update.message.reply_text("📊 Анализирую…")
         result = await self.handle_task(data, from_agent="команды /analyze")
         for chunk in [result[i:i+4000] for i in range(0, len(result), 4000)]:
-            await update.message.reply_text(chunk)
+            try:
+                await update.message.reply_text(chunk, parse_mode="MarkdownV2")
+            except Exception:
+                await update.message.reply_text(_strip_mdv2(chunk))
 
     async def run_weekly_audit(self, chat_id: int) -> None:
         """Автоматический еженедельный аудит — вызывается из планировщика."""
@@ -829,6 +845,7 @@ class PeterAgent(BaseAgent):
                 notion_source="scheduler:weekly_audit",
                 show_dashboard=False,
                 chat_id=chat_id,
+                parse_mode="HTML",
             )
             logger.info(f"[Питер/weekly_audit] отправлен в chat_id={chat_id}")
         except Exception as e:

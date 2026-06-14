@@ -8,6 +8,7 @@ from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
 from tools import search_web, save_research
+from utils.tg_format import strip_mdv2 as _strip_mdv2
 from .base_agent import BaseAgent
 
 # Порог: если ответ длиннее — сохраняем полный текст в Notion,
@@ -182,9 +183,9 @@ class KasperAgent(BaseAgent):
             chunks = [answer[i : i + 4000] for i in range(0, len(answer), 4000)]
             for chunk in chunks:
                 try:
-                    await update.message.reply_text(chunk, parse_mode="HTML")
+                    await update.message.reply_text(chunk, parse_mode="MarkdownV2")
                 except Exception:
-                    await update.message.reply_text(chunk)
+                    await update.message.reply_text(_strip_mdv2(chunk))
 
             logger.info(f"[Каспер] Ответ отправлен")
             await self.post_to_group(answer[:500] + ("…" if len(answer) > 500 else ""))
@@ -249,9 +250,9 @@ class KasperAgent(BaseAgent):
         result = await self.handle_task(topic, from_agent="команды /research")
         for chunk in [result[i : i + 4000] for i in range(0, len(result), 4000)]:
             try:
-                await update.message.reply_text(chunk, parse_mode="HTML")
+                await update.message.reply_text(chunk, parse_mode="MarkdownV2")
             except Exception:
-                await update.message.reply_text(chunk)
+                await update.message.reply_text(_strip_mdv2(chunk))
 
     def _help_text(self) -> str:
         return (

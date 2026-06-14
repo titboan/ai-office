@@ -11,6 +11,7 @@ from telegram.ext import CommandHandler, ContextTypes
 from config import config
 from task_queue import create_reminder
 from tools.ntfy import send_push
+from utils.tg_format import strip_mdv2 as _strip_mdv2
 from .base_agent import BaseAgent
 
 
@@ -163,9 +164,9 @@ class AlexAgent(BaseAgent):
         result = await self.handle_task(goal, from_agent="команды /plan")
         for chunk in [result[i : i + 4000] for i in range(0, len(result), 4000)]:
             try:
-                await update.message.reply_text(chunk, parse_mode="HTML")
+                await update.message.reply_text(chunk, parse_mode="MarkdownV2")
             except Exception:
-                await update.message.reply_text(chunk)
+                await update.message.reply_text(_strip_mdv2(chunk))
 
     async def cmd_roadmap(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/roadmap <проект> — построить дорожную карту."""
@@ -183,9 +184,9 @@ class AlexAgent(BaseAgent):
         )
         for chunk in [result[i : i + 4000] for i in range(0, len(result), 4000)]:
             try:
-                await update.message.reply_text(chunk, parse_mode="HTML")
+                await update.message.reply_text(chunk, parse_mode="MarkdownV2")
             except Exception:
-                await update.message.reply_text(chunk)
+                await update.message.reply_text(_strip_mdv2(chunk))
 
     async def cmd_testpush(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE

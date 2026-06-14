@@ -154,6 +154,7 @@ Postgres Tasks: queued → running → completed/failed (chain_id, priority, ret
 - `WB /adv/v1/promotion/adverts` → 404 с окт 2025 — названия кампаний вносить вручную в `wb_campaigns`
 - `Notion Unclosed connection` — некритично, мониторим
 - `Conflict` при деплое — норма, rolling restart, проходит за 30–60 сек
+- **Формат vs parse_mode**: формат в системном промпте агента (MarkdownV2/HTML) обязан совпадать с `parse_mode` на **всех** путях отправки вывода Клода, иначе Telegram показывает сырые `*звёздочки*`. При смене формата — grep по всем `parse_mode=` и `reply_text(`, не только по промптам. Подробно: `ai-clone/feedback/format-prompt-matches-parse-mode.md`
 
 ---
 

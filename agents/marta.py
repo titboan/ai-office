@@ -1022,7 +1022,7 @@ class MartaAgent(BaseAgent):
             )
             if notion_url:
                 logger.info(f"[Марта] Проект сохранён в Notion: {notion_url}")
-                clean = f'{clean}\n\n📁 <b>Проект «{project_name}» создан в Notion:</b> <a href="{notion_url}">{notion_url}</a>'
+                clean = f'{clean}\n\n📁 *Проект «{project_name}» создан в Notion:* [ссылка]({notion_url})'
 
         return clean
 

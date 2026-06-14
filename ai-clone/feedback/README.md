@@ -19,3 +19,4 @@
 - [no-big-rewrites.md](no-big-rewrites.md) — эволюция, не переписывание
 - [plan-before-big-task.md](plan-before-big-task.md) — план перед большой задачей
 - [russian-language.md](russian-language.md) — всегда отвечать на русском
+- [format-prompt-matches-parse-mode.md](format-prompt-matches-parse-mode.md) — формат промпта = parse_mode отправки

@@ -32,8 +32,8 @@ def strip_mdv2(text: str) -> str:
     """Remove MarkdownV2 formatting markers to produce readable plain text."""
     # remove escape backslashes
     text = re.sub(r'\\([_*\[\]()~`>#+=|{}.!\-])', r'\1', text)
-    # remove inline markup: **bold**, _italic_, `code`, ~strike~, ||spoiler||
-    text = re.sub(r'\*\*(.+?)\*\*|__(.+?)__|_(.+?)_|`(.+?)`|~(.+?)~|\|\|(.+?)\|\|', lambda m: next(g for g in m.groups() if g is not None), text)
+    # remove inline markup: **bold**, *bold*, _italic_, `code`, ~strike~, ||spoiler||
+    text = re.sub(r'\*\*(.+?)\*\*|\*(.+?)\*|__(.+?)__|_(.+?)_|`(.+?)`|~(.+?)~|\|\|(.+?)\|\|', lambda m: next(g for g in m.groups() if g is not None), text)
     # remove headings
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
     # remove horizontal rules

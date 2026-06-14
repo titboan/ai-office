@@ -6,6 +6,7 @@ from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
 from tools import save_content
+from utils.tg_format import strip_mdv2 as _strip_mdv2
 from .base_agent import BaseAgent
 
 
@@ -86,7 +87,7 @@ class ElinaAgent(BaseAgent):
                 f"📝 {content_type} готов и сохранён в Notion: {notion_url}"
             )
             # Добавляем ссылку на Notion в конец ответа
-            answer = f"{answer}\n\n📄 *Сохранено в Notion ({content_type}):* {notion_url}"
+            answer = f"{answer}\n\n📄 [Сохранено в Notion ({content_type})]({notion_url})"
         else:
             await self.post_to_group(f"📝 {content_type} готов: {answer[:200]}…")
 
@@ -110,9 +111,9 @@ class ElinaAgent(BaseAgent):
         # Разбиваем если длинный ответ
         for chunk in [result[i : i + 4000] for i in range(0, len(result), 4000)]:
             try:
-                await update.message.reply_text(chunk, parse_mode="HTML")
+                await update.message.reply_text(chunk, parse_mode="MarkdownV2")
             except Exception:
-                await update.message.reply_text(chunk)
+                await update.message.reply_text(_strip_mdv2(chunk))
 
     async def cmd_post(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/post <тема> — написать пост для Telegram."""
@@ -129,9 +130,9 @@ class ElinaAgent(BaseAgent):
             from_agent="команды /post",
         )
         try:
-            await update.message.reply_text(result, parse_mode="HTML")
+            await update.message.reply_text(result, parse_mode="MarkdownV2")
         except Exception:
-            await update.message.reply_text(result)
+            await update.message.reply_text(_strip_mdv2(result))
 
     def _help_text(self) -> str:
         return (

@@ -8,6 +8,7 @@ from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
 from tools import create_repo, create_file, create_branch, create_pull_request, enable_pages
+from utils.tg_format import strip_mdv2 as _strip_mdv2
 from .base_agent import BaseAgent
 
 
@@ -279,11 +280,11 @@ class KevinAgent(BaseAgent):
             return
         await update.message.reply_text("👨‍💻 Пишу код и создаю PR…")
         result = await self.handle_task(task, from_agent="команды /code")
-        if len(result) <= 4096:
-            await update.message.reply_text(result)
-        else:
-            for chunk in [result[i:i+4000] for i in range(0, len(result), 4000)]:
-                await update.message.reply_text(chunk)
+        for chunk in [result[i:i+4000] for i in range(0, len(result), 4000)]:
+            try:
+                await update.message.reply_text(chunk, parse_mode="MarkdownV2")
+            except Exception:
+                await update.message.reply_text(_strip_mdv2(chunk))
 
     def _help_text(self) -> str:
         return (
