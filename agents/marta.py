@@ -133,8 +133,9 @@ class MartaAgent(BaseAgent):
 
     def _main_keyboard(self) -> ReplyKeyboardMarkup:
         return ReplyKeyboardMarkup([
-            ["📋 Статус", "📜 История"],
-            ["📂 Проекты", "❌ Отмена задачи"],
+            ["📊 Отчёт", "⭐ Отзывы"],
+            ["🔄 Синхронизация", "📋 Статус"],
+            ["📂 Проекты", "❓ Помощь"],
         ], resize_keyboard=True)
 
     # ------------------------------------------------------------------ #
@@ -452,6 +453,35 @@ class MartaAgent(BaseAgent):
         """Общая логика обработки текста — используется из handle_message и handle_voice."""
 
         # Обработка кнопок клавиатуры
+        _QUICK_ACTIONS = {
+            "📊 Отчёт":         ("peter", "Дай сводный отчёт по продажам WB и Ozon за последние 7 дней"),
+            "⭐ Отзывы":        ("max",   "Обработай новые отзывы на маркетплейсах"),
+            "🔄 Синхронизация": ("max",   "Синхронизируй данные: заказы, остатки, финансы"),
+        }
+        _AGENT_QUICK_LABEL = {
+            "peter": "📊 Питер", "max": "🛒 Макс",
+        }
+        btn = user_text.strip()
+        if btn in _QUICK_ACTIONS:
+            agent_key, task_text = _QUICK_ACTIONS[btn]
+            await enqueue_task(
+                assigned_agent=agent_key,
+                payload=task_text,
+                from_agent="marta",
+                chat_id=chat_id,
+                priority=0,
+            )
+            label = _AGENT_QUICK_LABEL.get(agent_key, agent_key)
+            await reply_func(
+                f"⏳ Передала задачу {label} — пришлю результат когда готово.",
+                parse_mode="HTML",
+            )
+            return
+
+        if user_text.strip() == "❓ Помощь":
+            await reply_func(self._help_text(), parse_mode="HTML")
+            return
+
         if user_text.strip() == "📋 Статус":
             tasks = await get_active_tasks()
             if not tasks:
