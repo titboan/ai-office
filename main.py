@@ -473,7 +473,7 @@ async def run_all_async() -> None:
             for row in daily_rows:
                 d = row["date"]
                 pivot.setdefault(d, {"date": d, "wb": 0.0, "ozon": 0.0})
-                pivot[d][row["marketplace"]] = float(row["revenue"])
+                pivot[d][row["marketplace"]] = float(row["revenue"] or 0)
             data["revenue_by_day"] = list(pivot.values())
         except Exception as e:
             logger.error(f"[dashboard] data error: {e}", exc_info=True)
