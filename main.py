@@ -491,6 +491,9 @@ async def run_all_async() -> None:
             data["revenue_by_day"] = _pivot(daily_rows, "revenue")
             data["orders_by_day"]  = _pivot(daily_rows, "orders")
             data["sales_by_day"]   = _pivot(sales_rows, "revenue")
+            logger.info(f"[dashboard] chat={chat_id} days={days} "
+                        f"daily_rows={len(daily_rows)} sales_rows={len(sales_rows)} "
+                        f"revenue_by_day={len(data['revenue_by_day'])}")
         except Exception as e:
             logger.error(f"[dashboard] data error: {e}", exc_info=True)
             return web.Response(status=500, text="Internal Error", headers=cors)
