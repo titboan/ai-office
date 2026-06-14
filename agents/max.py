@@ -1193,6 +1193,159 @@ class MaxAgent(BaseAgent):
             logger.error(f"[Макс/sync_funnel] {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
 
+    async def sync_promotions(self, chat_id: int) -> dict:
+        """Синхронизация акционных кампаний WB + Ozon."""
+        from db import get_marketplace_shops, upsert_promotion
+        from tools.marketplace import WBClient, OzonClient
+
+        shops = await get_marketplace_shops(chat_id)
+        counts = {"wb": 0, "ozon": 0}
+
+        for shop in shops:
+            mp = shop["marketplace"]
+
+            if mp == "wb":
+                try:
+                    client = WBClient(shop["api_token"])
+                    promos = await client.get_promotions()
+                    for p in promos:
+                        if not p.get("promotion_id"):
+                            continue
+                        start = p["start_date"] or None
+                        end   = p["end_date"] or None
+                        await upsert_promotion(
+                            chat_id=chat_id, marketplace="wb",
+                            promotion_id=p["promotion_id"],
+                            title=p["title"],
+                            discount_pct=p["discount_pct"],
+                            start_date=start, end_date=end,
+                            product_ids=p["product_ids"],
+                        )
+                    counts["wb"] = len(promos)
+                    logger.info(f"[Макс/promos] WB: {len(promos)} акций")
+                except Exception as e:
+                    logger.error(f"[Макс/promos] WB: {e}", exc_info=True)
+
+            if mp == "ozon":
+                try:
+                    client = OzonClient(shop["api_token"], shop.get("client_id", ""))
+                    promos = await client.get_promotions()
+                    for p in promos:
+                        if not p.get("promotion_id"):
+                            continue
+                        start = p["start_date"] or None
+                        end   = p["end_date"] or None
+                        await upsert_promotion(
+                            chat_id=chat_id, marketplace="ozon",
+                            promotion_id=p["promotion_id"],
+                            title=p["title"],
+                            discount_pct=p["discount_pct"],
+                            start_date=start, end_date=end,
+                            product_ids=p["product_ids"],
+                        )
+                    counts["ozon"] = len(promos)
+                    logger.info(f"[Макс/promos] Ozon: {len(promos)} акций")
+                except Exception as e:
+                    logger.error(f"[Макс/promos] Ozon: {e}", exc_info=True)
+
+        return counts
+
+    async def cmd_sync_promotions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/sync_promotions — синхронизация акционных кампаний WB + Ozon."""
+        chat_id = update.effective_user.id
+        await update.message.reply_text("🏷 Синхронизирую акционные кампании…")
+        try:
+            counts = await self.sync_promotions(chat_id)
+            await update.message.reply_text(
+                f"✅ Акции синхронизированы\n"
+                f"WB: {counts.get('wb', 0)} акций\n"
+                f"Ozon: {counts.get('ozon', 0)} акций"
+            )
+        except Exception as e:
+            logger.error(f"[Макс/sync_promotions] {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+
+    async def sync_shop_kpi(self, chat_id: int) -> dict:
+        """Снимок рейтинга и KPI продавца WB + Ozon."""
+        from db import get_marketplace_shops, upsert_shop_kpi
+        from tools.marketplace import WBClient, OzonClient
+        from datetime import date as _date
+
+        shops = await get_marketplace_shops(chat_id)
+        today = _date.today()
+        results = {}
+
+        for shop in shops:
+            mp = shop["marketplace"]
+
+            if mp == "wb":
+                try:
+                    client = WBClient(shop["api_token"])
+                    kpi = await client.get_shop_kpi()
+                    if kpi:
+                        await upsert_shop_kpi(
+                            chat_id=chat_id, marketplace="wb",
+                            snapshot_date=today,
+                            rating=kpi.get("rating"),
+                            return_pct=kpi.get("return_pct"),
+                            cancellation_pct=kpi.get("cancellation_pct"),
+                            penalty_count=kpi.get("penalty_count", 0),
+                            extra_data=kpi.get("extra_data", {}),
+                        )
+                        results["wb"] = kpi
+                        logger.info(f"[Макс/kpi] WB: рейтинг {kpi.get('rating')}")
+                except Exception as e:
+                    logger.error(f"[Макс/kpi] WB: {e}", exc_info=True)
+
+            if mp == "ozon":
+                try:
+                    client = OzonClient(shop["api_token"], shop.get("client_id", ""))
+                    kpi = await client.get_shop_kpi()
+                    if kpi:
+                        await upsert_shop_kpi(
+                            chat_id=chat_id, marketplace="ozon",
+                            snapshot_date=today,
+                            rating=kpi.get("rating"),
+                            return_pct=kpi.get("return_pct"),
+                            cancellation_pct=kpi.get("cancellation_pct"),
+                            penalty_count=kpi.get("penalty_count", 0),
+                            extra_data=kpi.get("extra_data", {}),
+                        )
+                        results["ozon"] = kpi
+                        logger.info(f"[Макс/kpi] Ozon: рейтинг {kpi.get('rating')}")
+                except Exception as e:
+                    logger.error(f"[Макс/kpi] Ozon: {e}", exc_info=True)
+
+        return results
+
+    async def cmd_shop_kpi(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/shop_kpi — рейтинг и KPI продавца на маркетплейсах."""
+        chat_id = update.effective_user.id
+        await update.message.reply_text("📊 Получаю рейтинг продавца…")
+        try:
+            results = await self.sync_shop_kpi(chat_id)
+            if not results:
+                await update.message.reply_text("⚠️ Данные KPI недоступны (магазины не подключены или API не поддерживается).")
+                return
+            lines = ["<b>Рейтинг продавца</b>"]
+            for mp, kpi in results.items():
+                label = "🟣 WB" if mp == "wb" else "🔵 Ozon"
+                rating = kpi.get("rating") or 0
+                ret    = kpi.get("return_pct") or 0
+                cancel = kpi.get("cancellation_pct") or 0
+                penalty = kpi.get("penalty_count") or 0
+                lines.append(
+                    f"\n{label}\n"
+                    f"⭐ Рейтинг: <b>{rating:.1f}</b>\n"
+                    f"↩️ Возвраты: {ret:.1f}%\n"
+                    f"🚫 Отмены: {cancel:.1f}%\n"
+                    f"⚠️ Штрафы: {penalty}"
+                )
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"[Макс/shop_kpi] {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+
     # ------------------------------------------------------------------ #
     #  Вспомогательные методы для сводки                                  #
     # ------------------------------------------------------------------ #
@@ -2498,8 +2651,10 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("sync",          self.cmd_sync))
         self.app.add_handler(CommandHandler("sync_adv",      self.cmd_sync_adv))
         self.app.add_handler(CommandHandler("sync_fin",      self.cmd_sync_fin))
-        self.app.add_handler(CommandHandler("sync_funnel",   self.cmd_sync_funnel))
-        self.app.add_handler(CommandHandler("sync_sku",      self.cmd_sync_sku))
+        self.app.add_handler(CommandHandler("sync_funnel",      self.cmd_sync_funnel))
+        self.app.add_handler(CommandHandler("sync_promotions", self.cmd_sync_promotions))
+        self.app.add_handler(CommandHandler("shop_kpi",        self.cmd_shop_kpi))
+        self.app.add_handler(CommandHandler("sync_sku",        self.cmd_sync_sku))
         self.app.add_handler(CommandHandler("products",      self.cmd_products))
         self.app.add_handler(CommandHandler("map",           self.cmd_map))
         self.app.add_handler(CommandHandler("cost",          self.cmd_cost_wizard))

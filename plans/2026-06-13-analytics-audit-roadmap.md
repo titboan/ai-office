@@ -1,6 +1,6 @@
 # 2026-06-13-analytics-audit-roadmap.md
 
-Статус: завершён (п.1–5) / п.6–9 — следующие итерации
+Статус: завершён
 Дата: 2026-06-13
 
 ---
@@ -228,6 +228,10 @@ product_ids JSONB, chat_id BIGINT
 - [x] 3. Воронка конверсии — NM Report WB + Ozon analytics (новое измерение)
 - [x] 4. Финансовые отчёты МП — реальная P&L (самое важное для бизнеса)
 - [x] 5. Возвраты, исторические снимки, остальное
+- [x] 6. История остатков — stock_history_daily (уже было реализовано)
+- [x] 7. Mini App кнопка — Дашборд в peter.py (уже было реализовано)
+- [x] 8. Акционные кампании — marketplace_promotions, sync_promotions, /sync_promotions
+- [x] 9. Рейтинг продавца — shop_kpi_snapshots, sync_shop_kpi, /shop_kpi
 
 ---
 

@@ -608,6 +608,66 @@ class WBClient:
         logger.info(f"[WB.get_funnel_stats] {date_from}–{date_to}: {len(results)} записей")
         return results
 
+    async def get_promotions(self) -> list[dict]:
+        """Список активных и предстоящих акций продавца WB."""
+        import json as _json
+        url = "https://dp-api.wildberries.ru/api/v2/promotion/catalogue"
+        headers = {"Authorization": self._token, "Content-Type": "application/json"}
+        results = []
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=_TIMEOUT) as resp:
+                    raw = await resp.text()
+                    if resp.status == 404:
+                        logger.warning("[WB.get_promotions] endpoint 404 — акции WB недоступны через API")
+                        return []
+                    if resp.status != 200:
+                        logger.error(f"[WB.get_promotions] HTTP {resp.status}: {raw[:200]}")
+                        return []
+                    data = _json.loads(raw)
+            for promo in (data.get("data") or data.get("promotions") or []):
+                results.append({
+                    "promotion_id": str(promo.get("promotionID") or promo.get("id", "")),
+                    "title":        promo.get("name") or promo.get("title", ""),
+                    "discount_pct": float(promo.get("discount") or 0),
+                    "start_date":   (promo.get("startDateTime") or promo.get("startDate", ""))[:10],
+                    "end_date":     (promo.get("endDateTime") or promo.get("endDate", ""))[:10],
+                    "product_ids":  [str(x) for x in (promo.get("nmIDs") or [])],
+                })
+        except Exception as e:
+            logger.error(f"[WB.get_promotions] {e}", exc_info=True)
+        logger.info(f"[WB.get_promotions] {len(results)} акций")
+        return results
+
+    async def get_shop_kpi(self) -> dict:
+        """Рейтинг и KPI продавца WB через /api/v1/supplier/info."""
+        import json as _json
+        url = "https://seller-analytics-api.wildberries.ru/api/v1/supplier/info"
+        headers = {"Authorization": self._token, "Content-Type": "application/json"}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=_TIMEOUT) as resp:
+                    raw = await resp.text()
+                    if resp.status == 404:
+                        logger.warning("[WB.get_shop_kpi] endpoint 404 — KPI WB недоступны")
+                        return {}
+                    if resp.status != 200:
+                        logger.error(f"[WB.get_shop_kpi] HTTP {resp.status}: {raw[:200]}")
+                        return {}
+                    data = _json.loads(raw)
+            info = data.get("data") or data
+            return {
+                "rating":           float(info.get("rating") or 0),
+                "return_pct":       float(info.get("returnPercent") or info.get("buyoutPercent") or 0),
+                "cancellation_pct": float(info.get("cancelPercent") or 0),
+                "penalty_count":    int(info.get("penaltyCount") or 0),
+                "extra_data":       {k: v for k, v in info.items()
+                                     if k not in ("rating", "returnPercent", "buyoutPercent", "cancelPercent", "penaltyCount")},
+            }
+        except Exception as e:
+            logger.error(f"[WB.get_shop_kpi] {e}", exc_info=True)
+            return {}
+
 
 # ── Ozon ──────────────────────────────────────────────────────────────────────
 
@@ -1169,6 +1229,65 @@ class OzonClient:
             offset += len(rows)
         logger.info(f"[Ozon.get_funnel_stats] {date_from}–{date_to}: {len(results)} записей")
         return results
+
+    async def get_promotions(self) -> list[dict]:
+        """Список акций Ozon через /v2/promotion/list."""
+        import json as _json
+        url = f"{self._BASE}/v2/promotion/list"
+        results = []
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=self._headers(), json={}, timeout=_TIMEOUT) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[Ozon.get_promotions] HTTP {resp.status}: {raw[:200]}")
+                        return []
+                    data = _json.loads(raw)
+            for promo in (data.get("result") or {}).get("actions", []):
+                promo_id = str(promo.get("id", ""))
+                if not promo_id:
+                    continue
+                results.append({
+                    "promotion_id": promo_id,
+                    "title":        promo.get("title") or promo.get("name", ""),
+                    "discount_pct": float(promo.get("discount_value") or 0),
+                    "start_date":   (promo.get("date_start") or "")[:10],
+                    "end_date":     (promo.get("date_end") or "")[:10],
+                    "product_ids":  [],
+                })
+        except Exception as e:
+            logger.error(f"[Ozon.get_promotions] {e}", exc_info=True)
+        logger.info(f"[Ozon.get_promotions] {len(results)} акций")
+        return results
+
+    async def get_shop_kpi(self) -> dict:
+        """Рейтинг продавца Ozon через /v1/rating/summary."""
+        import json as _json
+        url = f"{self._BASE}/v1/rating/summary"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=self._headers(), json={}, timeout=_TIMEOUT) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[Ozon.get_shop_kpi] HTTP {resp.status}: {raw[:200]}")
+                        return {}
+                    data = _json.loads(raw)
+            result = data.get("result") or {}
+            groups = {g.get("key"): g for g in (result.get("groups") or [])}
+            rating_val   = result.get("total_score") or result.get("rating") or 0
+            cancellation = (groups.get("cancellation_rate") or {}).get("value") or 0
+            return_pct   = (groups.get("return_rate") or {}).get("value") or 0
+            penalty      = int((groups.get("penalty") or {}).get("value") or 0)
+            return {
+                "rating":           float(rating_val),
+                "return_pct":       float(return_pct),
+                "cancellation_pct": float(cancellation),
+                "penalty_count":    penalty,
+                "extra_data":       result,
+            }
+        except Exception as e:
+            logger.error(f"[Ozon.get_shop_kpi] {e}", exc_info=True)
+            return {}
 
 
 class OzonPerformanceClient:

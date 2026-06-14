@@ -349,7 +349,36 @@ async def _create_schema() -> None:
                 UNIQUE(snapshot_date, chat_id, marketplace, product_id, warehouse_name)
             )
         """)
-        logger.info("[db] Схема готова ✓ (tasks + cost_tracking + projects + task_events + marketplace + funnel + returns + snapshots)")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS marketplace_promotions (
+                id             BIGSERIAL PRIMARY KEY,
+                chat_id        BIGINT        NOT NULL,
+                marketplace    TEXT          NOT NULL,
+                promotion_id   TEXT          NOT NULL,
+                title          TEXT          NOT NULL DEFAULT '',
+                discount_pct   NUMERIC(5,2)  DEFAULT 0,
+                start_date     DATE,
+                end_date       DATE,
+                product_ids    JSONB         DEFAULT '[]',
+                synced_at      TIMESTAMPTZ   DEFAULT NOW(),
+                UNIQUE(chat_id, marketplace, promotion_id)
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS shop_kpi_snapshots (
+                id               BIGSERIAL PRIMARY KEY,
+                chat_id          BIGINT        NOT NULL,
+                marketplace      TEXT          NOT NULL,
+                snapshot_date    DATE          NOT NULL,
+                rating           NUMERIC(4,2),
+                return_pct       NUMERIC(5,2),
+                cancellation_pct NUMERIC(5,2),
+                penalty_count    INT           DEFAULT 0,
+                extra_data       JSONB         DEFAULT '{}',
+                UNIQUE(snapshot_date, chat_id, marketplace)
+            )
+        """)
+        logger.info("[db] Схема готова ✓ (tasks + cost_tracking + projects + task_events + marketplace + funnel + returns + snapshots + promotions + kpi)")
 
 async def save_project(
     chat_id: int,
@@ -1139,3 +1168,60 @@ async def upsert_stock_history(
             ON CONFLICT (snapshot_date, chat_id, marketplace, product_id, warehouse_name) DO UPDATE SET
                 stock = EXCLUDED.stock
         """, snapshot_date, chat_id, marketplace, product_id, warehouse_name or "", stock)
+
+
+async def upsert_promotion(
+    chat_id: int,
+    marketplace: str,
+    promotion_id: str,
+    title: str,
+    discount_pct: float,
+    start_date,
+    end_date,
+    product_ids: list,
+) -> None:
+    import json as _json
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO marketplace_promotions
+                (chat_id, marketplace, promotion_id, title, discount_pct, start_date, end_date, product_ids, synced_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+            ON CONFLICT (chat_id, marketplace, promotion_id) DO UPDATE SET
+                title        = EXCLUDED.title,
+                discount_pct = EXCLUDED.discount_pct,
+                start_date   = EXCLUDED.start_date,
+                end_date     = EXCLUDED.end_date,
+                product_ids  = EXCLUDED.product_ids,
+                synced_at    = NOW()
+        """, chat_id, marketplace, promotion_id, title or "",
+             float(discount_pct or 0), start_date, end_date,
+             _json.dumps(product_ids or []))
+
+
+async def upsert_shop_kpi(
+    chat_id: int,
+    marketplace: str,
+    snapshot_date,
+    rating: float | None,
+    return_pct: float | None,
+    cancellation_pct: float | None,
+    penalty_count: int,
+    extra_data: dict,
+) -> None:
+    import json as _json
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO shop_kpi_snapshots
+                (chat_id, marketplace, snapshot_date, rating, return_pct, cancellation_pct, penalty_count, extra_data)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (snapshot_date, chat_id, marketplace) DO UPDATE SET
+                rating           = EXCLUDED.rating,
+                return_pct       = EXCLUDED.return_pct,
+                cancellation_pct = EXCLUDED.cancellation_pct,
+                penalty_count    = EXCLUDED.penalty_count,
+                extra_data       = EXCLUDED.extra_data
+        """, chat_id, marketplace, snapshot_date,
+             rating, return_pct, cancellation_pct, penalty_count or 0,
+             _json.dumps(extra_data or {}))
