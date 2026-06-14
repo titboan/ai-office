@@ -518,7 +518,7 @@ async def run_all_async() -> None:
                 "Access-Control-Allow-Methods": "GET, OPTIONS",
             })
         init_data = request.headers.get("X-Telegram-Init-Data", "")
-        parsed = _validate_init_data(init_data, config.PETER_BOT_TOKEN)
+        parsed = _validate_init_data(init_data, config.MARTA_BOT_TOKEN)
         if parsed is None:
             return web.Response(status=401, text="Unauthorized", headers=cors)
         try:
