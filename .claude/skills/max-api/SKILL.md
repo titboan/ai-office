@@ -3,8 +3,8 @@ name: max-api
 description: >
   Используй этот skill при любой задаче связанной с агентом Макс:
   WB API, Ozon API, Ozon Performance API, парсинг CSV/ZIP отчётов,
-  синхронизация рекламной статистики, работа с отзывами, заказами,
-  остатками, себестоимостью, product_mapping. Также при ошибках
+  синхронизация рекламы, финотчётов, воронки, отзывов, заказов,
+  остатков, себестоимости, product_mapping. Также при ошибках
   rate limit, 404 от WB, PermissionDenied от Ozon.
 ---
 
@@ -20,11 +20,16 @@ description: >
 - ИИ-агент в группе партнёров: реагирует на "@бот" или "Макс"
 - Реклама WB: marketplace_adv_stats, синк через /adv/v3/fullstats, 03:00 UTC
 - Реклама Ozon: Performance API + OAuth, токен кешируется в Redis (TTL 25 мин)
+- Финотчёты: WB + Ozon → marketplace_financial_report (реальные выплаты/комиссии)
+- Воронка: WB NM Report + Ozon analytics → product_funnel_stats
 
 ## Команды
 
 - `/sync` — синхронизация заказов/остатков/сводка
 - `/sync_adv` — ручной запуск синхронизации рекламной статистики
+- `/sync_fin [дней=90]` — финансовые отчёты (комиссии, выплаты, логистика)
+- `/sync_funnel` — воронка конверсии карточек (30 дней)
+- `/sync_sku` — подтянуть Ozon SKU в реестр
 - `/products` — каталог товаров
 - `/add` — мастер добавления товара (пошаговый диалог)
 - `/cost` — задать себестоимость; быстрый путь: `/cost <ident> <сумма>`
@@ -34,11 +39,30 @@ description: >
 ## WB Statistics API (отдельный токен, категория "Статистика")
 
 - Заказы: `/api/v1/supplier/orders` flag=0/1
-- Продажи: `/api/v1/supplier/sales` — только saleID начинается с "S" (R = возврат)
+- Продажи + возвраты: `/api/v1/supplier/sales`
+  - saleID начинается с "S" → продажа, `is_return=False`
+  - saleID начинается с "R" → возврат, `is_return=True`
+  - Оба типа сохраняются в `marketplace_sales`
 - Остатки: `/api/v1/supplier/stocks`
 - Rate limit: 429 → sleep 60 сек + retry
 - Реклама: `/adv/v3/fullstats` — работает ✅
 - ⛔ `/adv/v1/promotion/adverts` — 404 с октября 2025 (баг WB). Названия кампаний — вручную в `wb_campaigns`
+
+## WB Analytics API (основной токен)
+
+- Воронка NM: `/api/v1/analytics/nm-report/grouped`
+  - Параметры: `nmIDs[]`, `period.begin/end`, `aggregationLevel=day`
+  - Поля: `openCardCount` (views), `addToCartCount`, `ordersCount`, `buyoutsCount`
+  - `addToCartPercent` (view→cart), `cartToOrderPercent` (cart→order)
+  - Пагинация: `isNextPage` в ответе → page+1
+
+## WB Financial Report API (statistics_token!)
+
+- `/api/v5/supplier/reportDetailByPeriod`
+  - `dateFrom`, `dateTo`, `rrdid` (пагинация — начать с 0)
+  - Ключевые поля: `nm_id`, `ppvz_for_pay` (выплата), `ppvz_office_id`, `delivery_rub`, `storage_fee`, `penalty`
+  - Агрегируется по (nm_id, week_start_monday) в памяти перед upsert
+  - upsert = EXCLUDED-семантика (не накопление!)
 
 ## WB Feedbacks API (основной токен)
 
@@ -53,6 +77,13 @@ description: >
 - Заказы активные: POST `/v3/posting/fbo/list`
 - Заказы история: POST `/v1/analytics/data` (агрегат, не точные данные)
 - Выкупы: POST `/v3/posting/fbo/list` статус delivered
+- Воронка: POST `/v1/analytics/data`
+  - dimension: `["sku"]`, metrics: `["views", "conv_tocart", "ordered_units"]`
+  - `add_to_cart = round(views * conv_tocart / 100)`
+- Финансы: POST `/v3/finance/transaction/list`
+  - tx_type: "orders" и "returns" (отдельные запросы)
+  - Агрегируется по (offer_id, week_start_monday)
+  - revenue ≈ payout + commission + logistics (приближение, точной выручки нет)
 - Отзывы: ❌ Premium Plus/Pro
 
 ## Ozon Performance API (OAuth, обязателен с апр 2026)
@@ -80,11 +111,22 @@ description: >
 
 - **Цена селлера** = WB `priceWithDisc` / Ozon `products[].price` из `/v3/posting/*`
   - НЕ из `/v1/analytics/data` — там её нет
-- **Реализация** = WB `finishedPrice` / Ozon `revenue/qty`
+- **Выплата (payout)** = WB `ppvz_for_pay` / Ozon суммарный payout из `/v3/finance/transaction/list`
+- **NET-маржа** = payout − qty × себестоимость (в `marketplace_financial_report`)
 - **ДРР** считать из финотчётов, не наивно:
   - WB: знаменатель = `ppvz_for_pay` из `/api/v5/supplier/reportDetailByPeriod`
-  - Ozon: `/v3/finance/transaction/list` + `/v2/finance/realization`
+  - Ozon: `/v3/finance/transaction/list`
 - Дашборд заказов и финансовый ДРР показывают разный оборот — это нормально, две витрины
+
+## Фоновые задачи в main.py
+
+| Время UTC | Задача |
+|---|---|
+| 01:00 | `_daily_snapshot_loop` — снимок выручки + остатков в историю |
+| 03:00 | `_scheduled_adv_sync_loop` — реклама WB + Ozon |
+| 06:00, 11:00, 17:00 | `_scheduled_reviews_loop` — отзывы |
+| каждые 15 мин | `_negative_reviews_loop` — быстрый polling 1-2★ |
+| пн 07:00 | `_weekly_audit_loop` — еженедельный аудит у Питера |
 
 ## Голосовые в группе (фикс)
 

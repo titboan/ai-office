@@ -387,6 +387,85 @@ async def run_all_async() -> None:
 
     asyncio.create_task(_weekly_audit_loop())
 
+    async def _daily_snapshot_loop():
+        """Ежедневно в 01:00 UTC фиксирует выручку вчера и текущие остатки."""
+        from datetime import datetime, timezone, timedelta, date as _date
+        from db import get_all_active_shops, upsert_daily_snapshot, upsert_stock_history, get_pool
+
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                target = now.replace(hour=1, minute=0, second=0, microsecond=0)
+                if target <= now:
+                    target += timedelta(days=1)
+                wait_seconds = (target - now).total_seconds()
+                logger.info(f"[snapshot] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
+                await asyncio.sleep(wait_seconds)
+
+                yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+                yesterday_start = datetime(yesterday.year, yesterday.month, yesterday.day, tzinfo=timezone.utc)
+                yesterday_end   = yesterday_start + timedelta(days=1)
+
+                pool = await get_pool()
+                shops = await get_all_active_shops()
+                unique_chats = list({s["chat_id"] for s in shops})
+
+                for chat_id in unique_chats:
+                    # Снимок выручки за вчера
+                    try:
+                        async with pool.acquire() as conn:
+                            rows = await conn.fetch("""
+                                SELECT marketplace,
+                                       SUM(seller_price * quantity)::numeric(12,2) AS revenue,
+                                       COUNT(*) AS orders_count,
+                                       AVG(seller_price)::numeric(10,2)            AS avg_price
+                                FROM marketplace_orders
+                                WHERE chat_id = $1
+                                  AND order_date >= $2 AND order_date < $3
+                                GROUP BY marketplace
+                            """, chat_id, yesterday_start, yesterday_end)
+                        for r in rows:
+                            await upsert_daily_snapshot(
+                                snapshot_date=yesterday,
+                                chat_id=chat_id,
+                                marketplace=r["marketplace"],
+                                revenue=float(r["revenue"] or 0),
+                                orders_count=int(r["orders_count"] or 0),
+                                avg_price=float(r["avg_price"] or 0),
+                            )
+                        logger.info(f"[snapshot] chat={chat_id} revenue snapshot: {len(rows)} строк за {yesterday}")
+                    except Exception as e:
+                        logger.error(f"[snapshot] revenue chat={chat_id}: {e}")
+
+                    # Снимок остатков (текущие → история)
+                    try:
+                        async with pool.acquire() as conn:
+                            stocks = await conn.fetch("""
+                                SELECT marketplace, product_id, warehouse_name, stock
+                                FROM marketplace_stocks
+                                WHERE chat_id = $1
+                            """, chat_id)
+                        for s in stocks:
+                            await upsert_stock_history(
+                                snapshot_date=yesterday,
+                                chat_id=chat_id,
+                                marketplace=s["marketplace"],
+                                product_id=s["product_id"],
+                                warehouse_name=s["warehouse_name"] or "",
+                                stock=s["stock"],
+                            )
+                        logger.info(f"[snapshot] chat={chat_id} stock history: {len(stocks)} позиций за {yesterday}")
+                    except Exception as e:
+                        logger.error(f"[snapshot] stocks chat={chat_id}: {e}")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[snapshot] ошибка: {e}")
+                await asyncio.sleep(60)
+
+    asyncio.create_task(_daily_snapshot_loop())
+
     tina_agent = next((a for a in started if isinstance(a, TinaAgent)), None)
 
     async def _tender_digest_loop():
@@ -513,6 +592,7 @@ async def run_all_async() -> None:
     logger.info("[main] Adv sync task запущен (03:00 UTC / 06:00 МСК)")
     logger.info("[main] Weekly audit task запущен (пн 07:00 UTC / 10:00 МСК)")
     logger.info(f"[main] Tender digest task запущен ({config.TENDER_SCAN_HOUR_UTC}:00 UTC / 08:00 МСК)")
+    logger.info("[main] Daily snapshot task запущен (01:00 UTC — выручка + остатки)")
 
     try:
         await stop_event.wait()

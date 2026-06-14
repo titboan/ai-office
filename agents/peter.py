@@ -222,7 +222,37 @@ class PeterAgent(BaseAgent):
                 ORDER BY op_profit DESC
             """, chat_id, date_from)
 
-            # 5. Рекламные расходы
+            # 5. NET-маржа из финансовых отчётов (реальные выплаты минус себестоимость)
+            net_margin = await conn.fetch("""
+                SELECT
+                    f.marketplace,
+                    f.product_id,
+                    COALESCE(m.display_name, f.product_id) AS product_name,
+                    SUM(f.quantity)::int                    AS qty,
+                    SUM(f.revenue)::numeric(12,2)           AS revenue,
+                    SUM(f.payout)::numeric(12,2)            AS payout,
+                    SUM(f.commission)::numeric(12,2)        AS commission,
+                    SUM(f.logistics)::numeric(12,2)         AS logistics,
+                    SUM(f.storage)::numeric(12,2)           AS storage,
+                    SUM(f.penalty)::numeric(12,2)           AS penalty,
+                    COALESCE(MAX(c.cost), 0)::numeric(12,2) AS cost_per_unit,
+                    (SUM(f.payout) - SUM(f.quantity) * COALESCE(MAX(c.cost), 0))::numeric(12,2) AS net_profit,
+                    CASE WHEN SUM(f.payout) > 0
+                         THEN ROUND((SUM(f.payout) - SUM(f.quantity) * COALESCE(MAX(c.cost), 0))
+                                    / SUM(f.payout) * 100, 1)
+                         ELSE 0 END                         AS net_margin_pct
+                FROM marketplace_financial_report f
+                LEFT JOIN product_mapping m
+                       ON m.wb_article = f.product_id
+                       OR m.ozon_offer_id = f.product_id
+                LEFT JOIN product_costs c ON c.mapping_id = m.id
+                WHERE f.chat_id = $1 AND f.report_date >= $2
+                GROUP BY f.marketplace, f.product_id, m.display_name
+                ORDER BY net_profit DESC
+                LIMIT 15
+            """, chat_id, date_from)
+
+            # 6. Рекламные расходы
             adv = await conn.fetch("""
                 SELECT marketplace,
                        SUM(spend)::numeric(12,2) AS spend,
@@ -253,6 +283,7 @@ class PeterAgent(BaseAgent):
             "top_products":[dict(r) for r in top_products],
             "margin_wb":   [dict(r) for r in margin_wb],
             "margin_ozon": [dict(r) for r in margin_ozon],
+            "net_margin":  [dict(r) for r in net_margin],
             "adv":         [dict(r) for r in adv],
             "low_stocks":  [dict(r) for r in low_stocks],
         }
@@ -293,7 +324,10 @@ class PeterAgent(BaseAgent):
                     COALESCE(o.revenue, 0)::numeric(12,2)           AS revenue,
                     CASE WHEN SUM(p.spend) > 0
                          THEN ROUND(COALESCE(o.revenue, 0) / SUM(p.spend), 2)
-                         ELSE 0 END                                 AS roas
+                         ELSE 0 END                                 AS roas,
+                    CASE WHEN COALESCE(o.revenue, 0) > 0
+                         THEN ROUND(SUM(p.spend) / COALESCE(o.revenue, 0) * 100, 2)
+                         ELSE NULL END                              AS drr
                 FROM product_adv_stats p
                 LEFT JOIN product_mapping m
                        ON m.wb_article = p.product_id
@@ -422,9 +456,11 @@ class PeterAgent(BaseAgent):
 
 ВАЖНО:
 - Данные по заказам, не по выкупам. Реальная выручка ниже на % возвратов.
-- Маржа считается как выручка минус себестоимость (без комиссии МП и логистики МП).
-- Комиссия WB ~15-25%, логистика ~50-150₽/заказ — учитывай в выводах.
-- Комиссия Ozon ~5-15% в зависимости от категории.
+- margin_wb / margin_ozon — GROSS-маржа (выручка − себестоимость, БЕЗ комиссий МП).
+- net_margin — РЕАЛЬНАЯ маржа из финансовых отчётов МП (payout − себестоимость). Если пустой — запусти /sync_fin у Макса.
+- net_margin_pct = (payout − cost) / payout × 100 — то, что реально остаётся после МП.
+- Если net_margin НЕ пустой — используй его как основной показатель прибыльности, не GROSS.
+- Комиссия WB ~15-25%, логистика ~50-150₽/заказ; Ozon ~5-15%.
 - product_metrics.avg_ctr — CTR из рекламы (если 0 — данные ещё не накоплены после /sync_adv).
 - product_metrics.roas — ROAS = оборот/расход. Если 0 — данные не синхронизированы.
 - stock_velocity.days_left — дней осталось стока при текущем темпе продаж. 999 = нет продаж.
@@ -623,6 +659,115 @@ class PeterAgent(BaseAgent):
             ]])
             await update.message.reply_text("Открыть интерактивный дашборд:", reply_markup=markup)
 
+    async def cmd_funnel(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """/funnel [период=30] — воронка конверсии карточек: показы→корзина→заказ."""
+        chat_id = update.effective_user.id
+        days = 30
+        if context.args:
+            try:
+                days = int(context.args[0])
+            except ValueError:
+                pass
+
+        await update.message.reply_text(f"📈 Анализирую воронку конверсии за {days} дней…")
+
+        from db import get_pool
+        pool = await get_pool()
+        date_from = (datetime.now(_UTC) - timedelta(days=days)).date()
+
+        async with pool.acquire() as conn:
+            funnel_rows = await conn.fetch("""
+                SELECT
+                    f.marketplace,
+                    f.product_id,
+                    COALESCE(m.display_name, f.product_id) AS name,
+                    SUM(f.views)::bigint                        AS views,
+                    SUM(f.add_to_cart)::bigint                  AS add_to_cart,
+                    SUM(f.orders_count)::bigint                 AS orders_count,
+                    SUM(f.buyouts)::bigint                      AS buyouts,
+                    CASE WHEN SUM(f.views) > 0
+                         THEN ROUND(SUM(f.add_to_cart)::numeric / SUM(f.views) * 100, 2)
+                         ELSE 0 END                             AS conv_view_to_cart,
+                    CASE WHEN SUM(f.add_to_cart) > 0
+                         THEN ROUND(SUM(f.orders_count)::numeric / SUM(f.add_to_cart) * 100, 2)
+                         ELSE 0 END                             AS conv_cart_to_order,
+                    AVG(f.avg_position)::numeric(6,1)           AS avg_position
+                FROM product_funnel_stats f
+                LEFT JOIN product_mapping m
+                       ON m.wb_article = f.product_id
+                       OR m.ozon_sku   = f.product_id
+                WHERE f.chat_id = $1 AND f.stat_date >= $2
+                GROUP BY f.marketplace, f.product_id, m.display_name
+                ORDER BY views DESC
+                LIMIT 25
+            """, chat_id, date_from)
+
+        if not funnel_rows:
+            await update.message.reply_text(
+                "❌ Данных воронки нет. Запусти <code>/sync_funnel</code> у Макса для синхронизации.",
+                parse_mode="HTML"
+            )
+            return
+
+        funnel_data = [dict(r) for r in funnel_rows]
+
+        prompt = f"""Период: {days} дней.
+
+ВОРОНКА КОНВЕРСИИ ПО ТОВАРАМ:
+{json.dumps(funnel_data, ensure_ascii=False, default=str, indent=2)}
+
+Формат ответа (HTML Telegram, не длиннее 35 строк):
+
+📈 <b>Воронка конверсии за N дней</b>
+
+<b>Топ по показам:</b>
+<code>Название</code> — показов: N | в корзину: N% | заказов: N% | выкуп: N%
+[ещё 4-6 товаров]
+
+⚠️ <b>Слабые карточки (мало показов):</b>
+[Товары с показами < медианы — проблема с SEO/позицией]
+
+🛒 <b>Плохая конверсия в корзину (&lt;3%):</b>
+[Товары — проблема с карточкой/фото/ценой]
+
+✅ <b>Лидеры конверсии:</b>
+[Товары с view→cart > 10% и cart→order > 50%]
+
+<blockquote>Главный вывод: почему какой-то товар не продаётся — мало показов или плохая карточка?</blockquote>
+
+Если avg_position не null — упомяни среднюю позицию в поиске для WB-товаров."""
+
+        try:
+            from anthropic import AsyncAnthropic
+            client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+            resp = await client.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=2048,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            answer = resp.content[0].text
+        except Exception as e:
+            logger.error(f"[Питер/funnel] ошибка Claude: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка анализа: {e}")
+            return
+
+        notion_url = await save_research(
+            title=f"Воронка {datetime.now(_UTC).strftime('%d.%m.%Y')}",
+            content=_strip_html(answer),
+            source="cmd:funnel",
+            agent="Питер",
+        )
+        if notion_url:
+            answer = f'{answer}\n\n📄 <a href="{notion_url}">Сохранено в Notion</a>'
+
+        for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
+            try:
+                await update.message.reply_text(chunk, parse_mode="HTML")
+            except Exception:
+                await update.message.reply_text(chunk)
+
     async def cmd_analyze(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -706,6 +851,7 @@ class PeterAgent(BaseAgent):
             "/report [цель=X] [период=14] — отчёт о продажах и план роста\n"
             "/audit — полная оценка магазина (SWOT, KPI, топ-5 действий)\n"
             "/drr [период=30] — ДРР и ROAS по товарам с вердиктами\n"
+            "/funnel [период=30] — воронка конверсии карточек (показы→корзина→заказ)\n"
             "/analyze &lt;вопрос&gt; — произвольный бизнес-анализ\n"
             "/reset — очистить историю\n\n"
             "💡 Пример: /report цель=100000 период=14"
@@ -718,6 +864,7 @@ class PeterAgent(BaseAgent):
             BotCommand("report", "Отчёт о продажах и план роста"),
             BotCommand("audit", "Полная оценка магазина (SWOT, KPI)"),
             BotCommand("drr", "ДРР и ROAS по товарам"),
+            BotCommand("funnel", "Воронка конверсии карточек"),
             BotCommand("analyze", "Произвольный бизнес-анализ"),
             BotCommand("reset", "Очистить историю диалога"),
         ]
@@ -727,3 +874,4 @@ class PeterAgent(BaseAgent):
         self.app.add_handler(CommandHandler("analyze", self.cmd_analyze))
         self.app.add_handler(CommandHandler("audit",   self.cmd_audit))
         self.app.add_handler(CommandHandler("drr",     self.cmd_drr))
+        self.app.add_handler(CommandHandler("funnel",  self.cmd_funnel))

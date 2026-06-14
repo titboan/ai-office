@@ -285,7 +285,71 @@ async def _create_schema() -> None:
                 ON task_events (chain_id, created_at)
                 WHERE chain_id IS NOT NULL;
         """)
-        logger.info("[db] Схема готова ✓ (tasks + cost_tracking + projects + task_events + marketplace)")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS marketplace_financial_report (
+                id           BIGSERIAL PRIMARY KEY,
+                chat_id      BIGINT        NOT NULL,
+                marketplace  TEXT          NOT NULL,
+                product_id   TEXT          NOT NULL,
+                report_date  DATE          NOT NULL,
+                quantity     INT           DEFAULT 0,
+                revenue      NUMERIC(12,2) DEFAULT 0,
+                payout       NUMERIC(12,2) DEFAULT 0,
+                commission   NUMERIC(12,2) DEFAULT 0,
+                logistics    NUMERIC(12,2) DEFAULT 0,
+                storage      NUMERIC(12,2) DEFAULT 0,
+                penalty      NUMERIC(12,2) DEFAULT 0,
+                updated_at   TIMESTAMPTZ   DEFAULT NOW(),
+                UNIQUE(chat_id, marketplace, product_id, report_date)
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS product_funnel_stats (
+                id                 BIGSERIAL PRIMARY KEY,
+                chat_id            BIGINT      NOT NULL,
+                marketplace        TEXT        NOT NULL,
+                product_id         TEXT        NOT NULL,
+                stat_date          DATE        NOT NULL,
+                views              INT         DEFAULT 0,
+                add_to_cart        INT         DEFAULT 0,
+                orders_count       INT         DEFAULT 0,
+                buyouts            INT         DEFAULT 0,
+                avg_position       NUMERIC(6,1),
+                conv_view_to_cart  NUMERIC(5,2),
+                conv_cart_to_order NUMERIC(5,2),
+                updated_at         TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE(chat_id, marketplace, product_id, stat_date)
+            )
+        """)
+        await conn.execute("""
+            ALTER TABLE marketplace_sales
+            ADD COLUMN IF NOT EXISTS is_return BOOLEAN DEFAULT FALSE
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS daily_revenue_snapshot (
+                id            BIGSERIAL PRIMARY KEY,
+                snapshot_date DATE          NOT NULL,
+                chat_id       BIGINT        NOT NULL,
+                marketplace   TEXT          NOT NULL,
+                revenue       NUMERIC(12,2) DEFAULT 0,
+                orders_count  INT           DEFAULT 0,
+                avg_price     NUMERIC(10,2) DEFAULT 0,
+                UNIQUE(snapshot_date, chat_id, marketplace)
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS stock_history_daily (
+                id             BIGSERIAL PRIMARY KEY,
+                snapshot_date  DATE          NOT NULL,
+                chat_id        BIGINT        NOT NULL,
+                marketplace    TEXT          NOT NULL,
+                product_id     TEXT          NOT NULL,
+                warehouse_name TEXT          NOT NULL DEFAULT '',
+                stock          INT           DEFAULT 0,
+                UNIQUE(snapshot_date, chat_id, marketplace, product_id, warehouse_name)
+            )
+        """)
+        logger.info("[db] Схема готова ✓ (tasks + cost_tracking + projects + task_events + marketplace + funnel + returns + snapshots)")
 
 async def save_project(
     chat_id: int,
@@ -639,6 +703,7 @@ async def save_sale(
     price: float | None,
     commission: float | None,
     sale_date,
+    is_return: bool = False,
 ) -> bool:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -646,12 +711,12 @@ async def save_sale(
             """
             INSERT INTO marketplace_sales
                 (chat_id, marketplace, order_id, product_id, product_name,
-                 quantity, price, commission, sale_date)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 quantity, price, commission, sale_date, is_return)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             ON CONFLICT (marketplace, order_id) DO NOTHING
             """,
             chat_id, marketplace, order_id, product_id, product_name,
-            quantity, price, commission, sale_date,
+            quantity, price, commission, sale_date, is_return,
         )
         return result.split()[-1] != "0"
 
@@ -959,6 +1024,74 @@ async def log_event(
         logger.debug(f"[log_event] {event_type} task_id={task_id}: {e}")
 
 
+async def upsert_financial_report(
+    chat_id: int,
+    marketplace: str,
+    product_id: str,
+    report_date,
+    quantity: int = 0,
+    revenue: float = 0,
+    payout: float = 0,
+    commission: float = 0,
+    logistics: float = 0,
+    storage: float = 0,
+    penalty: float = 0,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO marketplace_financial_report
+                (chat_id, marketplace, product_id, report_date,
+                 quantity, revenue, payout, commission, logistics, storage, penalty, updated_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+            ON CONFLICT (chat_id, marketplace, product_id, report_date) DO UPDATE SET
+                quantity   = EXCLUDED.quantity,
+                revenue    = EXCLUDED.revenue,
+                payout     = EXCLUDED.payout,
+                commission = EXCLUDED.commission,
+                logistics  = EXCLUDED.logistics,
+                storage    = EXCLUDED.storage,
+                penalty    = EXCLUDED.penalty,
+                updated_at = NOW()
+        """, chat_id, marketplace, product_id, report_date,
+             quantity, revenue, payout, commission, logistics, storage, penalty)
+
+
+async def upsert_funnel_stat(
+    chat_id: int,
+    marketplace: str,
+    product_id: str,
+    stat_date,
+    views: int = 0,
+    add_to_cart: int = 0,
+    orders_count: int = 0,
+    buyouts: int = 0,
+    avg_position: float | None = None,
+    conv_view_to_cart: float | None = None,
+    conv_cart_to_order: float | None = None,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO product_funnel_stats
+                (chat_id, marketplace, product_id, stat_date,
+                 views, add_to_cart, orders_count, buyouts,
+                 avg_position, conv_view_to_cart, conv_cart_to_order, updated_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+            ON CONFLICT (chat_id, marketplace, product_id, stat_date) DO UPDATE SET
+                views              = EXCLUDED.views,
+                add_to_cart        = EXCLUDED.add_to_cart,
+                orders_count       = EXCLUDED.orders_count,
+                buyouts            = EXCLUDED.buyouts,
+                avg_position       = EXCLUDED.avg_position,
+                conv_view_to_cart  = EXCLUDED.conv_view_to_cart,
+                conv_cart_to_order = EXCLUDED.conv_cart_to_order,
+                updated_at         = NOW()
+        """, chat_id, marketplace, product_id, stat_date,
+             views, add_to_cart, orders_count, buyouts,
+             avg_position, conv_view_to_cart, conv_cart_to_order)
+
+
 async def get_distinct_digest_users() -> list[int]:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -966,3 +1099,43 @@ async def get_distinct_digest_users() -> list[int]:
             "SELECT DISTINCT added_by FROM digest_channels WHERE added_by IS NOT NULL"
         )
         return [r["added_by"] for r in rows]
+
+
+async def upsert_daily_snapshot(
+    snapshot_date,
+    chat_id: int,
+    marketplace: str,
+    revenue: float,
+    orders_count: int,
+    avg_price: float,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO daily_revenue_snapshot
+                (snapshot_date, chat_id, marketplace, revenue, orders_count, avg_price)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (snapshot_date, chat_id, marketplace) DO UPDATE SET
+                revenue      = EXCLUDED.revenue,
+                orders_count = EXCLUDED.orders_count,
+                avg_price    = EXCLUDED.avg_price
+        """, snapshot_date, chat_id, marketplace, revenue, orders_count, avg_price)
+
+
+async def upsert_stock_history(
+    snapshot_date,
+    chat_id: int,
+    marketplace: str,
+    product_id: str,
+    warehouse_name: str,
+    stock: int,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO stock_history_daily
+                (snapshot_date, chat_id, marketplace, product_id, warehouse_name, stock)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (snapshot_date, chat_id, marketplace, product_id, warehouse_name) DO UPDATE SET
+                stock = EXCLUDED.stock
+        """, snapshot_date, chat_id, marketplace, product_id, warehouse_name or "", stock)

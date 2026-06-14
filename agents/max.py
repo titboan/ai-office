@@ -203,8 +203,10 @@ class MaxAgent(BaseAgent):
                 BotCommand("map",       "✏️ Товар в реестр: name= wb= ozon="),
                 BotCommand("cost",      "💰 Себестоимость: <артикул> <сумма>"),
                 BotCommand("sync",      "🔄 Синхронизация заказов/остатков"),
-                BotCommand("sync_adv",  "📊 Синхронизация рекламы"),
-                BotCommand("sync_sku",  "🔗 Подтянуть Ozon SKU в реестр"),
+                BotCommand("sync_adv",    "📊 Синхронизация рекламы"),
+                BotCommand("sync_fin",    "💰 Финансовые отчёты (комиссии, выплаты)"),
+                BotCommand("sync_funnel", "📈 Воронка конверсии карточек"),
+                BotCommand("sync_sku",    "🔗 Подтянуть Ozon SKU в реестр"),
             ])
             logger.info("[Макс] BotCommand menu установлен")
         except Exception as e:
@@ -857,10 +859,11 @@ class MaxAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[Макс/sync] get_stocks {mp_label}: {e}")
 
-            # Продажи
+            # Продажи (включая возвраты с is_return=True)
             try:
                 sales = await client.get_sales(date_from=since, statistics_token=stats_token)
-                new_count = 0
+                new_sales = 0
+                new_returns = 0
                 for s in sales:
                     sale_date = None
                     if s.get("sale_date"):
@@ -869,15 +872,20 @@ class MaxAgent(BaseAgent):
                             sale_date = _dt.fromisoformat(str(s["sale_date"]).rstrip("Z")).replace(tzinfo=_UTC)
                         except Exception:
                             pass
+                    is_ret = s.get("is_return", False)
                     is_new = await save_sale(
                         chat_id=chat_id, marketplace=mp,
                         order_id=s["order_id"], product_id=s.get("product_id"),
                         product_name=s.get("product_name"), quantity=s.get("quantity", 1),
-                        price=s.get("price"), commission=s.get("commission"), sale_date=sale_date,
+                        price=s.get("price"), commission=s.get("commission"),
+                        sale_date=sale_date, is_return=is_ret,
                     )
                     if is_new:
-                        new_count += 1
-                logger.info(f"[Макс/sync] {mp_label}: {new_count} новых продаж")
+                        if is_ret:
+                            new_returns += 1
+                        else:
+                            new_sales += 1
+                logger.info(f"[Макс/sync] {mp_label}: {new_sales} новых продаж, {new_returns} возвратов")
             except Exception as e:
                 logger.error(f"[Макс/sync] get_sales {mp_label}: {e}")
 
@@ -1018,6 +1026,172 @@ class MaxAgent(BaseAgent):
                         logger.warning("[Макс/adv] Ozon Performance credentials не настроены")
                 except Exception as e:
                     logger.error(f"[Макс/adv] Ozon реклама: {e}")
+
+    async def sync_financial_report(self, chat_id: int, days: int = 90) -> dict:
+        """Синхронизация финансовых отчётов WB + Ozon за N дней.
+
+        Сохраняет реальные выплаты, комиссии, логистику и штрафы в
+        marketplace_financial_report для расчёта NET-маржи у Питера.
+        """
+        from db import get_marketplace_shops, upsert_financial_report
+        from tools.marketplace import WBClient, OzonClient
+
+        shops = await get_marketplace_shops(chat_id)
+        date_to   = datetime.now(_UTC).strftime("%Y-%m-%d")
+        date_from = (datetime.now(_UTC) - timedelta(days=days)).strftime("%Y-%m-%d")
+        counts = {"wb": 0, "ozon": 0}
+
+        for shop in shops:
+            mp = shop["marketplace"]
+
+            if mp == "wb":
+                stats_token = shop.get("statistics_token") or ""
+                if not stats_token:
+                    logger.warning("[Макс/fin] WB: statistics_token не задан, пропускаю")
+                    continue
+                try:
+                    client = WBClient(shop["api_token"])
+                    rows = await client.get_financial_report(
+                        date_from=date_from, date_to=date_to,
+                        statistics_token=stats_token,
+                    )
+                    for r in rows:
+                        await upsert_financial_report(
+                            chat_id=chat_id, marketplace="wb",
+                            product_id=r["product_id"],
+                            report_date=r["report_date"],
+                            quantity=r["quantity"],
+                            revenue=r["revenue"],
+                            payout=r["payout"],
+                            commission=r["commission"],
+                            logistics=r["logistics"],
+                            storage=r["storage"],
+                            penalty=r["penalty"],
+                        )
+                    counts["wb"] = len(rows)
+                    logger.info(f"[Макс/fin] WB: {len(rows)} записей финотчёта")
+                except Exception as e:
+                    logger.error(f"[Макс/fin] WB: {e}", exc_info=True)
+
+            if mp == "ozon":
+                try:
+                    client = OzonClient(shop["api_token"], shop.get("client_id", ""))
+                    rows = await client.get_financial_report(date_from=date_from, date_to=date_to)
+                    for r in rows:
+                        await upsert_financial_report(
+                            chat_id=chat_id, marketplace="ozon",
+                            product_id=r["product_id"],
+                            report_date=r["report_date"],
+                            quantity=r["quantity"],
+                            revenue=r["revenue"],
+                            payout=r["payout"],
+                            commission=r["commission"],
+                            logistics=r["logistics"],
+                            storage=r["storage"],
+                            penalty=r["penalty"],
+                        )
+                    counts["ozon"] = len(rows)
+                    logger.info(f"[Макс/fin] Ozon: {len(rows)} записей финотчёта")
+                except Exception as e:
+                    logger.error(f"[Макс/fin] Ozon: {e}", exc_info=True)
+
+        return counts
+
+    async def cmd_sync_fin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/sync_fin [дней=90] — синхронизация финансовых отчётов (комиссии, логистика, выплаты)."""
+        chat_id = update.effective_user.id
+        days = 90
+        if context.args:
+            try:
+                days = int(context.args[0])
+            except ValueError:
+                pass
+        await update.message.reply_text(f"💰 Синхронизирую финансовые отчёты за {days} дней…")
+        try:
+            counts = await self.sync_financial_report(chat_id, days=days)
+            await update.message.reply_text(
+                f"✅ Финансовые отчёты синхронизированы\n"
+                f"WB: {counts.get('wb', 0)} агрегатов\n"
+                f"Ozon: {counts.get('ozon', 0)} агрегатов\n\n"
+                f"Теперь /report у Питера покажет реальную NET-маржу."
+            )
+        except Exception as e:
+            logger.error(f"[Макс/sync_fin] {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+
+    async def sync_funnel(self, chat_id: int) -> dict:
+        """Синхронизация воронки конверсии карточки WB + Ozon за последние 30 дней."""
+        from db import get_marketplace_shops, upsert_funnel_stat
+        from tools.marketplace import WBClient, OzonClient
+        from datetime import date as _date
+
+        shops = await get_marketplace_shops(chat_id)
+        date_to   = datetime.now(_UTC).strftime("%Y-%m-%d")
+        date_from = (datetime.now(_UTC) - timedelta(days=30)).strftime("%Y-%m-%d")
+        counts = {"wb": 0, "ozon": 0}
+
+        for shop in shops:
+            mp = shop["marketplace"]
+
+            if mp == "wb":
+                try:
+                    client = WBClient(shop["api_token"])
+                    rows = await client.get_funnel_stats(date_from=date_from, date_to=date_to)
+                    for r in rows:
+                        stat_date = _date.fromisoformat(r["stat_date"]) if isinstance(r["stat_date"], str) else r["stat_date"]
+                        await upsert_funnel_stat(
+                            chat_id=chat_id, marketplace="wb",
+                            product_id=r["product_id"], stat_date=stat_date,
+                            views=r["views"], add_to_cart=r["add_to_cart"],
+                            orders_count=r["orders_count"], buyouts=r["buyouts"],
+                            avg_position=r["avg_position"],
+                            conv_view_to_cart=r["conv_view_to_cart"],
+                            conv_cart_to_order=r["conv_cart_to_order"],
+                        )
+                    counts["wb"] = len(rows)
+                    logger.info(f"[Макс/funnel] WB: {len(rows)} записей воронки")
+                except Exception as e:
+                    logger.error(f"[Макс/funnel] WB: {e}")
+
+            if mp == "ozon":
+                try:
+                    client = OzonClient(shop["api_token"], shop.get("client_id", ""))
+                    rows = await client.get_funnel_stats(date_from=date_from, date_to=date_to)
+                    for r in rows:
+                        stat_date = _date.fromisoformat(r["stat_date"]) if isinstance(r["stat_date"], str) else r["stat_date"]
+                        await upsert_funnel_stat(
+                            chat_id=chat_id, marketplace="ozon",
+                            product_id=r["product_id"], stat_date=stat_date,
+                            views=r["views"], add_to_cart=r["add_to_cart"],
+                            orders_count=r["orders_count"], buyouts=r["buyouts"],
+                            avg_position=r["avg_position"],
+                            conv_view_to_cart=r["conv_view_to_cart"],
+                            conv_cart_to_order=r["conv_cart_to_order"],
+                        )
+                    counts["ozon"] = len(rows)
+                    logger.info(f"[Макс/funnel] Ozon: {len(rows)} записей воронки")
+                except Exception as e:
+                    logger.error(f"[Макс/funnel] Ozon: {e}")
+
+        return counts
+
+    async def cmd_sync_funnel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/sync_funnel — синхронизация воронки конверсии карточки."""
+        chat_id = update.effective_user.id
+        await update.message.reply_text("🔄 Синхронизирую воронку конверсии (30 дней)…")
+        try:
+            counts = await self.sync_funnel(chat_id)
+            wb_cnt   = counts.get("wb", 0)
+            ozon_cnt = counts.get("ozon", 0)
+            await update.message.reply_text(
+                f"✅ Воронка синхронизирована\n"
+                f"WB: {wb_cnt} записей\n"
+                f"Ozon: {ozon_cnt} записей\n\n"
+                f"Запусти /funnel у Питера для анализа."
+            )
+        except Exception as e:
+            logger.error(f"[Макс/sync_funnel] {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {e}")
 
     # ------------------------------------------------------------------ #
     #  Вспомогательные методы для сводки                                  #
@@ -2323,6 +2497,8 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("reset_orders",  self.cmd_reset_orders))
         self.app.add_handler(CommandHandler("sync",          self.cmd_sync))
         self.app.add_handler(CommandHandler("sync_adv",      self.cmd_sync_adv))
+        self.app.add_handler(CommandHandler("sync_fin",      self.cmd_sync_fin))
+        self.app.add_handler(CommandHandler("sync_funnel",   self.cmd_sync_funnel))
         self.app.add_handler(CommandHandler("sync_sku",      self.cmd_sync_sku))
         self.app.add_handler(CommandHandler("products",      self.cmd_products))
         self.app.add_handler(CommandHandler("map",           self.cmd_map))

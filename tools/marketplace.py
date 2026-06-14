@@ -341,22 +341,24 @@ class WBClient:
         if not data:
             return []
         results = []
-        skipped_returns = 0
+        returns_count = 0
         for item in (data if isinstance(data, list) else []):
-            if item.get("saleID", "").startswith("R"):
-                skipped_returns += 1
-                continue
+            sale_id = item.get("saleID", "")
+            is_ret = sale_id.startswith("R")
+            if is_ret:
+                returns_count += 1
             for_pay = float(item.get("forPay", 0) or 0)
             results.append({
-                "order_id":    item.get("srid", "") or item.get("odid", ""),
+                "order_id":    sale_id or item.get("srid", "") or item.get("odid", ""),
                 "product_id":  str(item.get("nmId", "")),
                 "product_name": item.get("subject", "") or item.get("supplierArticle", ""),
                 "quantity":    int(item.get("quantity", 1) or 1),
                 "price":       for_pay,
                 "commission":  0.0,
                 "sale_date":   item.get("lastChangeDate", ""),
+                "is_return":   is_ret,
             })
-        logger.info(f"[WB.get_sales] продаж: {len(results)}, возвратов пропущено: {skipped_returns}")
+        logger.info(f"[WB.get_sales] продаж: {len(results) - returns_count}, возвратов: {returns_count}")
         return results
 
     async def get_ad_stats(self, date_from: str, date_to: str) -> list[dict]:
@@ -462,6 +464,148 @@ class WBClient:
                     })
 
         logger.info(f"[WB.get_ad_stats] итого записей: {len(results)}")
+        return results
+
+    async def get_financial_report(self, date_from: str, date_to: str, statistics_token: str) -> list[dict]:
+        """Финансовый отчёт WB через /api/v5/supplier/reportDetailByPeriod.
+
+        Возвращает агрегаты по (nm_id, report_week) для расчёта реальной рентабельности.
+        Поле payout = ppvz_for_pay — фактическая выплата после всех удержаний.
+        """
+        import json as _json
+        _STATS_BASE = "https://statistics-api.wildberries.ru"
+        headers = {"Authorization": statistics_token}
+        results: list[dict] = []
+        rrdid = 0
+        # Агрегируем в памяти: (nm_id, week) → суммы
+        agg: dict[tuple, dict] = {}
+
+        while True:
+            params = {
+                "dateFrom": date_from,
+                "dateTo":   date_to,
+                "rrdid":    rrdid,
+                "limit":    100000,
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{_STATS_BASE}/api/v5/supplier/reportDetailByPeriod",
+                    headers=headers, params=params, timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status == 429:
+                        await asyncio.sleep(60)
+                        continue
+                    if resp.status != 200:
+                        logger.error(f"[WB.get_financial_report] HTTP {resp.status}: {raw[:200]}")
+                        break
+                    rows = _json.loads(raw)
+
+            if not rows:
+                break
+
+            for row in rows:
+                nm_id    = str(row.get("nm_id", "") or "")
+                doc_type = row.get("doc_type_name", "")
+                if not nm_id:
+                    continue
+                # Дата начала недели отчёта
+                rp_str = (row.get("rr_dt") or row.get("create_dt") or date_from)[:10]
+                try:
+                    import datetime as _dt_mod
+                    rp_date = _dt_mod.date.fromisoformat(rp_str)
+                    # Округляем до начала недели (понедельник)
+                    rp_date = rp_date - _dt_mod.timedelta(days=rp_date.weekday())
+                except Exception:
+                    rp_date = rp_str
+
+                key = (nm_id, rp_date)
+                if key not in agg:
+                    agg[key] = {
+                        "product_id":  nm_id,
+                        "report_date": rp_date,
+                        "quantity":    0,
+                        "revenue":     0.0,
+                        "payout":      0.0,
+                        "commission":  0.0,
+                        "logistics":   0.0,
+                        "storage":     0.0,
+                        "penalty":     0.0,
+                    }
+                a = agg[key]
+                qty = int(row.get("quantity", 0) or 0)
+                # Возвраты имеют отрицательный qty и отрицательный ppvz_for_pay
+                a["quantity"]   += qty
+                a["revenue"]    += float(row.get("retail_price_withdisc_rub", 0) or 0) * (qty if qty > 0 else 0)
+                a["payout"]     += float(row.get("ppvz_for_pay", 0) or 0)
+                a["commission"] += float(row.get("ppvz_vw", 0) or 0)
+                a["logistics"]  += float(row.get("delivery_rub", 0) or 0)
+                a["storage"]    += float(row.get("storage_fee", 0) or 0)
+                a["penalty"]    += float(row.get("penalty", 0) or 0)
+                rrdid = max(rrdid, int(row.get("rrd_id", 0) or 0))
+
+            if len(rows) < 100000:
+                break
+
+        results = list(agg.values())
+        logger.info(f"[WB.get_financial_report] {date_from}–{date_to}: {len(results)} агрегатов по nm_id/неделе")
+        return results
+
+    async def get_funnel_stats(self, date_from: str, date_to: str) -> list[dict]:
+        """Воронка конверсии карточки WB через /api/v1/analytics/nm-report/grouped."""
+        import json as _json
+        url = "https://seller-analytics-api.wildberries.ru/api/v1/analytics/nm-report/grouped"
+        headers = {"Authorization": self._token, "Content-Type": "application/json"}
+        body = {
+            "period": {"begin": date_from, "end": date_to},
+            "timezone": "Europe/Moscow",
+            "aggregationLevel": "day",
+        }
+        results = []
+        page = 1
+        while True:
+            body["page"] = page
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=body, timeout=_TIMEOUT) as resp:
+                    raw = await resp.text()
+                    if resp.status == 429:
+                        await asyncio.sleep(60)
+                        continue
+                    if resp.status != 200:
+                        logger.error(f"[WB.get_funnel_stats] HTTP {resp.status}: {raw[:200]}")
+                        break
+                    data = _json.loads(raw)
+            nm_ids = (data.get("data") or {}).get("nmIDs") or []
+            if not nm_ids:
+                break
+            for item in nm_ids:
+                nm_id = str(item.get("nmID", ""))
+                if not nm_id:
+                    continue
+                for day in (item.get("history") or []):
+                    views      = int(day.get("openCardCount", 0) or 0)
+                    cart       = int(day.get("addToCartCount", 0) or 0)
+                    orders     = int(day.get("ordersCount", 0) or 0)
+                    buyouts    = int(day.get("buyoutsCount", 0) or 0)
+                    v2c        = float(day.get("addToCartPercent", 0) or 0)
+                    c2o        = float(day.get("cartToOrderPercent", 0) or 0)
+                    position   = day.get("avgOrdersCountPerDay")
+                    results.append({
+                        "product_id":         nm_id,
+                        "stat_date":          day.get("dt", date_from),
+                        "views":              views,
+                        "add_to_cart":        cart,
+                        "orders_count":       orders,
+                        "buyouts":            buyouts,
+                        "avg_position":       float(position) if position is not None else None,
+                        "conv_view_to_cart":  round(v2c, 2),
+                        "conv_cart_to_order": round(c2o, 2),
+                    })
+            if (data.get("data") or {}).get("isNextPage"):
+                page += 1
+            else:
+                break
+        logger.info(f"[WB.get_funnel_stats] {date_from}–{date_to}: {len(results)} записей")
         return results
 
 
@@ -877,6 +1021,153 @@ class OzonClient:
         logger.info(f"[Ozon.get_orders_analytics] {df_str}–{dt_str}: {len(results)} записей")
         sample_ids = [f"ozon_analytics_{r['product_id']}_{df_str}" for r in results[:3]]
         logger.info(f"[Ozon.get_orders_analytics] sample order_ids: {sample_ids}")
+        return results
+
+    async def get_financial_report(self, date_from: str, date_to: str) -> list[dict]:
+        """Финансовый отчёт Ozon через /v3/finance/transaction/list (тип orders + returns).
+
+        Агрегирует по (offer_id, неделя): payout, commission, logistics, penalty.
+        """
+        import json as _json
+        import datetime as _dt_mod
+        url = f"{self._BASE}/v3/finance/transaction/list"
+        agg: dict[tuple, dict] = {}
+
+        for tx_type in ("orders", "returns"):
+            page = 1
+            while True:
+                body = {
+                    "filter": {
+                        "date": {"from": f"{date_from}T00:00:00.000Z", "to": f"{date_to}T23:59:59.000Z"},
+                        "transaction_type": tx_type,
+                    },
+                    "page":      page,
+                    "page_size": 1000,
+                }
+                data = None
+                for attempt in range(3):
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.post(url, headers=self._headers(), json=body, timeout=_TIMEOUT) as resp:
+                                raw = await resp.text()
+                                if resp.status == 429:
+                                    await asyncio.sleep(60)
+                                    continue
+                                if resp.status != 200:
+                                    logger.error(f"[Ozon.get_financial_report] HTTP {resp.status}: {raw[:200]}")
+                                    break
+                                data = _json.loads(raw)
+                                break
+                    except Exception as e:
+                        logger.error(f"[Ozon.get_financial_report] {e}")
+                        break
+                if data is None:
+                    break
+
+                operations = (data.get("result") or {}).get("operations") or []
+                for op in operations:
+                    offer_id = ""
+                    items = op.get("items") or []
+                    if items:
+                        offer_id = str(items[0].get("offer_id", "") or "")
+                    if not offer_id:
+                        continue
+                    # Дата начала недели
+                    op_date_str = (op.get("operation_date") or date_from)[:10]
+                    try:
+                        op_date = _dt_mod.date.fromisoformat(op_date_str)
+                        week_start = op_date - _dt_mod.timedelta(days=op_date.weekday())
+                    except Exception:
+                        week_start = op_date_str
+
+                    key = (offer_id, week_start)
+                    if key not in agg:
+                        agg[key] = {
+                            "product_id":  offer_id,
+                            "report_date": week_start,
+                            "quantity":    0,
+                            "revenue":     0.0,
+                            "payout":      0.0,
+                            "commission":  0.0,
+                            "logistics":   0.0,
+                            "storage":     0.0,
+                            "penalty":     0.0,
+                        }
+                    a = agg[key]
+                    sign = 1 if tx_type == "orders" else -1
+                    a["quantity"]   += sign * int(op.get("quantity", 0) or 0)
+                    a["payout"]     += float(op.get("accruals_for_sale", 0) or 0)
+                    a["commission"] += abs(float(op.get("sale_commission", 0) or 0))
+                    a["logistics"]  += abs(float(op.get("delivery_charge", 0) or 0))
+                    a["logistics"]  += abs(float(op.get("return_delivery_charge", 0) or 0))
+                    # revenue = payout + commission + logistics (приближение)
+                    a["revenue"] = a["payout"] + a["commission"] + a["logistics"]
+
+                if len(operations) < 1000:
+                    break
+                page += 1
+
+        results = list(agg.values())
+        logger.info(f"[Ozon.get_financial_report] {date_from}–{date_to}: {len(results)} агрегатов")
+        return results
+
+    async def get_funnel_stats(self, date_from: str, date_to: str) -> list[dict]:
+        """Воронка конверсии карточки Ozon через /v1/analytics/data с метриками показов и корзины."""
+        import json as _json
+        url = f"{self._BASE}/v1/analytics/data"
+        results = []
+        offset = 0
+        while True:
+            body = {
+                "date_from": date_from,
+                "date_to":   date_to,
+                "dimension": ["sku"],
+                "metrics":   ["views", "conv_tocart", "ordered_units"],
+                "limit":     1000,
+                "offset":    offset,
+            }
+            data = None
+            for attempt in range(3):
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(url, headers=self._headers(), json=body, timeout=_TIMEOUT) as resp:
+                            raw = await resp.text()
+                            if resp.status == 429:
+                                await asyncio.sleep(60)
+                                continue
+                            if resp.status != 200:
+                                logger.error(f"[Ozon.get_funnel_stats] HTTP {resp.status}: {raw[:200]}")
+                                break
+                            data = _json.loads(raw)
+                            break
+                except Exception as e:
+                    logger.error(f"[Ozon.get_funnel_stats] exception: {e}")
+                    break
+            if data is None:
+                break
+            rows = (data.get("result") or {}).get("data") or []
+            for row in rows:
+                dims    = row.get("dimensions") or [{}]
+                metrics = row.get("metrics") or [0, 0, 0]
+                views      = int(metrics[0] or 0)
+                conv_tocart = float(metrics[1] or 0)
+                orders     = int(metrics[2] or 0)
+                add_to_cart = round(views * conv_tocart / 100) if views > 0 else 0
+                results.append({
+                    "product_id":         str((dims[0] if dims else {}).get("id", "")),
+                    "stat_date":          date_from,
+                    "views":              views,
+                    "add_to_cart":        add_to_cart,
+                    "orders_count":       orders,
+                    "buyouts":            0,
+                    "avg_position":       None,
+                    "conv_view_to_cart":  round(conv_tocart, 2),
+                    "conv_cart_to_order": round(orders / add_to_cart * 100, 2) if add_to_cart > 0 else 0,
+                })
+            if len(rows) < 1000 or offset >= 10000:
+                break
+            offset += len(rows)
+        logger.info(f"[Ozon.get_funnel_stats] {date_from}–{date_to}: {len(results)} записей")
         return results
 
 
