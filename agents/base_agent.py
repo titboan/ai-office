@@ -680,9 +680,17 @@ class BaseAgent(ABC):
                         await self._advance_chain(task)
                     else:
                         if task.chat_id:
+                            # Результат отправляем через бот того агента, кто поставил задачу.
+                            # Если задача от Марты — ответ идёт в чат Марты через её бот.
+                            _ORIGIN_TOKENS: dict[str, str | None] = {
+                                "marta": getattr(config, "MARTA_BOT_TOKEN", None),
+                            }
+                            reply_token = _ORIGIN_TOKENS.get(task.from_agent)
+                            result_msg = f"✅ {self.emoji} <b>{self.name}:</b>\n\n{result}"
                             await self._notify_user(
                                 task.chat_id,
-                                f"✅ {self.emoji} *{self.name}* выполнил задачу."
+                                result_msg,
+                                bot_token=reply_token,
                             )
                         await self.post_to_group(f"✅ Задача #{task.id} завершена")
                 except asyncio.TimeoutError:
@@ -724,32 +732,44 @@ class BaseAgent(ABC):
                 await asyncio.sleep(5)
         logger.info(f"[{self.name}] Worker loop остановлен")
 
-    async def _notify_user(self, chat_id: int, text: str, reply_markup=None) -> None:
-        """Отправить сообщение пользователю через бота этого агента.
+    @staticmethod
+    def _strip_html(text: str) -> str:
+        """Убрать HTML-теги для plain-text fallback."""
+        import re as _re
+        return _re.sub(r"<[^>]+>", "", text)
 
+    async def _notify_user(self, chat_id: int, text: str, reply_markup=None, bot_token: str | None = None) -> None:
+        """Отправить сообщение пользователю.
+
+        bot_token — если передан, использует этот токен вместо своего (для ответа через Марту).
         Разбивает длинные сообщения на части (лимит Telegram 4096 символов).
+        Fallback при невалидном HTML: стрипит теги и шлёт plain text.
         """
-        if not self.bot_token:
+        token = bot_token or self.bot_token
+        if not token:
             return
 
         chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)]
 
-        try:
-            if self.app:
-                for i, chunk in enumerate(chunks):
-                    markup = reply_markup if i == len(chunks) - 1 else None
+        async def _send(bot: Bot) -> None:
+            for i, chunk in enumerate(chunks):
+                markup = reply_markup if i == len(chunks) - 1 else None
+                try:
+                    await bot.send_message(chat_id=chat_id, text=chunk, parse_mode="HTML", reply_markup=markup)
+                except Exception as e:
+                    logger.warning(f"[{self.name}] HTML rejected ({e!s:.80}), отправляю plain text")
+                    plain = self._strip_html(chunk)
                     try:
-                        await self.app.bot.send_message(chat_id=chat_id, text=chunk, parse_mode="HTML", reply_markup=markup)
-                    except Exception:
-                        await self.app.bot.send_message(chat_id=chat_id, text=chunk, reply_markup=markup)
+                        await bot.send_message(chat_id=chat_id, text=plain, reply_markup=markup)
+                    except Exception as e2:
+                        logger.warning(f"[{self.name}] plain text тоже не отправился: {e2}")
+
+        try:
+            if self.app and (not bot_token or bot_token == self.bot_token):
+                await _send(self.app.bot)
             else:
-                async with Bot(token=self.bot_token) as bot:
-                    for i, chunk in enumerate(chunks):
-                        markup = reply_markup if i == len(chunks) - 1 else None
-                        try:
-                            await bot.send_message(chat_id=chat_id, text=chunk, parse_mode="HTML", reply_markup=markup)
-                        except Exception:
-                            await bot.send_message(chat_id=chat_id, text=chunk, reply_markup=markup)
+                async with Bot(token=token) as bot:
+                    await _send(bot)
         except Exception as e:
             logger.warning(f"[{self.name}] _notify_user ошибка (chat={chat_id}): {e}")
 
