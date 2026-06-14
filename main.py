@@ -460,21 +460,37 @@ async def run_all_async() -> None:
             date_from = (datetime.now(timezone.utc) - timedelta(days=days)).date()
             async with pool.acquire() as conn:
                 daily_rows = await conn.fetch("""
-                    SELECT order_date::text AS date,
+                    SELECT order_date::date::text AS date,
                            marketplace,
-                           SUM(seller_price * quantity)::numeric(12,2) AS revenue
+                           SUM(seller_price * quantity)::numeric(12,2) AS revenue,
+                           COUNT(*) AS orders
                     FROM marketplace_orders
                     WHERE chat_id = $1 AND order_date >= $2
-                    GROUP BY order_date, marketplace
-                    ORDER BY order_date
+                    GROUP BY order_date::date, marketplace
+                    ORDER BY order_date::date
                 """, chat_id, date_from)
-            # Pivot: [{date, wb, ozon}, ...]
-            pivot: dict[str, dict] = {}
-            for row in daily_rows:
-                d = row["date"]
-                pivot.setdefault(d, {"date": d, "wb": 0.0, "ozon": 0.0})
-                pivot[d][row["marketplace"]] = float(row["revenue"] or 0)
-            data["revenue_by_day"] = list(pivot.values())
+                sales_rows = await conn.fetch("""
+                    SELECT sale_date::date::text AS date,
+                           marketplace,
+                           SUM(price)::numeric(12,2) AS revenue,
+                           COUNT(*) AS qty
+                    FROM marketplace_sales
+                    WHERE chat_id = $1 AND sale_date >= $2
+                    GROUP BY sale_date::date, marketplace
+                    ORDER BY sale_date::date
+                """, chat_id, date_from)
+
+            def _pivot(rows, val_key: str) -> list[dict]:
+                p: dict[str, dict] = {}
+                for row in rows:
+                    d = row["date"]
+                    p.setdefault(d, {"date": d, "wb": 0.0, "ozon": 0.0})
+                    p[d][row["marketplace"]] = float(row[val_key] or 0)
+                return list(p.values())
+
+            data["revenue_by_day"] = _pivot(daily_rows, "revenue")
+            data["orders_by_day"]  = _pivot(daily_rows, "orders")
+            data["sales_by_day"]   = _pivot(sales_rows, "revenue")
         except Exception as e:
             logger.error(f"[dashboard] data error: {e}", exc_info=True)
             return web.Response(status=500, text="Internal Error", headers=cors)
