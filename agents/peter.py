@@ -414,11 +414,24 @@ class PeterAgent(BaseAgent):
 
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
         logger.info(f"[Питер] Задача от {from_agent}: {task!r}")
-        answer = await self.think(
-            f"Аналитическая задача от {from_agent}: {task}",
-            chat_id=0,
-            is_task=True,
-        )
+
+        chat_id = getattr(self, "_current_chat_id", None) or 0
+        data_str = ""
+        if chat_id:
+            try:
+                data = await self._collect_data(chat_id, days=14)
+                adv_data = await self._collect_advanced_data(chat_id, days=14)
+                data_str = (
+                    f"\n\nБАЗОВЫЕ ДАННЫЕ (14 дней):\n"
+                    f"{json.dumps(data, ensure_ascii=False, default=str, indent=2)}\n\n"
+                    f"РАСШИРЕННЫЕ ДАННЫЕ (тренд, CTR/ROAS, остатки):\n"
+                    f"{json.dumps(adv_data, ensure_ascii=False, default=str, indent=2)}"
+                )
+            except Exception as e:
+                logger.warning(f"[Питер] handle_task: ошибка сбора данных: {e}")
+
+        prompt = f"Аналитическая задача от {from_agent}: {task}{data_str}"
+        answer = await self.think(prompt, chat_id=chat_id, is_task=True)
         notion_url = await save_research(
             title=task[:50],
             content=_strip_html(answer),
