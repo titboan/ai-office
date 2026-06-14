@@ -8,11 +8,12 @@ from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
 from tools import save_research
+from utils.tg_format import HTML_FORMAT_RULES, strip_html as _strip_html
 from .base_agent import BaseAgent
 
 _UTC = timezone.utc
 
-PETER_SYSTEM = """Ты Питер, бизнес-аналитик команды AI Office.
+PETER_SYSTEM = f"""Ты Питер, бизнес-аналитик команды AI Office.
 Анализируешь продажи на Wildberries и Ozon, считаешь юнит-экономику, помогаешь выйти на цели по обороту.
 
 Данные которые ты получаешь — реальные цифры из БД: заказы, себестоимость, рекламные расходы, остатки.
@@ -22,12 +23,8 @@ PETER_SYSTEM = """Ты Питер, бизнес-аналитик команды 
 Используй display_name товаров (короткие коды: КБ50, ТГ100 и т.д.), не SKU и не длинные названия.
 Никаких упоминаний возвратов.
 
-Форматируй в HTML для Telegram:
-- <b>текст</b> для заголовков разделов и ключевых метрик
-- <code>артикул</code> для кодов товаров
-- <blockquote>вывод</blockquote> для ключевого инсайта
-- Эмодзи в начале строк (📊 📈 🎯 ⚠️ ⬆️ 📸 📦 💰 🔄)
-- НЕ используй Markdown: никаких *звёздочек*, ##заголовков, |таблиц|
+{HTML_FORMAT_RULES}
+Эмодзи для разделов: 📊 📈 🎯 ⚠️ ⬆️ 📸 📦 💰 🔄
 
 Пример структуры:
 📊 <b>Оборот за N дней:</b> X ₽ (Y ₽/день)
@@ -124,9 +121,6 @@ Ozon: расход X₽ / оборот X₽ → ДРР X%  [норма 10-15%]
 - 🟡 ROAS 2-5 (ДРР 20-50%)
 - 🔴 ROAS < 2 (ДРР > 50%)
 - Если данных по товару нет в product_adv_stats — укажи суммарный ДРР по площадке"""
-
-
-from utils.tg_format import strip_html as _strip_html
 
 
 class PeterAgent(BaseAgent):
@@ -381,6 +375,43 @@ class PeterAgent(BaseAgent):
             "stock_velocity":  [dict(r) for r in stock_velocity],
         }
 
+    async def _send_answer(
+        self,
+        answer: str,
+        *,
+        notion_title: str,
+        notion_source: str,
+        notion_link_text: str = "Сохранено в Notion",
+        show_dashboard: bool = True,
+        update: Update | None = None,
+        chat_id: int | None = None,
+        bot=None,
+    ) -> None:
+        notion_url = await save_research(
+            title=notion_title,
+            content=_strip_html(answer),
+            source=notion_source,
+            agent="Питер",
+        )
+        if notion_url:
+            answer = f'{answer}\n\n📄 <a href="{notion_url}">{notion_link_text}</a>'
+
+        if update:
+            for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
+                try:
+                    await update.message.reply_text(chunk, parse_mode="HTML")
+                except Exception:
+                    await update.message.reply_text(chunk)
+            if show_dashboard and config.DASHBOARD_URL:
+                markup = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=config.DASHBOARD_URL))
+                ]])
+                await update.message.reply_text("Открыть интерактивный дашборд:", reply_markup=markup)
+        else:
+            _bot = bot or self.app.bot
+            for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
+                await _bot.send_message(chat_id=chat_id, text=chunk, parse_mode="HTML")
+
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
         logger.info(f"[Питер] Задача от {from_agent}: {task!r}")
         answer = await self.think(
@@ -477,26 +508,12 @@ class PeterAgent(BaseAgent):
             await update.message.reply_text(f"❌ Ошибка анализа: {e}")
             return
 
-        notion_url = await save_research(
-            title=f"Отчёт {datetime.now(_UTC).strftime('%d.%m.%Y')}",
-            content=_strip_html(answer),
-            source="cmd:report",
-            agent="Питер",
+        await self._send_answer(
+            answer,
+            notion_title=f"Отчёт {datetime.now(_UTC).strftime('%d.%m.%Y')}",
+            notion_source="cmd:report",
+            update=update,
         )
-        if notion_url:
-            answer = f'{answer}\n\n📄 <a href="{notion_url}">Сохранено в Notion</a>'
-
-        for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
-            try:
-                await update.message.reply_text(chunk, parse_mode="HTML")
-            except Exception:
-                await update.message.reply_text(chunk)
-
-        if config.DASHBOARD_URL:
-            markup = InlineKeyboardMarkup([[
-                InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=config.DASHBOARD_URL))
-            ]])
-            await update.message.reply_text("Открыть интерактивный дашборд:", reply_markup=markup)
 
     async def cmd_audit(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -541,7 +558,6 @@ class PeterAgent(BaseAgent):
 
 Используй формат PETER_AUDIT_PROMPT."""
 
-        await update.message.reply_text("🤔 Анализирую…")
         try:
             # Передаём audit prompt как системный через кастомный вызов
             from anthropic import AsyncAnthropic
@@ -558,26 +574,13 @@ class PeterAgent(BaseAgent):
             await update.message.reply_text(f"❌ Ошибка анализа: {e}")
             return
 
-        notion_url = await save_research(
-            title=f"Аудит {datetime.now(_UTC).strftime('%d.%m.%Y')}",
-            content=_strip_html(answer),
-            source="cmd:audit",
-            agent="Питер",
+        await self._send_answer(
+            answer,
+            notion_title=f"Аудит {datetime.now(_UTC).strftime('%d.%m.%Y')}",
+            notion_source="cmd:audit",
+            notion_link_text="Аудит сохранён в Notion",
+            update=update,
         )
-        if notion_url:
-            answer = f'{answer}\n\n📄 <a href="{notion_url}">Аудит сохранён в Notion</a>'
-
-        for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
-            try:
-                await update.message.reply_text(chunk, parse_mode="HTML")
-            except Exception:
-                await update.message.reply_text(chunk)
-
-        if config.DASHBOARD_URL:
-            markup = InlineKeyboardMarkup([[
-                InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=config.DASHBOARD_URL))
-            ]])
-            await update.message.reply_text("Открыть интерактивный дашборд:", reply_markup=markup)
 
     async def cmd_drr(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -638,26 +641,12 @@ class PeterAgent(BaseAgent):
             await update.message.reply_text(f"❌ Ошибка анализа: {e}")
             return
 
-        notion_url = await save_research(
-            title=f"ДРР {datetime.now(_UTC).strftime('%d.%m.%Y')}",
-            content=_strip_html(answer),
-            source="cmd:drr",
-            agent="Питер",
+        await self._send_answer(
+            answer,
+            notion_title=f"ДРР {datetime.now(_UTC).strftime('%d.%m.%Y')}",
+            notion_source="cmd:drr",
+            update=update,
         )
-        if notion_url:
-            answer = f'{answer}\n\n📄 <a href="{notion_url}">Сохранено в Notion</a>'
-
-        for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
-            try:
-                await update.message.reply_text(chunk, parse_mode="HTML")
-            except Exception:
-                await update.message.reply_text(chunk)
-
-        if config.DASHBOARD_URL:
-            markup = InlineKeyboardMarkup([[
-                InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=config.DASHBOARD_URL))
-            ]])
-            await update.message.reply_text("Открыть интерактивный дашборд:", reply_markup=markup)
 
     async def cmd_funnel(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -745,6 +734,7 @@ class PeterAgent(BaseAgent):
             resp = await client.messages.create(
                 model=config.CLAUDE_MODEL,
                 max_tokens=2048,
+                system=PETER_SYSTEM,
                 messages=[{"role": "user", "content": prompt}],
             )
             answer = resp.content[0].text
@@ -753,20 +743,13 @@ class PeterAgent(BaseAgent):
             await update.message.reply_text(f"❌ Ошибка анализа: {e}")
             return
 
-        notion_url = await save_research(
-            title=f"Воронка {datetime.now(_UTC).strftime('%d.%m.%Y')}",
-            content=_strip_html(answer),
-            source="cmd:funnel",
-            agent="Питер",
+        await self._send_answer(
+            answer,
+            notion_title=f"Воронка {datetime.now(_UTC).strftime('%d.%m.%Y')}",
+            notion_source="cmd:funnel",
+            show_dashboard=False,
+            update=update,
         )
-        if notion_url:
-            answer = f'{answer}\n\n📄 <a href="{notion_url}">Сохранено в Notion</a>'
-
-        for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
-            try:
-                await update.message.reply_text(chunk, parse_mode="HTML")
-            except Exception:
-                await update.message.reply_text(chunk)
 
     async def cmd_analyze(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -775,10 +758,11 @@ class PeterAgent(BaseAgent):
         data = " ".join(context.args) if context.args else ""
         if not data:
             await update.message.reply_text(
-                "Использование: /analyze <данные или вопрос>\n"
-                "Для анализа магазинов используй /report\n"
-                "Для аудита — /audit\n"
-                "Для ДРР — /drr"
+                "<b>Использование:</b> /analyze &lt;данные или вопрос&gt;\n"
+                "Для анализа магазинов: /report\n"
+                "Для аудита: /audit\n"
+                "Для ДРР: /drr",
+                parse_mode="HTML",
             )
             return
         await update.message.reply_text("📊 Анализирую…")
@@ -825,19 +809,14 @@ class PeterAgent(BaseAgent):
             logger.error(f"[Питер/weekly_audit] ошибка Claude: {e}")
             return
 
-        notion_url = await save_research(
-            title=f"Еженедельный аудит {datetime.now(_UTC).strftime('%d.%m.%Y')}",
-            content=_strip_html(answer),
-            source="scheduler:weekly_audit",
-            agent="Питер",
-        )
-        if notion_url:
-            answer = f'{answer}\n\n📄 <a href="{notion_url}">Сохранено в Notion</a>'
-
-        # Отправляем в личку владельца
         try:
-            for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
-                await self.app.bot.send_message(chat_id=chat_id, text=chunk, parse_mode="HTML")
+            await self._send_answer(
+                answer,
+                notion_title=f"Еженедельный аудит {datetime.now(_UTC).strftime('%d.%m.%Y')}",
+                notion_source="scheduler:weekly_audit",
+                show_dashboard=False,
+                chat_id=chat_id,
+            )
             logger.info(f"[Питер/weekly_audit] отправлен в chat_id={chat_id}")
         except Exception as e:
             logger.error(f"[Питер/weekly_audit] ошибка отправки: {e}")

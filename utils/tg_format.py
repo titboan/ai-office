@@ -68,6 +68,13 @@ def table(headers: list[str], rows: list[list[str]]) -> str:
     return pre("\n".join(lines))
 
 
+# ── Money formatting ─────────────────────────────────────────────────────────
+
+def format_money(amount: float | int, *, symbol: str = "₽") -> str:
+    """Format a monetary amount with space-separated thousands: '1 234 ₽'."""
+    return f"{amount:,.0f} {symbol}".replace(",", " ")
+
+
 # ── Notion helper ─────────────────────────────────────────────────────────────
 
 def strip_html(text: str) -> str:

@@ -513,9 +513,9 @@ class MaxAgent(BaseAgent):
             if action in ("summary_sales", "summary_all"):
                 await self._send_sales_summary(owner_chat_id, target_chat_id, context.bot)
             if action in ("summary_wb_stocks", "summary_all"):
-                await self._send_wb_stocks(owner_chat_id, target_chat_id, context.bot)
+                await self._send_stocks("wb", owner_chat_id, target_chat_id, context.bot)
             if action in ("summary_ozon_stocks", "summary_all"):
-                await self._send_ozon_stocks(owner_chat_id, target_chat_id, context.bot)
+                await self._send_stocks("ozon", owner_chat_id, target_chat_id, context.bot)
             return
 
         if action == "sync":
@@ -1523,46 +1523,31 @@ class MaxAgent(BaseAgent):
 
         await _bot.send_message(chat_id=target_chat_id, text="\n".join(lines), parse_mode="HTML")
 
-    async def _send_wb_stocks(self, owner_chat_id: int, target_chat_id: int, bot=None) -> None:
+    async def _send_stocks(
+        self, marketplace: str, owner_chat_id: int, target_chat_id: int, bot=None
+    ) -> None:
         from db import get_low_stocks
         _bot = bot if bot is not None else self.app.bot
 
-        low_stocks = await get_low_stocks(owner_chat_id, threshold=20)
-        wb_low  = [s for s in low_stocks if s["marketplace"] == "wb" and 0 < s["stock"] <= 20]
-        wb_zero = [s for s in low_stocks if s["marketplace"] == "wb" and s["stock"] == 0]
-
-        lines = ["🟣 <b>WB — остатки</b>\n"]
-        if not wb_low and not wb_zero:
-            lines.append("✅ Остатки в норме")
-        else:
-            if wb_low:
-                lines.append("⚠️ <b>Заканчиваются</b> (0 < stock ≤ 20)")
-                lines.extend(self._render_low(self._group_by_sku(wb_low, _get_cluster)))
-            if wb_zero:
-                lines.append("\n❌ <b>Закончились на складах</b>")
-                lines.extend(self._render_zero(self._group_by_sku(wb_zero, _get_cluster)))
-
-        for part in self._split_message("\n".join(lines)):
-            await _bot.send_message(chat_id=target_chat_id, text=part, parse_mode="HTML")
-
-    async def _send_ozon_stocks(self, owner_chat_id: int, target_chat_id: int, bot=None) -> None:
-        from db import get_low_stocks
-        _bot = bot if bot is not None else self.app.bot
+        is_wb = marketplace == "wb"
+        emoji = "🟣" if is_wb else "🔵"
+        label = "WB" if is_wb else "Ozon"
+        get_cluster = _get_cluster if is_wb else _get_ozon_cluster
 
         low_stocks = await get_low_stocks(owner_chat_id, threshold=20)
-        oz_low  = [s for s in low_stocks if s["marketplace"] == "ozon" and 0 < s["stock"] <= 20]
-        oz_zero = [s for s in low_stocks if s["marketplace"] == "ozon" and s["stock"] == 0]
+        mp_low  = [s for s in low_stocks if s["marketplace"] == marketplace and 0 < s["stock"] <= 20]
+        mp_zero = [s for s in low_stocks if s["marketplace"] == marketplace and s["stock"] == 0]
 
-        lines = ["🔵 <b>Ozon — остатки</b>\n"]
-        if not oz_low and not oz_zero:
+        lines = [f"{emoji} <b>{label} — остатки</b>\n"]
+        if not mp_low and not mp_zero:
             lines.append("✅ Остатки в норме")
         else:
-            if oz_low:
+            if mp_low:
                 lines.append("⚠️ <b>Заканчиваются</b> (0 < stock ≤ 20)")
-                lines.extend(self._render_low(self._group_by_sku(oz_low, _get_ozon_cluster)))
-            if oz_zero:
+                lines.extend(self._render_low(self._group_by_sku(mp_low, get_cluster)))
+            if mp_zero:
                 lines.append("\n❌ <b>Закончились на складах</b>")
-                lines.extend(self._render_zero(self._group_by_sku(oz_zero, _get_ozon_cluster)))
+                lines.extend(self._render_zero(self._group_by_sku(mp_zero, get_cluster)))
 
         for part in self._split_message("\n".join(lines)):
             await _bot.send_message(chat_id=target_chat_id, text=part, parse_mode="HTML")
@@ -1573,8 +1558,8 @@ class MaxAgent(BaseAgent):
         try:
             await self.sync_marketplace_data(owner_chat_id)
             await self._send_sales_summary(owner_chat_id, target_chat_id, bot)
-            await self._send_wb_stocks(owner_chat_id, target_chat_id, bot)
-            await self._send_ozon_stocks(owner_chat_id, target_chat_id, bot)
+            await self._send_stocks("wb", owner_chat_id, target_chat_id, bot)
+            await self._send_stocks("ozon", owner_chat_id, target_chat_id, bot)
             logger.info("[Макс/sync] сводка отправлена")
         except Exception as e:
             logger.error(f"[Макс/sync] ошибка: {e}", exc_info=True)
