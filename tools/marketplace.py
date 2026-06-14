@@ -1126,10 +1126,8 @@ class OzonClient:
 
                 operations = (data.get("result") or {}).get("operations") or []
                 for op in operations:
-                    offer_id = ""
-                    items = op.get("items") or []
-                    if items:
-                        offer_id = str(items[0].get("offer_id", "") or "")
+                    op_items = op.get("items") or []
+                    offer_id = str(op_items[0].get("offer_id", "") or "") if op_items else ""
                     if not offer_id:
                         continue
                     # Дата начала недели
@@ -1160,8 +1158,12 @@ class OzonClient:
                     a["commission"] += abs(float(op.get("sale_commission", 0) or 0))
                     a["logistics"]  += abs(float(op.get("delivery_charge", 0) or 0))
                     a["logistics"]  += abs(float(op.get("return_delivery_charge", 0) or 0))
-                    # revenue = payout + commission + logistics (приближение)
-                    a["revenue"] = a["payout"] + a["commission"] + a["logistics"]
+                    # Точная выручка из items[].price — цена товара по каждой позиции
+                    item_revenue = sum(
+                        float(it.get("price", 0) or 0) * int(it.get("quantity", 0) or 0)
+                        for it in op_items
+                    )
+                    a["revenue"] += sign * item_revenue
 
                 if len(operations) < 1000:
                     break

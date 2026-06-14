@@ -111,7 +111,8 @@ description: >
 
 - **Цена селлера** = WB `priceWithDisc` / Ozon `products[].price` из `/v3/posting/*`
   - НЕ из `/v1/analytics/data` — там её нет
-- **Выплата (payout)** = WB `ppvz_for_pay` / Ozon суммарный payout из `/v3/finance/transaction/list`
+- **Выплата (payout)** = WB `ppvz_for_pay` / Ozon `accruals_for_sale` из `/v3/finance/transaction/list`
+- **Выручка Ozon (revenue)** = `sum(items[].price * items[].quantity)` — берётся напрямую из транзакций (точная цена товара). Раньше было приближение `payout + commission + logistics`.
 - **NET-маржа** = payout − qty × себестоимость (в `marketplace_financial_report`)
 - **ДРР** считать из финотчётов, не наивно:
   - WB: знаменатель = `ppvz_for_pay` из `/api/v5/supplier/reportDetailByPeriod`
