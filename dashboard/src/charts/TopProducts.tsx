@@ -13,7 +13,8 @@ export default function TopProducts({ data }: { data: ProductRow[] }) {
         <BarChart layout="vertical" data={top10} margin={{ left: 8, right: 16, top: 4, bottom: 0 }}>
           <XAxis type="number" tick={{ fontSize: 10 }}
             tickFormatter={v => v >= 1000 ? `${(v / 1000).toFixed(0)}к` : String(v)} />
-          <YAxis type="category" dataKey="product_name" tick={{ fontSize: 10 }} width={56} />
+          <YAxis type="category" dataKey="product_name" tick={{ fontSize: 10 }} width={72}
+            tickFormatter={(v: string) => v.length > 8 ? v.slice(0, 7) + '…' : v} />
           <Tooltip formatter={(v: number) => [`${v.toLocaleString()} ₽`]} />
           <Bar dataKey="revenue" name="Выручка">
             {top10.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}

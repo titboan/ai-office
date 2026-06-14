@@ -25,6 +25,8 @@ export interface DashboardData {
   product_metrics: ProductMetric[]
   stock_velocity: StockVelocity[]
   revenue_by_day: DayRevenue[]
+  orders_by_day: DayRevenue[]
+  sales_by_day: DayRevenue[]
 }
 
 const API_URL = import.meta.env.VITE_API_URL ?? ''
