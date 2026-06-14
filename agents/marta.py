@@ -133,9 +133,9 @@ class MartaAgent(BaseAgent):
 
     def _main_keyboard(self) -> ReplyKeyboardMarkup:
         return ReplyKeyboardMarkup([
-            ["📊 Отчёт", "⭐ Отзывы"],
-            ["🔄 Синхронизация", "📋 Статус"],
-            ["📂 Проекты", "❓ Помощь"],
+            ["📊 Отчёт", "📈 Дашборд"],
+            ["⭐ Отзывы", "🔄 Синхронизация"],
+            ["📋 Статус", "📂 Проекты", "❓ Помощь"],
         ], resize_keyboard=True)
 
     # ------------------------------------------------------------------ #
@@ -461,6 +461,25 @@ class MartaAgent(BaseAgent):
             "peter": "📊 Питер", "max": "🛒 Макс",
         }
         btn = user_text.strip()
+
+        if btn == "📈 Дашборд":
+            if config.DASHBOARD_URL:
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+                markup = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📈 Открыть дашборд", web_app=WebAppInfo(url=config.DASHBOARD_URL))
+                ]])
+                await self.app.bot.send_message(
+                    chat_id=chat_id,
+                    text="📈 <b>Дашборд по заказам</b>\n\nЗаказы, выручка, топ-товары — в реальном времени:",
+                    parse_mode="HTML",
+                    reply_markup=markup,
+                )
+            else:
+                await reply_func(
+                    "⚠️ Дашборд не настроен. Добавь <code>DASHBOARD_URL</code> в переменные Railway.",
+                    parse_mode="HTML",
+                )
+            return
 
         if btn == "🔄 Синхронизация":
             await enqueue_task(
