@@ -1,6 +1,6 @@
 # 2026-06-12-market-analytics-viz.md
 
-Статус: в работе
+Статус: завершён
 
 ## Контекст
 
@@ -39,7 +39,7 @@ DataLens (Yandex) подключён к Railway Postgres через TCP-прок
 - [x] Реализовать данные через `peter_agent._collect_data()` + `_collect_advanced_data()` + `revenue_by_day`
 - [x] Добавить CORS header для origin Vercel
 - [x] Зарегистрировать route в aiohttp + `/health`
-- [ ] Добавить переменную `DASHBOARD_URL` в Railway (с явного разрешения Бориса)
+- [x] Добавить переменную `DASHBOARD_URL` в Railway (с явного разрешения Бориса)
 
 ---
 
@@ -56,7 +56,7 @@ DataLens (Yandex) подключён к Railway Postgres через TCP-прок
 - [x] `src/charts/CtrRoas.tsx` — BarChart CTR + ROAS с цветовой шкалой
 - [x] `src/charts/StockTable.tsx` — Table с условным форматированием 🔴🟡🟢
 - [x] `vercel.json` — конфиг деплоя
-- [ ] Деплой на Vercel, получить `DASHBOARD_URL` — **ждёт Бориса**
+- [x] Деплой на Vercel, получить `DASHBOARD_URL` — https://dashboard-aioffice.vercel.app
 
 ---
 
@@ -64,10 +64,10 @@ DataLens (Yandex) подключён к Railway Postgres через TCP-прок
 
 Файл: `agents/peter.py`
 
-- [ ] Импортировать `InlineKeyboardMarkup`, `InlineKeyboardButton`, `WebAppInfo`
-- [ ] В `_handle_report` — кнопка "📊 Дашборд" с `WebAppInfo(url=config.DASHBOARD_URL)`
-- [ ] В `_handle_audit` — та же кнопка
-- [ ] В `_handle_drr` — та же кнопка
+- [x] Импортировать `InlineKeyboardMarkup`, `InlineKeyboardButton`, `WebAppInfo`
+- [x] В `cmd_report` — кнопка "📊 Дашборд" с `WebAppInfo(url=config.DASHBOARD_URL)`
+- [x] В `cmd_audit` — та же кнопка
+- [x] В `cmd_drr` — та же кнопка
 
 ---
 

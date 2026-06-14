@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from loguru import logger
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
@@ -456,6 +456,12 @@ class PeterAgent(BaseAgent):
             except Exception:
                 await update.message.reply_text(chunk)
 
+        if config.DASHBOARD_URL:
+            markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=config.DASHBOARD_URL))
+            ]])
+            await update.message.reply_text("Открыть интерактивный дашборд:", reply_markup=markup)
+
     async def cmd_audit(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -531,6 +537,12 @@ class PeterAgent(BaseAgent):
             except Exception:
                 await update.message.reply_text(chunk)
 
+        if config.DASHBOARD_URL:
+            markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=config.DASHBOARD_URL))
+            ]])
+            await update.message.reply_text("Открыть интерактивный дашборд:", reply_markup=markup)
+
     async def cmd_drr(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -604,6 +616,12 @@ class PeterAgent(BaseAgent):
                 await update.message.reply_text(chunk, parse_mode="HTML")
             except Exception:
                 await update.message.reply_text(chunk)
+
+        if config.DASHBOARD_URL:
+            markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=config.DASHBOARD_URL))
+            ]])
+            await update.message.reply_text("Открыть интерактивный дашборд:", reply_markup=markup)
 
     async def cmd_analyze(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
