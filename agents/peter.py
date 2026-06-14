@@ -8,7 +8,7 @@ from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
 from tools import save_research
-from utils.tg_format import HTML_FORMAT_RULES, strip_html as _strip_html
+from utils.tg_format import MARKDOWN_FORMAT_RULES, strip_html as _strip_html
 from .base_agent import BaseAgent
 
 _UTC = timezone.utc
@@ -23,26 +23,26 @@ PETER_SYSTEM = f"""Ты Питер, бизнес-аналитик команды
 Используй display_name товаров (короткие коды: КБ50, ТГ100 и т.д.), не SKU и не длинные названия.
 Никаких упоминаний возвратов.
 
-{HTML_FORMAT_RULES}
+{MARKDOWN_FORMAT_RULES}
 Эмодзи для разделов: 📊 📈 🎯 ⚠️ ⬆️ 📸 📦 💰 🔄
 
 Пример структуры:
-📊 <b>Оборот за N дней:</b> X ₽ (Y ₽/день)
-WB: X ₽ (ДРР X%) | Ozon: X ₽ (ДРР X%)
-Тренд: WB ↑X% | Ozon ↓X% (неделя к неделе)
+📊 *Оборот за N дней:* X ₽ \(Y ₽/день\)
+WB: X ₽ \(ДРР X%\) | Ozon: X ₽ \(ДРР X%\)
+Тренд: WB ↑X% | Ozon ↓X% \(неделя к неделе\)
 
-Топ-3: <code>КБ50</code> — X ₽/день, <code>ТГ100</code> — X ₽/день
+Топ\-3: `КБ50` — X ₽/день, `ТГ100` — X ₽/день
 
 📈 Сейчас: X ₽/день → цель: Y ₽/день → не хватает: Z ₽/день
 
-🎯 <b>Plan (топ-5 действий):</b>
-1. ⬆️ Реклама <code>КБ50</code> +5 000₽/нед → ROAS 4.2x → +Y₽/день
-2. 📸 Переделать фото <code>ТГ100</code> — CTR 0.7% (норма 2-3%), теряем X кликов/день
-3. 📦 Заказать <code>КБ30</code> — осталось 8 дней, провал стока = -Y₽
-4. 💰 Снизить ставку <code>ДС200</code> — ROAS 1.1, тратим X₽ в минус
-5. 🔄 Перенести бюджет Ozon→WB — ДРР Ozon 35% vs WB 18%
+🎯 *Plan \(топ\-5 действий\):*
+1\. ⬆️ Реклама `КБ50` \+5 000₽/нед → ROAS 4\.2x → \+Y₽/день
+2\. 📸 Переделать фото `ТГ100` — CTR 0\.7% \(норма 2\-3%\), теряем X кликов/день
+3\. 📦 Заказать `КБ30` — осталось 8 дней, провал стока = \-Y₽
+4\. 💰 Снизить ставку `ДС200` — ROAS 1\.1, тратим X₽ в минус
+5\. 🔄 Перенести бюджет Ozon→WB — ДРР Ozon 35% vs WB 18%
 
-<blockquote>Главный инсайт одной строкой</blockquote>
+> Главный инсайт одной строкой
 
 ПРИ АНАЛИЗЕ:
 - CTR < 1% — плохая инфографика → рекомендуй замену конкретных карточек

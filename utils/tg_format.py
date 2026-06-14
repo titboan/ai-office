@@ -1,9 +1,11 @@
-"""HTML formatting helpers for Telegram messages (parse_mode='HTML').
+"""Formatting helpers for Telegram messages (parse_mode='MarkdownV2').
 
-Telegram supports: <b>, <i>, <u>, <s>, <code>, <pre>, <a href>,
-<blockquote>, <blockquote expandable>, <tg-spoiler>.
+Telegram MarkdownV2 supports: **bold**, _italic_, __underline__, ~strike~,
+||spoiler||, `code`, ```pre```, [text](url), > blockquote,
+# Heading (1-6), --- horizontal rule, | table |.
 
-All text helpers escape special HTML characters so callers don't have to.
+Special chars that MUST be escaped in plain text:
+  _ * [ ] ( ) ~ ` # + - = | { } . !
 """
 
 from __future__ import annotations
@@ -11,8 +13,39 @@ from __future__ import annotations
 import html
 import re
 
+# Characters that need escaping in MarkdownV2 plain text segments
+_MDV2_SPECIAL = r'\_*[]()~`>#+-=|{}.!'
 
-# ── Primitives ────────────────────────────────────────────────────────────────
+
+# ── MarkdownV2 escape ─────────────────────────────────────────────────────────
+
+def escape_mdv2(text: str) -> str:
+    """Escape all MarkdownV2 special characters in a plain-text fragment.
+
+    Use this when inserting user-supplied strings into a MarkdownV2 message
+    so they are never misinterpreted as formatting.
+    """
+    return re.sub(r'([_*\[\]()~`>#+=|{}.!\-])', r'\\\1', str(text))
+
+
+def strip_mdv2(text: str) -> str:
+    """Remove MarkdownV2 formatting markers to produce readable plain text."""
+    # remove escape backslashes
+    text = re.sub(r'\\([_*\[\]()~`>#+=|{}.!\-])', r'\1', text)
+    # remove inline markup: **bold**, _italic_, `code`, ~strike~, ||spoiler||
+    text = re.sub(r'\*\*(.+?)\*\*|__(.+?)__|_(.+?)_|`(.+?)`|~(.+?)~|\|\|(.+?)\|\|', lambda m: next(g for g in m.groups() if g is not None), text)
+    # remove headings
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    # remove horizontal rules
+    text = re.sub(r'^---+$', '', text, flags=re.MULTILINE)
+    # remove blockquote markers
+    text = re.sub(r'^>\s?', '', text, flags=re.MULTILINE)
+    # remove table formatting
+    text = re.sub(r'\|', ' ', text)
+    return text.strip()
+
+
+# ── HTML primitives (kept for Notion export and table() helper) ───────────────
 
 def escape(text: str) -> str:
     return html.escape(str(text))
@@ -72,7 +105,7 @@ def table(headers: list[str], rows: list[list[str]]) -> str:
 
 def format_money(amount: float | int, *, symbol: str = "₽") -> str:
     """Format a monetary amount with space-separated thousands: '1 234 ₽'."""
-    return f"{amount:,.0f} {symbol}".replace(",", " ")
+    return f"{amount:,.0f} {symbol}".replace(",", " ")
 
 
 # ── Notion helper ─────────────────────────────────────────────────────────────
@@ -82,16 +115,44 @@ def strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text)
 
 
-# ── Formatting instruction for system prompts ─────────────────────────────────
+# ── Formatting instructions for system prompts ────────────────────────────────
 
+MARKDOWN_FORMAT_RULES = """
+Форматируй ответы в MarkdownV2 для Telegram:
+- *текст* — жирный (заголовки разделов, ключевые числа)
+- _текст_ — курсив (пояснения, уточнения)
+- `текст` — моноширинный (артикулы, ID, команды)
+- > текст — цитата (выводы, инсайты)
+- # Заголовок — заголовок раздела
+- --- — горизонтальный разделитель между крупными блоками
+- | Колонка 1 | Колонка 2 | — таблица (с заголовком и строкой |---|---|)
+- Эмодзи в начале разделов
+- Спецсимволы . ! ( ) - + = внутри обычного текста экранируй обратным слешем: \\. \\! \\( \\) \\- \\+ \\=
+- НЕ используй HTML-теги: никаких <b>, <i>, <code>
+""".strip()
+
+# Kept for backward compatibility — agents not yet migrated still import this
 HTML_FORMAT_RULES = """
 Форматируй ответы в HTML для Telegram:
 - <b>текст</b> — жирный (заголовки разделов, ключевые числа)
 - <i>текст</i> — курсив (пояснения, уточнения)
 - <code>текст</code> — моноширинный (артикулы, ID, команды)
 - <blockquote>текст</blockquote> — цитата (выводы, инсайты)
-- <blockquote expandable>длинный текст</blockquote> — раскрываемая цитата для больших блоков
 - Эмодзи в начале разделов
-- НЕ используй Markdown: никаких *звёздочек*, ##заголовков, |таблиц|
-- Спецсимволы < > & внутри текста не нужно экранировать — выводи их буквально внутри тегов
+- НЕ используй Markdown: никаких *звёздочек*, ##заголовков, |таблиц|, ---разделителей
 """.strip()
+
+
+# ── Output post-processor ─────────────────────────────────────────────────────
+
+def clean_agent_output(text: str) -> str:
+    """Sanitise Claude's response before sending to Telegram.
+
+    Removes stray HTML tags (if agent was supposed to use Markdown) and
+    collapses excessive blank lines.
+    """
+    # strip any HTML tags Claude accidentally emitted
+    text = re.sub(r"<[^>]+>", "", text)
+    # collapse 3+ consecutive blank lines into 2
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()

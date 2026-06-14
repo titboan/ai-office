@@ -23,6 +23,7 @@ from telegram.ext import (
 
 from config import config
 from db import log_event
+from utils.tg_format import clean_agent_output as _clean_output, escape_mdv2 as _escape_mdv2, strip_mdv2 as _strip_mdv2
 from task_queue import (
     get_next_task,
     mark_running,
@@ -421,11 +422,13 @@ class BaseAgent(ABC):
     # ------------------------------------------------------------------ #
 
     def _help_text(self) -> str:
+        name = _escape_mdv2(self.name)
+        role = _escape_mdv2(self.role)
         return (
-            f"{self.emoji} <b>{self.name}</b> — {self.role}\n\n"
+            f"{self.emoji} *{name}* — {role}\n\n"
             "/start — главное меню\n"
             "/reset — очистить историю\n\n"
-            "Напишите задачу, и я займусь ею."
+            "Напишите задачу, и я займусь ею\\."
         )
 
     def _bot_commands(self) -> list[BotCommand]:
@@ -435,10 +438,10 @@ class BaseAgent(ABC):
         ]
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(self._help_text(), parse_mode="HTML")
+        await update.message.reply_text(self._help_text(), parse_mode="MarkdownV2")
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(self._help_text(), parse_mode="HTML")
+        await update.message.reply_text(self._help_text(), parse_mode="MarkdownV2")
 
     async def cmd_reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id
@@ -460,10 +463,11 @@ class BaseAgent(ABC):
         try:
             await context.bot.send_chat_action(chat_id=chat_id, action="typing")
             answer = await self.think(user_text, chat_id)
+            answer = _clean_output(answer)
             try:
-                await update.message.reply_text(answer, parse_mode="HTML")
+                await update.message.reply_text(answer, parse_mode="MarkdownV2")
             except Exception:
-                await update.message.reply_text(answer)
+                await update.message.reply_text(_strip_mdv2(answer))
             logger.info(f"[{self.name}] Ответ отправлен ({len(answer)} символов)")
 
             await self.post_to_group(answer)
@@ -705,7 +709,7 @@ class BaseAgent(ABC):
                     if task.chain_id:
                         await self._handle_chain_failure(task)
                     elif task.chat_id:
-                        await self._notify_user(task.chat_id, f"⏱️ {self.emoji} *{self.name}*: задача превысила лимит времени.\n\nПопробуй разбить задачу на части.")
+                        await self._notify_user(task.chat_id, f"⏱️ {self.emoji} *{_escape_mdv2(self.name)}*: задача превысила лимит времени\\.\n\nПопробуй разбить задачу на части\\.")
                 except Exception as e:
                     await mark_failed(task.id, f"{type(e).__name__}: {e}", retry=True)
                     await log_event(
@@ -718,12 +722,12 @@ class BaseAgent(ABC):
                     if task.chain_id and task.retry_count + 1 >= task.max_retries:
                         await self._handle_chain_failure(task)
                     elif task.chat_id and task.retry_count + 1 >= task.max_retries:
-                        error_short = str(e)[:150].strip()
+                        error_short = _escape_mdv2(str(e)[:150].strip())
                         await self._notify_user(
                             task.chat_id,
-                            f"🔴 {self.emoji} *{self.name}* не смог выполнить задачу.\n\n"
+                            f"🔴 {self.emoji} *{_escape_mdv2(self.name)}* не смог выполнить задачу\\.\n\n"
                             f"*Причина:* `{error_short}`\n\n"
-                            f"Попробуй переформулировать задачу или обратись к Марте."
+                            f"Попробуй переформулировать задачу или обратись к Марте\\."
                         )
             except asyncio.CancelledError:
                 break
@@ -743,22 +747,23 @@ class BaseAgent(ABC):
 
         bot_token — если передан, использует этот токен вместо своего (для ответа через Марту).
         Разбивает длинные сообщения на части (лимит Telegram 4096 символов).
-        Fallback при невалидном HTML: стрипит теги и шлёт plain text.
+        Fallback: MarkdownV2 → escape всего текста → plain text.
         """
         token = bot_token or self.bot_token
         if not token:
             return
 
+        text = _clean_output(text)
         chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)]
 
         async def _send(bot: Bot) -> None:
             for i, chunk in enumerate(chunks):
                 markup = reply_markup if i == len(chunks) - 1 else None
                 try:
-                    await bot.send_message(chat_id=chat_id, text=chunk, parse_mode="HTML", reply_markup=markup)
+                    await bot.send_message(chat_id=chat_id, text=chunk, parse_mode="MarkdownV2", reply_markup=markup)
                 except Exception as e:
-                    logger.warning(f"[{self.name}] HTML rejected ({e!s:.80}), отправляю plain text")
-                    plain = self._strip_html(chunk)
+                    logger.warning(f"[{self.name}] MarkdownV2 rejected ({e!s:.80}), пробую plain text")
+                    plain = _strip_mdv2(chunk)
                     try:
                         await bot.send_message(chat_id=chat_id, text=plain, reply_markup=markup)
                     except Exception as e2:
