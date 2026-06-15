@@ -308,14 +308,36 @@ class PeterAgent(BaseAgent):
             """, chat_id, date_from)
 
             # 6. Рекламные расходы
+            # Для Ozon берём реальный расход из финотчёта (marketplace_fin_adv),
+            # т.к. Performance API даёт только клики (~55% от фактических расходов).
+            # Для WB — Performance API покрывает все типы, финотчёт не нужен.
+            # Fallback: если fin_adv пуст (до первого синка), используем perf_spend.
             adv = await conn.fetch("""
-                SELECT marketplace,
-                       SUM(spend)::numeric(12,2) AS spend,
-                       SUM(views)                AS views,
-                       SUM(clicks)               AS clicks
-                FROM marketplace_adv_stats
-                WHERE chat_id = $1 AND stat_date >= $2
-                GROUP BY marketplace
+                SELECT
+                    a.marketplace,
+                    CASE
+                        WHEN a.marketplace = 'ozon' AND fa.fin_spend IS NOT NULL
+                        THEN fa.fin_spend
+                        ELSE a.perf_spend
+                    END AS spend,
+                    a.views,
+                    a.clicks
+                FROM (
+                    SELECT marketplace,
+                           SUM(spend)::numeric(12,2) AS perf_spend,
+                           SUM(views)::bigint        AS views,
+                           SUM(clicks)::bigint       AS clicks
+                    FROM marketplace_adv_stats
+                    WHERE chat_id = $1 AND stat_date >= $2
+                    GROUP BY marketplace
+                ) a
+                LEFT JOIN (
+                    SELECT marketplace,
+                           SUM(adv_spend)::numeric(12,2) AS fin_spend
+                    FROM marketplace_fin_adv
+                    WHERE chat_id = $1 AND stat_date >= $2
+                    GROUP BY marketplace
+                ) fa USING (marketplace)
             """, chat_id, date_from)
 
             # 6. Остатки — товары с низким стоком

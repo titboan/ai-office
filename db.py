@@ -424,7 +424,18 @@ async def _create_schema() -> None:
                 UNIQUE(chat_id, marketplace, product_id, stat_date)
             )
         """)
-        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns)")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS marketplace_fin_adv (
+                id          SERIAL PRIMARY KEY,
+                chat_id     BIGINT        NOT NULL,
+                marketplace VARCHAR(10)   NOT NULL,
+                stat_date   DATE          NOT NULL,
+                adv_spend   NUMERIC(12,2) DEFAULT 0,
+                updated_at  TIMESTAMPTZ   DEFAULT NOW(),
+                UNIQUE(chat_id, marketplace, stat_date)
+            )
+        """)
+        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv)")
 
 async def save_project(
     chat_id: int,
@@ -707,6 +718,22 @@ async def upsert_ad_stat(
             """,
             chat_id, marketplace, campaign_id, campaign_name,
             stat_date, views, clicks, ctr, spend,
+        )
+
+
+async def upsert_fin_adv(chat_id: int, marketplace: str, stat_date, adv_spend: float) -> None:
+    """Сохранить/обновить суммарные рекламные расходы из финотчёта за день."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO marketplace_fin_adv (chat_id, marketplace, stat_date, adv_spend, updated_at)
+            VALUES ($1, $2, $3, $4, NOW())
+            ON CONFLICT (chat_id, marketplace, stat_date) DO UPDATE
+                SET adv_spend  = EXCLUDED.adv_spend,
+                    updated_at = NOW()
+            """,
+            chat_id, marketplace, stat_date, adv_spend,
         )
 
 

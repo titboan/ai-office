@@ -1422,6 +1422,111 @@ class OzonClient:
         logger.info(f"[Ozon.get_financial_report] {date_from}–{date_to}: {len(results)} агрегатов")
         return results
 
+    _MARKETING_SERVICES = {
+        "MarketingSellerLeadOrders",
+        "MarketingSellerSearch",
+        "SellerClicksMarketing",
+        "SellerPremiumSubscription",
+        "PremiumCashback",
+        "MarketingSellerBrandBanner",
+        "ClientServiceFinancial",
+    }
+
+    async def get_fin_adv_spend(self, date_from: str, date_to: str) -> list[dict]:
+        """Рекламные расходы из финансовых транзакций Ozon (все типы: Premium, бренд, оплата за заказ, клики).
+
+        Читает /v3/finance/transaction/list, извлекает маркетинговые services[],
+        группирует по дате. Возвращает [{"date": "YYYY-MM-DD", "adv_spend": float}].
+        При встрече неизвестного сервиса с суммой > 1000 ₽ отправляет ntfy-алерт.
+        """
+        import json as _json
+        from collections import defaultdict as _dd
+        url = f"{self._BASE}/v3/finance/transaction/list"
+        daily: dict[str, float] = {}
+        all_services: dict[str, float] = _dd(float)   # для аудита
+        page = 1
+
+        while True:
+            body = {
+                "filter": {
+                    "date": {
+                        "from": f"{date_from}T00:00:00.000Z",
+                        "to":   f"{date_to}T23:59:59.000Z",
+                    },
+                    "transaction_type": "all",
+                },
+                "page":      page,
+                "page_size": 1000,
+            }
+            data = None
+            async with aiohttp.ClientSession() as s:
+                for attempt in range(3):
+                    try:
+                        async with s.post(
+                            url, json=body, headers=self._headers(),
+                            timeout=aiohttp.ClientTimeout(total=30),
+                        ) as resp:
+                            raw = await resp.text()
+                            if resp.status == 429:
+                                await asyncio.sleep(60)
+                                continue
+                            if resp.status != 200:
+                                logger.error(f"[Ozon.get_fin_adv_spend] HTTP {resp.status}: {raw[:200]}")
+                                break
+                            data = _json.loads(raw)
+                            break
+                    except Exception as e:
+                        logger.error(f"[Ozon.get_fin_adv_spend] {e}")
+                        break
+            if data is None:
+                break
+
+            operations = (data.get("result") or {}).get("operations") or []
+            for op in operations:
+                op_date = (op.get("operation_date") or date_from)[:10]
+                for svc in (op.get("services") or []):
+                    name  = svc.get("name", "")
+                    price = abs(float(svc.get("price", 0) or 0))
+                    if price > 0:
+                        all_services[name] += price
+                        if name in self._MARKETING_SERVICES:
+                            daily[op_date] = daily.get(op_date, 0.0) + price
+
+            page_count = (data.get("result") or {}).get("page_count") or 1
+            if page >= page_count or not operations:
+                break
+            page += 1
+
+        # Логируем все встреченные сервисы для аудита
+        logger.info(
+            "[Ozon.get_fin_adv_spend] все сервисы с расходами: "
+            + ", ".join(f"{n}={v:.0f}₽" for n, v in sorted(all_services.items(), key=lambda x: -x[1]))
+        )
+
+        # Алерт если нашли неизвестный сервис с крупной суммой
+        unknown = {n: v for n, v in all_services.items() if n not in self._MARKETING_SERVICES and v > 1000}
+        if unknown:
+            try:
+                from config import config as _cfg
+                from tools.ntfy import send_push
+                lines = "\n".join(f"• {n}: {v:,.0f} руб." for n, v in sorted(unknown.items(), key=lambda x: -x[1]))
+                await send_push(
+                    title="Ozon: новый тип рекламных расходов",
+                    message=(
+                        f"В финотчёте Ozon появились списания с неизвестными названиями — "
+                        f"они НЕ учтены в ДРР.\n\n{lines}\n\n"
+                        f"Добавь эти названия в _MARKETING_SERVICES в tools/marketplace.py."
+                    ),
+                    topic=_cfg.NTFY_TOPIC,
+                    priority="high",
+                )
+            except Exception as e:
+                logger.error(f"[Ozon.get_fin_adv_spend] ntfy alert failed: {e}")
+
+        results = [{"date": d, "adv_spend": round(v, 2)} for d, v in sorted(daily.items())]
+        logger.info(f"[Ozon.get_fin_adv_spend] {date_from}–{date_to}: {len(results)} дней рекламных расходов")
+        return results
+
     async def get_funnel_stats(self, date_from: str, date_to: str) -> list[dict]:
         """Воронка конверсии карточки Ozon через /v1/analytics/data с метриками показов и корзины."""
         import json as _json

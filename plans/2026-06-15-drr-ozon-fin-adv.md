@@ -1,6 +1,6 @@
 # План: ДРР Ozon из финансового отчёта (ежедневное обновление)
 
-**Статус: в работе**
+**Статус: завершён**
 
 ---
 
@@ -34,7 +34,7 @@ WB остаётся без изменений: `marketplace_adv_stats`.
 
 ## Фазы
 
-### [ ] Фаза 1: Новая таблица в БД
+### [x] Фаза 1: Новая таблица в БД
 
 **Файл: `db.py`**
 
@@ -67,7 +67,9 @@ async def upsert_fin_adv(chat_id: int, marketplace: str, stat_date, adv_spend: f
 
 ---
 
-### [ ] Фаза 2: Новый метод в OzonClient
+### [x] Фаза 2: Новый метод в OzonClient
+
+> Реализовано с ntfy-алертом: при встрече неизвестного сервиса с суммой > 1000 ₽ приходит push с названием и суммой и подсказкой добавить в `_MARKETING_SERVICES`.
 
 **Файл: `tools/marketplace.py`**
 
@@ -147,7 +149,7 @@ async def get_fin_adv_spend(self, date_from: str, date_to: str) -> list[dict]:
 
 ---
 
-### [ ] Фаза 3: Вызов в sync_ad_stats
+### [x] Фаза 3: Вызов в sync_ad_stats
 
 **Файл: `agents/max.py`**
 
@@ -176,7 +178,7 @@ except Exception as e:
 
 ---
 
-### [ ] Фаза 4: Изменение запроса ДРР в peter.py
+### [x] Фаза 4: Изменение запроса ДРР в peter.py
 
 **Файл: `agents/peter.py`**
 

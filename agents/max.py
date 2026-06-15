@@ -1065,8 +1065,8 @@ class MaxAgent(BaseAgent):
 
     async def sync_ad_stats(self, chat_id: int) -> None:
         """Синхронизация рекламной статистики WB + Ozon. Вызывается отдельно от основного sync."""
-        from db import get_marketplace_shops, upsert_ad_stat, upsert_product_ad_stat
-        from tools.marketplace import WBClient, OzonPerformanceClient
+        from db import get_marketplace_shops, upsert_ad_stat, upsert_product_ad_stat, upsert_fin_adv
+        from tools.marketplace import WBClient, OzonPerformanceClient, OzonClient
         import os
         from datetime import date as _date
 
@@ -1134,6 +1134,23 @@ class MaxAgent(BaseAgent):
                         logger.warning("[Макс/adv] Ozon Performance credentials не настроены")
                 except Exception as e:
                     logger.error(f"[Макс/adv] Ozon реклама: {e}")
+
+                # Рекламные расходы из финотчёта (Premium, бренд, оплата за заказ — то, чего нет в Performance API)
+                try:
+                    fin_client = OzonClient(shop["api_token"], shop.get("client_id", ""))
+                    date_from_fin = (datetime.now(_UTC) - timedelta(days=30)).strftime("%Y-%m-%d")
+                    fin_adv = await fin_client.get_fin_adv_spend(
+                        date_from=date_from_fin,
+                        date_to=date_to_adv,
+                    )
+                    for row in fin_adv:
+                        await upsert_fin_adv(
+                            chat_id=chat_id, marketplace="ozon",
+                            stat_date=row["date"], adv_spend=row["adv_spend"],
+                        )
+                    logger.info(f"[Макс/adv] Ozon финотчёт рекламы: {len(fin_adv)} дней")
+                except Exception as e:
+                    logger.error(f"[Макс/adv] Ozon финотчёт рекламы: {e}")
 
     async def sync_financial_report(self, chat_id: int, days: int = 90) -> dict:
         """Синхронизация финансовых отчётов WB + Ozon за N дней.
