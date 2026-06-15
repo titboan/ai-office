@@ -23,7 +23,7 @@ from telegram.ext import (
 
 from config import config
 from db import log_event
-from utils.tg_format import clean_agent_output as _clean_output, escape_mdv2 as _escape_mdv2, strip_mdv2 as _strip_mdv2
+from utils.tg_format import clean_agent_output as _clean_output
 from utils.tg_rich import send_rich_or_fallback as _send_rich
 from task_queue import (
     get_next_task,
@@ -423,13 +423,11 @@ class BaseAgent(ABC):
     # ------------------------------------------------------------------ #
 
     def _help_text(self) -> str:
-        name = _escape_mdv2(self.name)
-        role = _escape_mdv2(self.role)
         return (
-            f"{self.emoji} *{name}* — {role}\n\n"
+            f"{self.emoji} **{self.name}** — {self.role}\n\n"
             "/start — главное меню\n"
             "/reset — очистить историю\n\n"
-            "Напишите задачу, и я займусь ею\\."
+            "Напишите задачу, и я займусь ею."
         )
 
     def _bot_commands(self) -> list[BotCommand]:
@@ -729,12 +727,12 @@ class BaseAgent(ABC):
                     if task.chain_id and task.retry_count + 1 >= task.max_retries:
                         await self._handle_chain_failure(task)
                     elif task.chat_id and task.retry_count + 1 >= task.max_retries:
-                        error_short = _escape_mdv2(str(e)[:150].strip())
+                        error_short = str(e)[:150].strip()
                         await self._notify_user(
                             task.chat_id,
-                            f"🔴 {self.emoji} *{_escape_mdv2(self.name)}* не смог выполнить задачу\\.\n\n"
-                            f"*Причина:* `{error_short}`\n\n"
-                            f"Попробуй переформулировать задачу или обратись к Марте\\."
+                            f"🔴 {self.emoji} **{self.name}** не смог выполнить задачу.\n\n"
+                            f"**Причина:** `{error_short}`\n\n"
+                            f"Попробуй переформулировать задачу или обратись к Марте."
                         )
             except asyncio.CancelledError:
                 break

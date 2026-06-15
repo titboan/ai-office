@@ -14,7 +14,7 @@ from telegram.ext import CommandHandler, CallbackQueryHandler, MessageHandler, f
 
 from config import config
 from db import save_project, find_project, list_projects
-from utils.tg_format import clean_agent_output as _clean_output, escape_mdv2 as _escape_mdv2, strip_mdv2 as _strip_mdv2
+from utils.tg_format import clean_agent_output as _clean_output
 from utils.tg_rich import send_rich_or_fallback as _send_rich
 from task_queue import create_task as enqueue_task, get_active_tasks, enqueue_chain_task
 from tools import create_project, create_project_page

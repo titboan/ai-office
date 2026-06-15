@@ -8,7 +8,7 @@ from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
 from tools import save_research
-from utils.tg_format import strip_html as _strip_html, strip_mdv2 as _strip_mdv2
+from utils.tg_format import strip_html as _strip_html
 from utils.tg_rich import send_rich_or_fallback as _send_rich
 from .base_agent import BaseAgent
 
