@@ -935,8 +935,9 @@ class MaxAgent(BaseAgent):
         )
         cb_base = f"qrev:{mp}:{q['question_id']}"
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Отправить",  callback_data=f"{cb_base}:approve"),
-            InlineKeyboardButton("🚫 Пропустить", callback_data=f"{cb_base}:skip"),
+            InlineKeyboardButton("✅ Отправить",     callback_data=f"{cb_base}:approve"),
+            InlineKeyboardButton("✏️ Редактировать", callback_data=f"{cb_base}:edit"),
+            InlineKeyboardButton("🚫 Пропустить",    callback_data=f"{cb_base}:skip"),
         ]])
         target = config.PARTNERS_GROUP_ID if config.PARTNERS_GROUP_ID else chat_id
         await self._notify_user(target, text, reply_markup=keyboard)
@@ -1995,14 +1996,42 @@ class MaxAgent(BaseAgent):
             return
 
         await self._redis_set(f"pending_edit:{chat_id}", "", ttl=1)
-        # Формат: mp:review_id или mp:review_id:owner_chat_id (новый формат для группы)
-        parts = pending.split(":", 2)
+        # Формат вопроса: q:mp:question_id:owner_chat_id
+        # Формат отзыва:  mp:review_id:owner_chat_id
+        parts = pending.split(":", 3)
+        reply_text = update.message.text.strip()
+        first_name = (update.effective_user.first_name if update.effective_user else None) or "Участник"
+
+        if parts[0] == "q":
+            if len(parts) < 3:
+                return
+            mp, question_id = parts[1], parts[2]
+            owner_chat_id = int(parts[3]) if len(parts) == 4 else chat_id
+            from db import get_marketplace_shops, update_question_status
+            shop = next(
+                (s for s in await get_marketplace_shops(owner_chat_id) if s["marketplace"] == mp),
+                None,
+            )
+            if shop:
+                from tools.marketplace import make_client
+                ok = await make_client(shop).answer_question(question_id, reply_text)
+                if ok:
+                    from datetime import datetime as _dt2
+                    await update_question_status(
+                        mp, question_id, "answered",
+                        final_answer=reply_text,
+                        answered_at=_dt2.now(_UTC),
+                    )
+                    await update.message.reply_text(f"✅ Ответ отредактирован и отправлен — {first_name}")
+                    return
+            await update.message.reply_text("❌ Не удалось отправить ответ.")
+            return
+
+        # Отзыв: формат mp:review_id или mp:review_id:owner_chat_id
         if len(parts) < 2:
             return
         mp, review_id = parts[0], parts[1]
-        owner_chat_id = int(parts[2]) if len(parts) == 3 else chat_id
-        reply_text = update.message.text.strip()
-
+        owner_chat_id = int(parts[2]) if len(parts) >= 3 else chat_id
         from db import get_marketplace_shops, update_review_status
         shop = next(
             (s for s in await get_marketplace_shops(owner_chat_id) if s["marketplace"] == mp),
@@ -2010,7 +2039,6 @@ class MaxAgent(BaseAgent):
         )
         if shop and await self._send_to_marketplace(shop, review_id, reply_text):
             await update_review_status(mp, review_id, "replied", final_reply=reply_text)
-            first_name = (update.effective_user.first_name if update.effective_user else None) or "Участник"
             await update.message.reply_text(f"✅ Ответ отредактирован и отправлен — {first_name}")
             return
         await update.message.reply_text("❌ Не удалось отправить ответ.")
@@ -2080,6 +2108,17 @@ class MaxAgent(BaseAgent):
             await query.edit_message_text(
                 query.message.text + "\n\n❌ Не удалось отправить ответ.",
                 reply_markup=None,
+            )
+
+        elif action == "edit":
+            await query.edit_message_text(
+                query.message.text + "\n\n✏️ Напишите ваш вариант ответа:",
+                reply_markup=None,
+            )
+            await self._redis_set(
+                f"pending_edit:{msg_chat_id}",
+                f"q:{mp}:{question_id}:{owner_chat_id}",
+                ttl=600,
             )
 
         elif action == "skip":

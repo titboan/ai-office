@@ -199,78 +199,25 @@ async def run_all_async() -> None:
     peter_agent = next((a for a in started if a.__class__.__name__ == "PeterAgent"), None)
 
     async def _scheduled_reviews_loop():
-        """Запускает обработку отзывов в 06:00, 11:00, 17:00 UTC."""
-        from datetime import datetime, timezone, timedelta
+        """Обработка всех отзывов каждые 15 минут."""
         from db import get_all_active_shops
 
-        _FIRE_HOURS = {6, 11, 17}
+        _INTERVAL = 15 * 60
 
         while True:
             try:
-                now = datetime.now(timezone.utc)
-                # Ближайший час из _FIRE_HOURS
-                candidates = []
-                for h in _FIRE_HOURS:
-                    t = now.replace(hour=h, minute=0, second=0, microsecond=0)
-                    if t <= now:
-                        t += timedelta(days=1)
-                    candidates.append(t)
-                target = min(candidates)
-                wait_seconds = (target - now).total_seconds()
-                logger.info(f"[reviews_scheduler] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
-                await asyncio.sleep(wait_seconds)
+                await asyncio.sleep(_INTERVAL)
 
                 if max_agent is None:
                     continue
 
                 shops = await get_all_active_shops()
                 unique_chats = list({s["chat_id"] for s in shops})
-                logger.info(f"[reviews_scheduler] обработка отзывов для {len(unique_chats)} пользователей")
-
-                all_results: dict = {}
-                is_morning_run = (target.hour == 6)
                 for chat_id in unique_chats:
                     try:
-                        r = await max_agent.process_reviews(chat_id)
-                        for mp, stats in r.items():
-                            agg = all_results.setdefault(mp, {"found": 0, "auto_replied": 0, "pending": 0, "errors": 0})
-                            for k in agg:
-                                agg[k] += stats.get(k, 0)
+                        await max_agent.process_reviews(chat_id)
                     except Exception as e:
                         logger.error(f"[reviews_scheduler] chat={chat_id} error: {e}")
-                    # Ежедневная сводка только в утренний прогон (06:00 UTC)
-                    if is_morning_run:
-                        try:
-                            await max_agent.send_daily_summary(chat_id)
-                        except Exception as e:
-                            logger.error(f"[reviews_scheduler] send_daily_summary chat={chat_id}: {e}")
-
-                # Сводка в группу партнёров если задана
-                if config.PARTNERS_GROUP_ID:
-                    from zoneinfo import ZoneInfo
-                    msk_now = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%d.%m %H:%M МСК")
-                    _EMOJI = {"wb": "🟣 Wildberries", "ozon": "🔵 Ozon"}
-                    total_found = sum(s["found"] for s in all_results.values())
-                    if total_found == 0:
-                        summary = f"📊 Сводка отзывов — {msk_now}\n\n✅ Новых отзывов нет."
-                    else:
-                        lines = [f"📊 Сводка отзывов — {msk_now}\n"]
-                        for mp, s in all_results.items():
-                            label = _EMOJI.get(mp, mp)
-                            lines.append(f"{label}: найдено {s['found']}")
-                            if s["found"]:
-                                if s["auto_replied"]:
-                                    lines.append(f"  └ автоответ: {s['auto_replied']}")
-                                if s["pending"]:
-                                    lines.append(f"  └ ожидают: {s['pending']}")
-                        summary = "\n".join(lines)
-                    try:
-                        await max_agent.app.bot.send_message(
-                            chat_id=config.PARTNERS_GROUP_ID,
-                            text=summary,
-                        )
-                    except Exception as e:
-                        logger.warning(f"[reviews_scheduler] group summary error: {e}")
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -278,37 +225,6 @@ async def run_all_async() -> None:
                 await asyncio.sleep(60)
 
     reviews_task = asyncio.create_task(_scheduled_reviews_loop())
-
-    async def _negative_reviews_loop():
-        """Каждые 15 минут проверяет негативные отзывы (1-2★)."""
-        from datetime import datetime, timezone
-        from db import get_all_active_shops
-
-        while True:
-            try:
-                now = datetime.now(timezone.utc)
-                # Следующий момент кратный 15 минутам
-                minutes_to_next = 15 - (now.minute % 15)
-                wait_seconds = minutes_to_next * 60 - now.second
-                await asyncio.sleep(wait_seconds)
-
-                if max_agent is None:
-                    continue
-
-                shops = await get_all_active_shops()
-                unique_chats = list({s["chat_id"] for s in shops})
-                for chat_id in unique_chats:
-                    try:
-                        await max_agent.check_negative_reviews(chat_id)
-                    except Exception as e:
-                        logger.error(f"[neg_scheduler] chat={chat_id} error: {e}")
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"[neg_scheduler] ошибка: {e}")
-                await asyncio.sleep(60)
-
-    negative_task = asyncio.create_task(_negative_reviews_loop())
 
     async def _scheduled_adv_sync_loop():
         """Синхронизация рекламной статистики WB + Ozon раз в сутки в 06:00 UTC."""
