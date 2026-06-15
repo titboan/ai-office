@@ -15,6 +15,7 @@ from telegram.ext import (
 
 from config import config
 from utils.tg_format import bold, escape
+from utils.tg_rich import send_rich_or_fallback as _send_rich
 from .base_agent import BaseAgent
 
 _UTC = timezone.utc
@@ -1756,17 +1757,17 @@ class MaxAgent(BaseAgent):
             return line
 
         date_str = now_msk.strftime("%d.%m.%Y")
-        lines = [f"💰 <b>Статистика — {escape(date_str)}</b>\n"]
+        lines = [f"# 💰 Статистика — {date_str}\n"]
 
-        lines.append(f"📅 <b>Сегодня ({_fmt_date(today_start)})</b>")
+        lines.append(f"## 📅 Сегодня ({_fmt_date(today_start)})")
         for mp in ("wb", "ozon"):
             lines.append(_mp_line(mp, ord_today, sal_today, cmp_orders=ord_yday, cmp_label="вчера"))
 
-        lines.append(f"\n📅 <b>Вчера ({_fmt_date(yesterday_start)})</b>")
+        lines.append(f"\n## 📅 Вчера ({_fmt_date(yesterday_start)})")
         for mp in ("wb", "ozon"):
             lines.append(_mp_line(mp, ord_yday, sal_yday))
 
-        lines.append(f"\n📅 <b>Неделю назад ({_fmt_date(week_ago_start)})</b>")
+        lines.append(f"\n## 📅 Неделю назад ({_fmt_date(week_ago_start)})")
         for mp in ("wb", "ozon"):
             lines.append(_mp_line(mp, ord_wago, sal_wago))
 
@@ -1774,7 +1775,7 @@ class MaxAgent(BaseAgent):
         prev_week_days = await get_orders_days_count(owner_chat_id, prev_week_start, prev_week_end)
         prev_week_has_data = prev_week_days >= 5
         logger.info(f"[sales_summary] prev_week_days={prev_week_days}, show_delta={prev_week_has_data}")
-        lines.append("\n📈 <b>За 7 дней</b>")
+        lines.append("\n## 📈 За 7 дней")
         for mp in ("wb", "ozon"):
             lines.append(_mp_line(
                 mp, ord_week, sal_week,
@@ -1782,7 +1783,7 @@ class MaxAgent(BaseAgent):
                 cmp_label="пред. неделе" if prev_week_has_data else "",
             ))
 
-        await _bot.send_message(chat_id=target_chat_id, text="\n".join(lines), parse_mode="HTML")
+        await _send_rich(config.MAX_BOT_TOKEN, target_chat_id, "\n".join(lines))
 
     async def _send_stocks(
         self, marketplace: str, owner_chat_id: int, target_chat_id: int, bot=None
