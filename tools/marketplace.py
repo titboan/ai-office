@@ -728,31 +728,39 @@ class WBClient:
         nm_ids: list[int],
         date_from: str,
         date_to: str,
-    ) -> list[dict]:
-        """Ключевые слова и позиции в поиске WB за период."""
+        statistics_token: str = "",
+    ) -> tuple[list[dict], int]:
+        """Ключевые слова и позиции в поиске WB за период.
+
+        Returns (results, http_status) — http_status 0 при exception.
+        analytics-api требует statistics_token (категория «Аналитика» в ЛК).
+        """
         import json as _json
         if not nm_ids:
-            return []
+            return [], 0
         url = "https://seller-analytics-api.wildberries.ru/api/v1/analytics/search-keywords"
-        headers = {"Authorization": self._token, "Content-Type": "application/json"}
-        params = {"nmIds": ",".join(str(x) for x in nm_ids[:20]), "dateFrom": date_from, "dateTo": date_to}
+        # Пробуем statistics_token — он имеет доступ к аналитике; основной токен как fallback
+        token = statistics_token or self._token
+        headers = {"Authorization": token, "Content-Type": "application/json"}
+        # WB принимает nmIds как повторяющиеся query-params: ?nmIds=1&nmIds=2
+        params = [("nmIds", nid) for nid in nm_ids[:20]]
+        params += [("dateFrom", date_from), ("dateTo", date_to)]
+        http_status = 0
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers, params=params, timeout=_TIMEOUT) as resp:
+                    http_status = resp.status
                     raw = await resp.text()
-                    if resp.status in (404, 403):
-                        logger.warning(f"[WB.get_search_keywords] HTTP {resp.status} — endpoint недоступен")
-                        return []
                     if resp.status != 200:
-                        logger.error(f"[WB.get_search_keywords] HTTP {resp.status}: {raw[:200]}")
-                        return []
+                        logger.warning(f"[WB.get_search_keywords] HTTP {resp.status}: {raw[:300]}")
+                        return [], http_status
                     data = _json.loads(raw)
         except asyncio.TimeoutError:
             logger.error("[marketplace] timeout: WB.get_search_keywords")
-            return []
+            return [], 0
         except Exception as e:
             logger.error(f"[WB.get_search_keywords] exception: {e}")
-            return []
+            return [], 0
         results = []
         for item in (data.get("data") or []):
             nm_id = str(item.get("nmId", ""))
@@ -767,7 +775,7 @@ class WBClient:
                     "stat_date":    date_to,
                 })
         logger.info(f"[WB.get_search_keywords] {len(results)} записей для {len(nm_ids)} товаров")
-        return results
+        return results, http_status
 
     async def get_returns_analytics(
         self,

@@ -1390,9 +1390,11 @@ class MaxAgent(BaseAgent):
         date_from = (_date.today() - _td(days=7)).strftime("%Y-%m-%d")
         total = 0
 
+        last_status = 0
         for shop in wb_shops:
             try:
                 client = WBClient(shop["api_token"])
+                stats_token = shop.get("statistics_token") or ""
                 pool = await get_pool()
                 async with pool.acquire() as conn:
                     # marketplace_sales хранит nmId как строку — надёжный источник
@@ -1409,7 +1411,9 @@ class MaxAgent(BaseAgent):
                         "⚠️ Нет данных о продажах WB в базе. Сначала запусти /sync."
                     )
                     return
-                keywords = await client.get_search_keywords(nm_ids, date_from, date_to)
+                keywords, last_status = await client.get_search_keywords(
+                    nm_ids, date_from, date_to, statistics_token=stats_token
+                )
                 for kw in keywords:
                     await upsert_search_keyword(
                         chat_id=chat_id, marketplace="wb",
@@ -1429,10 +1433,22 @@ class MaxAgent(BaseAgent):
                 return
 
         if total == 0:
-            await update.message.reply_text(
-                "⚠️ Ключевые слова не получены.\n"
-                "Возможно, endpoint недоступен или нет данных за период."
-            )
+            if last_status in (401, 403):
+                hint = (
+                    "⚠️ WB вернул 403 — нет доступа к Analytics API.\n\n"
+                    "В ЛК WB создай токен с категорией <b>Аналитика</b> "
+                    "и добавь его через /start → «Подключить магазин» (поле Statistics token)."
+                )
+            elif last_status == 404:
+                hint = "⚠️ WB Analytics API недоступен (404). Попробуй позже."
+            elif last_status == 0:
+                hint = "⚠️ Не удалось подключиться к WB Analytics API (timeout или сеть)."
+            else:
+                hint = (
+                    f"⚠️ Ключевые слова не получены (HTTP {last_status}).\n"
+                    "Возможно, нет данных за выбранный период."
+                )
+            await update.message.reply_text(hint, parse_mode="HTML")
         else:
             await update.message.reply_text(
                 f"✅ Ключевые слова синхронизированы: {total} записей\n"
