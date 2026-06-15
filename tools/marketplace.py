@@ -668,6 +668,169 @@ class WBClient:
             logger.error(f"[WB.get_shop_kpi] {e}", exc_info=True)
             return {}
 
+    async def get_questions(self, is_answered: bool = False, take: int = 100) -> list[dict]:
+        """Вопросы покупателей WB через questions-api.wildberries.ru."""
+        import json as _json
+        _Q_BASE = "https://questions-api.wildberries.ru"
+        url = f"{_Q_BASE}/api/v1/questions"
+        headers = {"Authorization": self._token, "Content-Type": "application/json"}
+        params = {"isAnswered": str(is_answered).lower(), "take": take, "skip": 0}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, params=params, timeout=_TIMEOUT) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[WB.get_questions] HTTP {resp.status}: {raw[:200]}")
+                        return []
+                    data = _json.loads(raw)
+        except asyncio.TimeoutError:
+            logger.error("[marketplace] timeout: WB.get_questions")
+            return []
+        except Exception as e:
+            logger.error(f"[WB.get_questions] exception: {e}")
+            return []
+        results = []
+        for item in (data.get("data") or {}).get("questions") or []:
+            results.append({
+                "question_id":   str(item.get("id", "")),
+                "product_id":    str(item.get("productDetails", {}).get("nmId", "") or ""),
+                "product_name":  item.get("productDetails", {}).get("productName", ""),
+                "question_text": item.get("text", ""),
+                "created_at":    item.get("createdDate", ""),
+            })
+        logger.info(f"[WB.get_questions] {len(results)} вопросов (is_answered={is_answered})")
+        return results
+
+    async def answer_question(self, question_id: str, text: str) -> bool:
+        """Отправить ответ на вопрос покупателя WB."""
+        import json as _json
+        _Q_BASE = "https://questions-api.wildberries.ru"
+        url = f"{_Q_BASE}/api/v1/questions"
+        headers = {"Authorization": self._token, "Content-Type": "application/json"}
+        body = {"id": question_id, "text": text, "state": "wbGoodsQaStatePublished"}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.patch(url, headers=headers, json=body, timeout=_TIMEOUT) as resp:
+                    if resp.status in (200, 204):
+                        return True
+                    raw = await resp.text()
+                    logger.error(f"[WB.answer_question({question_id[:8]})] PATCH {resp.status}: {raw[:200]}")
+                    return False
+        except asyncio.TimeoutError:
+            logger.error("[marketplace] timeout: WB.answer_question")
+            return False
+        except Exception as e:
+            logger.error(f"[WB.answer_question] exception: {e}")
+            return False
+
+    async def get_search_keywords(
+        self,
+        nm_ids: list[int],
+        date_from: str,
+        date_to: str,
+    ) -> list[dict]:
+        """Ключевые слова и позиции в поиске WB за период."""
+        import json as _json
+        if not nm_ids:
+            return []
+        url = "https://seller-analytics-api.wildberries.ru/api/v1/analytics/search-keywords"
+        headers = {"Authorization": self._token, "Content-Type": "application/json"}
+        params = {"nmIds": ",".join(str(x) for x in nm_ids[:20]), "dateFrom": date_from, "dateTo": date_to}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, params=params, timeout=_TIMEOUT) as resp:
+                    raw = await resp.text()
+                    if resp.status in (404, 403):
+                        logger.warning(f"[WB.get_search_keywords] HTTP {resp.status} — endpoint недоступен")
+                        return []
+                    if resp.status != 200:
+                        logger.error(f"[WB.get_search_keywords] HTTP {resp.status}: {raw[:200]}")
+                        return []
+                    data = _json.loads(raw)
+        except asyncio.TimeoutError:
+            logger.error("[marketplace] timeout: WB.get_search_keywords")
+            return []
+        except Exception as e:
+            logger.error(f"[WB.get_search_keywords] exception: {e}")
+            return []
+        results = []
+        for item in (data.get("data") or []):
+            nm_id = str(item.get("nmId", ""))
+            for kw in (item.get("keywords") or []):
+                results.append({
+                    "product_id":   nm_id,
+                    "keyword":      kw.get("keyword", ""),
+                    "position":     kw.get("position"),
+                    "search_count": kw.get("searchCount"),
+                    "ctr":          kw.get("ctr"),
+                    "conv_rate":    kw.get("conversionRate"),
+                    "stat_date":    date_to,
+                })
+        logger.info(f"[WB.get_search_keywords] {len(results)} записей для {len(nm_ids)} товаров")
+        return results
+
+    async def get_returns_analytics(
+        self,
+        date_from: str,
+        date_to: str,
+        statistics_token: str,
+    ) -> list[dict]:
+        """Аналитика возвратов WB за период из Statistics API."""
+        import json as _json
+        _STATS_BASE = "https://statistics-api.wildberries.ru"
+        stats_headers = {"Authorization": f"Bearer {statistics_token}", "Content-Type": "application/json"}
+        url = f"{_STATS_BASE}/api/v1/supplier/sales"
+        data = None
+        for attempt in range(2):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        url, headers=stats_headers,
+                        params={"dateFrom": date_from, "flag": 1},
+                        timeout=_TIMEOUT,
+                    ) as resp:
+                        if resp.status == 429:
+                            logger.warning("[WB.get_returns_analytics] rate limit, жду 60 сек")
+                            await asyncio.sleep(60)
+                            continue
+                        raw = await resp.text()
+                        if resp.status != 200:
+                            logger.error(f"[WB.get_returns_analytics] HTTP {resp.status}: {raw[:200]}")
+                            return []
+                        data = _json.loads(raw)
+                        break
+            except asyncio.TimeoutError:
+                logger.error("[marketplace] timeout: WB.get_returns_analytics")
+                return []
+            except Exception as e:
+                logger.error(f"[WB.get_returns_analytics] exception: {e}")
+                return []
+        if not data:
+            return []
+        agg: dict[str, dict] = {}
+        for item in (data if isinstance(data, list) else []):
+            sale_id = str(item.get("saleID", ""))
+            if not sale_id.startswith("R"):
+                continue
+            nm_id = str(item.get("nmId", ""))
+            name = item.get("subject", "") or item.get("supplierArticle", "")
+            price = abs(float(item.get("forPay", 0) or 0))
+            sale_date = (item.get("lastChangeDate", "") or "")[:10]
+            key = (nm_id, sale_date)
+            if key not in agg:
+                agg[key] = {
+                    "product_id":    nm_id,
+                    "product_name":  name,
+                    "stat_date":     sale_date,
+                    "returns_count": 0,
+                    "return_amount": 0.0,
+                }
+            agg[key]["returns_count"] += 1
+            agg[key]["return_amount"] += price
+        results = list(agg.values())
+        logger.info(f"[WB.get_returns_analytics] {len(results)} агрегатов возвратов")
+        return results
+
 
 # ── Ozon ──────────────────────────────────────────────────────────────────────
 
@@ -757,6 +920,85 @@ class OzonClient:
             logger.warning(f"[Ozon.check_connection] exception: {e}")
             return False
 
+    async def get_questions(self, page_size: int = 100) -> list[dict]:
+        """Неотвеченные вопросы покупателей Ozon через /v1/question/list."""
+        results = []
+        page = 1
+        async with aiohttp.ClientSession() as session:
+            while True:
+                data = await _request(
+                    session, "POST",
+                    f"{self._BASE}/v1/question/list",
+                    headers=self._headers(),
+                    json={"page": page, "page_size": page_size, "status": "not_answered"},
+                    label="Ozon.get_questions",
+                )
+                if not data:
+                    break
+                items = data.get("questions") or []
+                for item in items:
+                    results.append({
+                        "question_id":   str(item.get("id", "")),
+                        "product_id":    str(item.get("sku", "") or ""),
+                        "product_name":  item.get("product_name", ""),
+                        "question_text": item.get("question_text", "") or item.get("question", ""),
+                        "created_at":    item.get("published_at", "") or item.get("created_at", ""),
+                    })
+                if len(items) < page_size:
+                    break
+                page += 1
+        logger.info(f"[Ozon.get_questions] {len(results)} неотвеченных вопросов")
+        return results
+
+    async def answer_question(self, question_id: str, text: str) -> bool:
+        """Ответить на вопрос покупателя Ozon через /v1/question/answer/create."""
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "POST",
+                f"{self._BASE}/v1/question/answer/create",
+                headers=self._headers(),
+                json={"question_id": question_id, "text": text},
+                label=f"Ozon.answer_question({question_id[:8]})",
+            )
+        return data is not None
+
+    async def get_returns_analytics(self, date_from: str, date_to: str) -> list[dict]:
+        """Аналитика возвратов Ozon за период через /v1/analytics/data."""
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "POST",
+                f"{self._BASE}/v1/analytics/data",
+                headers=self._headers(),
+                json={
+                    "date_from": date_from,
+                    "date_to":   date_to,
+                    "metrics":   ["returns", "return_amount", "return_rate"],
+                    "dimension": [{"field": "sku"}, {"field": "title"}],
+                    "filters":   [],
+                    "sort":      [{"key": "return_amount", "order": "DESC"}],
+                    "limit":     1000,
+                    "offset":    0,
+                },
+                label="Ozon.get_returns_analytics",
+            )
+        if not data:
+            return []
+        results = []
+        for row in (data.get("result", {}).get("data") or []):
+            dims = row.get("dimensions") or []
+            vals = row.get("metrics") or []
+            sku  = dims[0].get("id", "") if len(dims) > 0 else ""
+            name = dims[1].get("name", "") if len(dims) > 1 else ""
+            results.append({
+                "product_id":    str(sku),
+                "product_name":  name,
+                "returns_count": int(vals[0]) if len(vals) > 0 else 0,
+                "return_amount": float(vals[1]) if len(vals) > 1 else 0.0,
+                "return_rate":   float(vals[2]) if len(vals) > 2 else None,
+                "stat_date":     date_to,
+            })
+        logger.info(f"[Ozon.get_returns_analytics] {len(results)} товаров с возвратами")
+        return results
 
     async def _get_sku_to_offer_id(self, skus: list[int]) -> dict[int, str]:
         """Получить маппинг SKU → offer_id через /v3/product/info/list."""

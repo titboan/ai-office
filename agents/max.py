@@ -39,6 +39,23 @@ _REPLY_PROMPT = """\
 
 Ответь только текстом ответа, без кавычек и пояснений."""
 
+_QUESTION_PROMPT = """\
+Ты — вежливый менеджер магазина на маркетплейсе. Напиши ответ на вопрос покупателя о товаре.
+
+Товар: {product_name}
+Вопрос: {question_text}
+
+Требования:
+- Ответь по существу вопроса, информативно и честно
+- Если вопрос о характеристиках — укажи конкретные данные
+- Если вопрос о доставке/возврате — направь к политике площадки
+- Тон: дружелюбный, живой, профессиональный
+- Длина: 2-4 предложения
+- Язык: русский
+- НЕ используй: "команда магазина", "мы рады"
+
+Ответь только текстом ответа, без кавычек и пояснений."""
+
 _HELP_TEXT = """\
 🤖 <b>Что я умею:</b>
 
@@ -714,6 +731,18 @@ class MaxAgent(BaseAgent):
         )
         return response.content[0].text.strip()
 
+    async def _generate_question_answer(self, product_name: str, question_text: str) -> str:
+        prompt = _QUESTION_PROMPT.format(
+            product_name=product_name or "товар",
+            question_text=question_text or "(без текста)",
+        )
+        response = await self.claude.messages.create(
+            model=config.CLAUDE_HAIKU_MODEL,
+            max_tokens=512,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text.strip()
+
     # ------------------------------------------------------------------ #
     #  Отправка ответа на площадку                                         #
     # ------------------------------------------------------------------ #
@@ -823,6 +852,94 @@ class MaxAgent(BaseAgent):
             results[mp] = stats
 
         return results
+
+    async def process_questions(self, chat_id: int) -> dict:
+        """Обработать неотвеченные вопросы покупателей. Возвращает итоги по площадкам."""
+        from db import get_marketplace_shops, save_question, update_question_status
+        from tools.marketplace import make_client
+
+        shops = await get_marketplace_shops(chat_id)
+        results: dict = {}
+        if not shops:
+            return results
+
+        for shop in shops:
+            mp = shop["marketplace"]
+            stats = {"found": 0, "pending": 0, "errors": 0}
+            try:
+                questions = await make_client(shop).get_questions()
+                logger.info(f"[Макс/questions] {mp}: {len(questions)} вопросов для chat={chat_id}")
+            except Exception as e:
+                logger.error(f"[Макс/questions] get_questions {mp}: {e}")
+                stats["errors"] += 1
+                results[mp] = stats
+                continue
+
+            for q in questions:
+                try:
+                    created = None
+                    if q.get("created_at"):
+                        try:
+                            from datetime import datetime as _dt
+                            raw_ts = str(q["created_at"]).rstrip("Z")
+                            created = _dt.fromisoformat(raw_ts).replace(tzinfo=_UTC)
+                        except Exception:
+                            pass
+                    is_new = await save_question(
+                        chat_id=chat_id,
+                        marketplace=mp,
+                        question_id=q["question_id"],
+                        product_id=q.get("product_id"),
+                        product_name=q.get("product_name"),
+                        question_text=q.get("question_text"),
+                        created_at=created,
+                    )
+                    if not is_new:
+                        continue
+
+                    stats["found"] += 1
+                    try:
+                        answer = await self._generate_question_answer(
+                            product_name=q.get("product_name", ""),
+                            question_text=q.get("question_text", ""),
+                        )
+                    except Exception as e:
+                        logger.error(f"[Макс/questions] generate_answer error: {e}")
+                        answer = ""
+                        stats["errors"] += 1
+
+                    await update_question_status(
+                        mp, q["question_id"],
+                        status="pending_approval",
+                        generated_answer=answer,
+                    )
+                    await self._notify_pending_question(chat_id, shop, q, answer)
+                    stats["pending"] += 1
+                except Exception as e:
+                    logger.error(f"[Макс/questions] обработка вопроса {q.get('question_id', '?')[:8]}: {e}")
+                    stats["errors"] += 1
+
+            results[mp] = stats
+
+        return results
+
+    async def _notify_pending_question(
+        self, chat_id: int, shop: dict, q: dict, generated_answer: str
+    ) -> None:
+        mp = shop["marketplace"]
+        mp_label = _MP_LABELS.get(mp, mp)
+        text = (
+            f"❓ Вопрос [{mp_label}] — {q.get('product_name', 'товар')}\n\n"
+            f"💬 {q.get('question_text') or '(без текста)'}\n\n"
+            f"📝 Предлагаемый ответ:\n{generated_answer}"
+        )
+        cb_base = f"qrev:{mp}:{q['question_id']}"
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Отправить",  callback_data=f"{cb_base}:approve"),
+            InlineKeyboardButton("🚫 Пропустить", callback_data=f"{cb_base}:skip"),
+        ]])
+        target = config.PARTNERS_GROUP_ID if config.PARTNERS_GROUP_ID else chat_id
+        await self._notify_user(target, text, reply_markup=keyboard)
 
     async def sync_marketplace_data(self, chat_id: int) -> None:
         """Синхронизировать остатки, продажи и заказы для всех магазинов пользователя."""
@@ -1269,6 +1386,133 @@ class MaxAgent(BaseAgent):
         except Exception as e:
             logger.error(f"[Макс/sync_promotions] {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
+
+    async def cmd_sync_keywords(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/sync_keywords — синхронизация ключевых слов и позиций WB."""
+        chat_id = update.effective_user.id
+        await update.message.reply_text("🔑 Синхронизирую ключевые слова WB…")
+        from db import get_marketplace_shops, upsert_search_keyword, get_pool
+        from tools.marketplace import WBClient
+        from datetime import date as _date, timedelta as _td
+
+        shops = await get_marketplace_shops(chat_id)
+        wb_shops = [s for s in shops if s["marketplace"] == "wb"]
+        if not wb_shops:
+            await update.message.reply_text("⚠️ WB магазин не подключён.")
+            return
+
+        date_to   = _date.today().strftime("%Y-%m-%d")
+        date_from = (_date.today() - _td(days=7)).strftime("%Y-%m-%d")
+        total = 0
+
+        for shop in wb_shops:
+            try:
+                client = WBClient(shop["api_token"])
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        "SELECT DISTINCT product_id FROM marketplace_stocks WHERE chat_id=$1 AND marketplace='wb' LIMIT 50",
+                        chat_id,
+                    )
+                nm_ids = []
+                for r in rows:
+                    try:
+                        nm_ids.append(int(r["product_id"]))
+                    except (ValueError, TypeError):
+                        pass
+                if not nm_ids:
+                    await update.message.reply_text("⚠️ Нет товаров WB в базе. Сначала запусти /sync.")
+                    return
+                keywords = await client.get_search_keywords(nm_ids, date_from, date_to)
+                for kw in keywords:
+                    await upsert_search_keyword(
+                        chat_id=chat_id, marketplace="wb",
+                        product_id=kw["product_id"],
+                        keyword=kw["keyword"],
+                        position=kw.get("position"),
+                        search_count=kw.get("search_count"),
+                        ctr=kw.get("ctr"),
+                        conv_rate=kw.get("conv_rate"),
+                        stat_date=kw.get("stat_date") or date_to,
+                    )
+                total += len(keywords)
+                logger.info(f"[Макс/sync_keywords] WB: {len(keywords)} ключей для {len(nm_ids)} товаров")
+            except Exception as e:
+                logger.error(f"[Макс/sync_keywords] WB: {e}", exc_info=True)
+                await update.message.reply_text(f"❌ Ошибка: {e}")
+                return
+
+        if total == 0:
+            await update.message.reply_text(
+                "⚠️ Ключевые слова не получены.\n"
+                "Возможно, endpoint недоступен или нет данных за период."
+            )
+        else:
+            await update.message.reply_text(
+                f"✅ Ключевые слова синхронизированы: {total} записей\n"
+                f"Период: {date_from} — {date_to}"
+            )
+
+    async def cmd_sync_returns(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/sync_returns — синхронизация аналитики возвратов WB + Ozon."""
+        chat_id = update.effective_user.id
+        await update.message.reply_text("📦 Синхронизирую аналитику возвратов…")
+        from db import get_marketplace_shops, upsert_returns_analytics
+        from tools.marketplace import WBClient, OzonClient
+        from datetime import date as _date, timedelta as _td
+
+        shops = await get_marketplace_shops(chat_id)
+        date_to   = _date.today().strftime("%Y-%m-%d")
+        date_from = (_date.today() - _td(days=30)).strftime("%Y-%m-%d")
+        totals = {}
+
+        for shop in shops:
+            mp = shop["marketplace"]
+            try:
+                if mp == "wb":
+                    stats_token = shop.get("statistics_token") or ""
+                    if not stats_token:
+                        logger.warning("[Макс/sync_returns] WB: нет statistics_token")
+                        continue
+                    client = WBClient(shop["api_token"])
+                    returns = await client.get_returns_analytics(date_from, date_to, stats_token)
+                elif mp == "ozon":
+                    client = OzonClient(shop["api_token"], shop.get("client_id", ""))
+                    returns = await client.get_returns_analytics(date_from, date_to)
+                else:
+                    continue
+
+                for r in returns:
+                    stat_date = r.get("stat_date") or date_to
+                    try:
+                        from datetime import date as _dt_date
+                        if isinstance(stat_date, str):
+                            stat_date = _dt_date.fromisoformat(stat_date[:10])
+                    except Exception:
+                        pass
+                    await upsert_returns_analytics(
+                        chat_id=chat_id, marketplace=mp,
+                        product_id=r["product_id"],
+                        product_name=r.get("product_name"),
+                        stat_date=stat_date,
+                        returns_count=r.get("returns_count", 0),
+                        return_amount=r.get("return_amount", 0.0),
+                        return_rate=r.get("return_rate"),
+                    )
+                totals[mp] = len(returns)
+                logger.info(f"[Макс/sync_returns] {mp}: {len(returns)} записей")
+            except Exception as e:
+                logger.error(f"[Макс/sync_returns] {mp}: {e}", exc_info=True)
+
+        if not totals:
+            await update.message.reply_text("⚠️ Данные о возвратах не получены.")
+        else:
+            lines = ["✅ Возвраты синхронизированы"]
+            for mp, cnt in totals.items():
+                label = "🟣 WB" if mp == "wb" else "🔵 Ozon"
+                lines.append(f"{label}: {cnt} записей")
+            lines.append(f"Период: {date_from} — {date_to}")
+            await update.message.reply_text("\n".join(lines))
 
     async def sync_shop_kpi(self, chat_id: int) -> dict:
         """Снимок рейтинга и KPI продавца WB + Ozon."""
@@ -1770,6 +2014,80 @@ class MaxAgent(BaseAgent):
             await update.message.reply_text(f"✅ Ответ отредактирован и отправлен — {first_name}")
             return
         await update.message.reply_text("❌ Не удалось отправить ответ.")
+
+    # ------------------------------------------------------------------ #
+    #  Callback — вопросы покупателей                                      #
+    # ------------------------------------------------------------------ #
+
+    async def _handle_question_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        query = update.callback_query
+
+        parts = query.data.split(":", 3)
+        if len(parts) != 4:
+            await query.answer()
+            return
+        _, mp, question_id, action = parts
+
+        lock_key = f"question_lock:{question_id}"
+        locked = await self._redis_get(lock_key)
+        if locked:
+            await query.answer("✅ Уже обработано", show_alert=True)
+            return
+
+        user = query.from_user
+        first_name = (user.first_name if user else None) or "Участник"
+        await self._redis_set(lock_key, first_name, ttl=300)
+        await query.answer()
+
+        msg_chat_id = query.message.chat_id
+        from db import get_pool, get_marketplace_shops, get_pending_questions, update_question_status
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT chat_id FROM marketplace_questions WHERE marketplace=$1 AND question_id=$2",
+                mp, question_id,
+            )
+        owner_chat_id = row["chat_id"] if row else msg_chat_id
+
+        if action == "approve":
+            questions = await get_pending_questions(owner_chat_id)
+            q = next((r for r in questions if r["question_id"] == question_id), None)
+            answer_text = (q or {}).get("generated_answer", "")
+            if q and answer_text:
+                shop = next(
+                    (s for s in await get_marketplace_shops(owner_chat_id) if s["marketplace"] == mp),
+                    None,
+                )
+                if shop:
+                    from tools.marketplace import make_client
+                    ok = await make_client(shop).answer_question(question_id, answer_text)
+                    if ok:
+                        from datetime import datetime as _dt
+                        await update_question_status(
+                            mp, question_id,
+                            status="answered",
+                            final_answer=answer_text,
+                            answered_at=_dt.now(_UTC),
+                        )
+                        await query.edit_message_text(
+                            query.message.text + f"\n\n✅ Ответ отправлен — {first_name}",
+                            reply_markup=None,
+                        )
+                        return
+            await query.edit_message_text(
+                query.message.text + "\n\n❌ Не удалось отправить ответ.",
+                reply_markup=None,
+            )
+
+        elif action == "skip":
+            await update_question_status(mp, question_id, "skipped")
+            await query.edit_message_text(
+                query.message.text + f"\n\n🚫 Пропущено — {first_name}",
+                reply_markup=None,
+            )
 
     # ------------------------------------------------------------------ #
     #  Команды (рабочие, но не в BotCommand меню)                         #
@@ -2996,6 +3314,8 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("sync_fin",      self.cmd_sync_fin))
         self.app.add_handler(CommandHandler("sync_funnel",      self.cmd_sync_funnel))
         self.app.add_handler(CommandHandler("sync_promotions", self.cmd_sync_promotions))
+        self.app.add_handler(CommandHandler("sync_keywords",   self.cmd_sync_keywords))
+        self.app.add_handler(CommandHandler("sync_returns",    self.cmd_sync_returns))
         self.app.add_handler(CommandHandler("shop_kpi",        self.cmd_shop_kpi))
         self.app.add_handler(CommandHandler("sync_sku",        self.cmd_sync_sku))
         self.app.add_handler(CommandHandler("products",      self.cmd_products))
@@ -3010,7 +3330,10 @@ class MaxAgent(BaseAgent):
             CallbackQueryHandler(self._handle_onboard_callback, pattern=r"^onboard:")
         )
         self.app.add_handler(
-            CallbackQueryHandler(self._handle_review_callback, pattern=r"^rev:")
+            CallbackQueryHandler(self._handle_review_callback,   pattern=r"^rev:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_question_callback, pattern=r"^qrev:")
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_catalog_add_callback,  pattern=r"^addmp:")

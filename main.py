@@ -388,6 +388,51 @@ async def run_all_async() -> None:
 
     asyncio.create_task(_scheduled_fin_sync_loop())
 
+    async def _scheduled_questions_loop():
+        """Мониторинг вопросов покупателей WB + Ozon в 06:00, 11:00, 17:00 UTC."""
+        from datetime import datetime, timezone, timedelta
+        from db import get_all_active_shops
+
+        _FIRE_HOURS = {6, 11, 17}
+
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                candidates = []
+                for h in _FIRE_HOURS:
+                    t = now.replace(hour=h, minute=0, second=0, microsecond=0)
+                    if t <= now:
+                        t += timedelta(days=1)
+                    candidates.append(t)
+                target = min(candidates)
+                wait_seconds = (target - now).total_seconds()
+                logger.info(f"[questions_scheduler] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
+                await asyncio.sleep(wait_seconds)
+
+                if max_agent is None:
+                    continue
+
+                shops = await get_all_active_shops()
+                unique_chats = list({s["chat_id"] for s in shops})
+                logger.info(f"[questions_scheduler] проверка вопросов для {len(unique_chats)} пользователей")
+
+                for chat_id in unique_chats:
+                    try:
+                        results = await max_agent.process_questions(chat_id)
+                        found = sum(s.get("found", 0) for s in results.values())
+                        if found:
+                            logger.info(f"[questions_scheduler] chat={chat_id}: {found} новых вопросов")
+                    except Exception as e:
+                        logger.error(f"[questions_scheduler] chat={chat_id} error: {e}")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[questions_scheduler] ошибка: {e}")
+                await asyncio.sleep(60)
+
+    asyncio.create_task(_scheduled_questions_loop())
+
     async def _weekly_audit_loop():
         """Еженедельный аудит магазина — понедельник 07:00 UTC (10:00 МСК)."""
         from datetime import datetime, timezone, timedelta

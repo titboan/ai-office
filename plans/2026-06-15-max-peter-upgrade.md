@@ -1,6 +1,6 @@
 # План: Улучшение Макса и Питера — полный апгрейд аналитики
 
-**Статус:** Фаза 2 завершена. Фаза 3 — следующая.  
+**Статус:** Фаза 3 завершена.  
 **Дата:** 2026-06-15
 
 ---
@@ -113,10 +113,10 @@ GROUP BY 1 ORDER BY 1
 
 **Почему важно:** Ozon Q&A (`/v1/question/list`) **НЕ требует Premium Plus** — в отличие от отзывов! Уже сейчас можно мониторить и отвечать на вопросы покупателей. Вопросы влияют на SEO карточки.
 
-- [ ] Добавить `get_questions()` в `OzonClient` (`tools/marketplace.py`)
-- [ ] Добавить `answer_question()` в `OzonClient`
-- [ ] Создать таблицу `marketplace_questions`
-- [ ] Добавить фоновый мониторинг в Макса (аналог review loop)
+- [x] Добавить `get_questions()` в `OzonClient` (`tools/marketplace.py`)
+- [x] Добавить `answer_question()` в `OzonClient`
+- [x] Создать таблицу `marketplace_questions`
+- [x] Добавить фоновый мониторинг в Макса (аналог review loop)
 
 ```python
 # OzonClient
@@ -147,9 +147,9 @@ CREATE TABLE marketplace_questions (
 
 **Аналог для WB:** `/api/v1/questions/list` на questions-api.wildberries.ru
 
-- [ ] Добавить `get_questions()` в `WBClient`
-- [ ] Добавить `answer_question()` в `WBClient`
-- [ ] Использовать ту же таблицу `marketplace_questions` (marketplace='wb')
+- [x] Добавить `get_questions()` в `WBClient`
+- [x] Добавить `answer_question()` в `WBClient`
+- [x] Использовать ту же таблицу `marketplace_questions` (marketplace='wb')
 
 ---
 
@@ -168,10 +168,10 @@ CREATE TABLE marketplace_questions (
 **Эндпоинт:** `GET /api/v1/analytics/search-keywords` на seller-analytics-api.wildberries.ru  
 Возвращает: keyword, search_count, position, CTR, conversion_rate
 
-- [ ] Добавить `get_search_keywords()` в `WBClient`
-- [ ] Создать таблицу `product_search_keywords`
-- [ ] Команда `/sync_keywords` у Макса
-- [ ] Данные передавать Питеру и Элине (копирайтер)
+- [x] Добавить `get_search_keywords()` в `WBClient`
+- [x] Создать таблицу `product_search_keywords`
+- [x] Команда `/sync_keywords` у Макса
+- [ ] Данные передавать Питеру и Элине (копирайтер) — следующая итерация
 
 ```sql
 CREATE TABLE product_search_keywords (
@@ -195,9 +195,9 @@ CREATE TABLE product_search_keywords (
 **WB:** `GET /api/v1/analytics/returns-report` — причины возвратов по товарам  
 **Ozon:** `POST /v1/analytics/data` с metrics `["returns", "return_amount", "return_rate"]`
 
-- [ ] Добавить `get_returns_analytics()` в `WBClient` и `OzonClient`
-- [ ] Создать таблицу `product_returns_analytics`
-- [ ] В Питере добавить блок "Топ-причины возвратов" в `/report`
+- [x] Добавить `get_returns_analytics()` в `WBClient` и `OzonClient`
+- [x] Создать таблицу `product_returns_analytics`
+- [x] В Питере добавить блок "Топ-причины возвратов" в `/report`
 
 ---
 

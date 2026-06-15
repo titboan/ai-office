@@ -341,17 +341,31 @@ class PeterAgent(BaseAgent):
                 GROUP BY 1 ORDER BY 1
             """, chat_id)
 
+            # 8. Топ возвратов за 30 дней
+            returns_top = await conn.fetch("""
+                SELECT product_id, product_name,
+                       SUM(returns_count)::int          AS returns_count,
+                       SUM(return_amount)::numeric(12,2) AS return_amount,
+                       AVG(return_rate)::numeric(6,4)    AS return_rate
+                FROM product_returns_analytics
+                WHERE chat_id = $1 AND stat_date >= NOW() - INTERVAL '30 days'
+                GROUP BY product_id, product_name
+                ORDER BY return_amount DESC
+                LIMIT 10
+            """, chat_id)
+
         return {
-            "period_days": days,
-            "date_from":   date_from,
-            "revenue":     [dict(r) for r in revenue],
-            "top_products":[dict(r) for r in top_products],
-            "margin_wb":   [dict(r) for r in margin_wb],
-            "margin_ozon": [dict(r) for r in margin_ozon],
-            "net_margin":  [dict(r) for r in net_margin],
-            "adv":         [dict(r) for r in adv],
-            "low_stocks":  [dict(r) for r in low_stocks],
-            "mom_trends":  [dict(r) for r in mom],
+            "period_days":  days,
+            "date_from":    date_from,
+            "revenue":      [dict(r) for r in revenue],
+            "top_products": [dict(r) for r in top_products],
+            "margin_wb":    [dict(r) for r in margin_wb],
+            "margin_ozon":  [dict(r) for r in margin_ozon],
+            "net_margin":   [dict(r) for r in net_margin],
+            "adv":          [dict(r) for r in adv],
+            "low_stocks":   [dict(r) for r in low_stocks],
+            "mom_trends":   [dict(r) for r in mom],
+            "returns_top":  [dict(r) for r in returns_top],
         }
 
     async def _collect_advanced_data(self, chat_id: int, days: int = 14) -> dict:
@@ -589,6 +603,13 @@ class PeterAgent(BaseAgent):
                 f"{json.dumps(data['mom_trends'], ensure_ascii=False, default=str, indent=2)}"
             )
 
+        returns_str = ""
+        if data.get("returns_top"):
+            returns_str = (
+                f"\n\nВОЗВРАТЫ (топ за 30 дней):\n"
+                f"{json.dumps(data['returns_top'], ensure_ascii=False, default=str, indent=2)}"
+            )
+
         prompt = f"""Проанализируй данные магазинов за последние {days} дней.
 {goal_str}
 
@@ -596,7 +617,7 @@ class PeterAgent(BaseAgent):
 {json.dumps(data, ensure_ascii=False, default=str, indent=2)}
 
 РАСШИРЕННЫЕ ДАННЫЕ (тренд, CTR/ROAS по товарам, остатки):
-{json.dumps(adv_data, ensure_ascii=False, default=str, indent=2)}{mom_str}
+{json.dumps(adv_data, ensure_ascii=False, default=str, indent=2)}{mom_str}{returns_str}
 
 ВАЖНО:
 - Данные по заказам, не по выкупам. Реальная выручка ниже на % возвратов.
@@ -610,6 +631,7 @@ class PeterAgent(BaseAgent):
 - stock_velocity.days_left — дней осталось стока при текущем темпе продаж. 999 = нет продаж.
 - Если margin_ozon пустой — Ozon-заказы есть, но маппинг SKU не позволил посчитать маржу.
 - mom_trends — помесячная выручка и заказы за последние 60 дней. Если 2 месяца — посчитай MoM рост: (текущий месяц / предыдущий − 1) × 100%. Выведи одной строкой в блоке отчёта.
+- returns_top — товары с наибольшей суммой возвратов за 30 дней (если есть данные после /sync_returns). Укажи топ-3 по return_amount и возможные причины. Если пусто — данные не синхронизированы (/sync_returns у Макса).
 {"- Цель: " + str(goal) + " ₽/день суммарно WB+Ozon." if goal else ""}
 
 Дай конкретный анализ по формату из system prompt с 5 практическими действиями."""

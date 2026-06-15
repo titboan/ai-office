@@ -378,7 +378,53 @@ async def _create_schema() -> None:
                 UNIQUE(snapshot_date, chat_id, marketplace)
             )
         """)
-        logger.info("[db] Схема готова ✓ (tasks + cost_tracking + projects + task_events + marketplace + funnel + returns + snapshots + promotions + kpi)")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS marketplace_questions (
+                id               BIGSERIAL PRIMARY KEY,
+                chat_id          BIGINT        NOT NULL,
+                marketplace      TEXT          NOT NULL DEFAULT 'ozon',
+                question_id      TEXT          NOT NULL,
+                product_id       TEXT,
+                product_name     TEXT,
+                question_text    TEXT,
+                status           TEXT          NOT NULL DEFAULT 'new',
+                generated_answer TEXT,
+                final_answer     TEXT,
+                created_at       TIMESTAMPTZ,
+                answered_at      TIMESTAMPTZ,
+                UNIQUE(marketplace, question_id)
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS product_search_keywords (
+                chat_id      BIGINT        NOT NULL,
+                marketplace  TEXT          NOT NULL,
+                product_id   TEXT          NOT NULL,
+                keyword      TEXT          NOT NULL,
+                position     INT,
+                search_count BIGINT,
+                ctr          NUMERIC(6,4),
+                conv_rate    NUMERIC(6,4),
+                stat_date    DATE          NOT NULL,
+                synced_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+                UNIQUE(chat_id, marketplace, product_id, keyword, stat_date)
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS product_returns_analytics (
+                chat_id       BIGINT         NOT NULL,
+                marketplace   TEXT           NOT NULL,
+                product_id    TEXT           NOT NULL,
+                product_name  TEXT,
+                stat_date     DATE           NOT NULL,
+                returns_count INT            NOT NULL DEFAULT 0,
+                return_amount NUMERIC(12,2)  NOT NULL DEFAULT 0,
+                return_rate   NUMERIC(6,4),
+                synced_at     TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+                UNIQUE(chat_id, marketplace, product_id, stat_date)
+            )
+        """)
+        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns)")
 
 async def save_project(
     chat_id: int,
@@ -1225,3 +1271,130 @@ async def upsert_shop_kpi(
         """, chat_id, marketplace, snapshot_date,
              rating, return_pct, cancellation_pct, penalty_count or 0,
              _json.dumps(extra_data or {}))
+
+
+# ── Вопросы покупателей ────────────────────────────────────────────────────────
+
+async def save_question(
+    chat_id: int,
+    marketplace: str,
+    question_id: str,
+    product_id: str | None,
+    product_name: str | None,
+    question_text: str | None,
+    created_at=None,
+) -> bool:
+    """INSERT нового вопроса. Возвращает True если запись новая."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            INSERT INTO marketplace_questions
+                (chat_id, marketplace, question_id, product_id, product_name, question_text, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (marketplace, question_id) DO NOTHING
+            """,
+            chat_id, marketplace, question_id, product_id, product_name, question_text, created_at,
+        )
+        return result.split()[-1] != "0"
+
+
+async def update_question_status(
+    marketplace: str,
+    question_id: str,
+    status: str,
+    generated_answer: str | None = None,
+    final_answer: str | None = None,
+    answered_at=None,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE marketplace_questions
+               SET status           = $3,
+                   generated_answer = COALESCE($4, generated_answer),
+                   final_answer     = COALESCE($5, final_answer),
+                   answered_at      = COALESCE($6, answered_at)
+             WHERE marketplace = $1 AND question_id = $2
+            """,
+            marketplace, question_id, status, generated_answer, final_answer, answered_at,
+        )
+
+
+async def get_pending_questions(chat_id: int) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT * FROM marketplace_questions
+             WHERE chat_id = $1 AND status = 'pending_approval'
+             ORDER BY created_at
+            """,
+            chat_id,
+        )
+        return [dict(r) for r in rows]
+
+
+# ── Ключевые слова WB ──────────────────────────────────────────────────────────
+
+async def upsert_search_keyword(
+    chat_id: int,
+    marketplace: str,
+    product_id: str,
+    keyword: str,
+    position: int | None,
+    search_count: int | None,
+    ctr: float | None,
+    conv_rate: float | None,
+    stat_date,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO product_search_keywords
+                (chat_id, marketplace, product_id, keyword, position, search_count, ctr, conv_rate, stat_date, synced_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+            ON CONFLICT (chat_id, marketplace, product_id, keyword, stat_date) DO UPDATE SET
+                position     = EXCLUDED.position,
+                search_count = EXCLUDED.search_count,
+                ctr          = EXCLUDED.ctr,
+                conv_rate    = EXCLUDED.conv_rate,
+                synced_at    = NOW()
+            """,
+            chat_id, marketplace, product_id, keyword,
+            position, search_count, ctr, conv_rate, stat_date,
+        )
+
+
+# ── Аналитика возвратов ────────────────────────────────────────────────────────
+
+async def upsert_returns_analytics(
+    chat_id: int,
+    marketplace: str,
+    product_id: str,
+    product_name: str | None,
+    stat_date,
+    returns_count: int,
+    return_amount: float,
+    return_rate: float | None,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO product_returns_analytics
+                (chat_id, marketplace, product_id, product_name, stat_date,
+                 returns_count, return_amount, return_rate, synced_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+            ON CONFLICT (chat_id, marketplace, product_id, stat_date) DO UPDATE SET
+                product_name  = EXCLUDED.product_name,
+                returns_count = EXCLUDED.returns_count,
+                return_amount = EXCLUDED.return_amount,
+                return_rate   = EXCLUDED.return_rate,
+                synced_at     = NOW()
+            """,
+            chat_id, marketplace, product_id, product_name or "", stat_date,
+            returns_count or 0, float(return_amount or 0), return_rate,
+        )
