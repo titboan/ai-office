@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from loguru import logger
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from config import config
@@ -546,7 +546,6 @@ class PeterAgent(BaseAgent):
         notion_title: str,
         notion_source: str,
         notion_link_text: str = "Сохранено в Notion",
-        show_dashboard: bool = True,
         update: Update | None = None,
         chat_id: int | None = None,
         bot=None,
@@ -563,13 +562,7 @@ class PeterAgent(BaseAgent):
 
         _cid = chat_id or (update.effective_chat.id if update else None)
         if _cid:
-            markup_dict = None
-            if show_dashboard and config.DASHBOARD_URL and update:
-                markup = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=config.DASHBOARD_URL))
-                ]])
-                markup_dict = markup.to_dict()
-            await _send_rich(self.bot_token, _cid, answer, reply_markup_dict=markup_dict)
+            await _send_rich(self.bot_token, _cid, answer)
             if after_markup:
                 await self.bot.send_message(
                     chat_id=_cid,
@@ -951,7 +944,6 @@ class PeterAgent(BaseAgent):
             answer,
             notion_title=f"Воронка {datetime.now(_UTC).strftime('%d.%m.%Y')}",
             notion_source="cmd:funnel",
-            show_dashboard=False,
             update=update,
         )
 
@@ -1017,7 +1009,6 @@ class PeterAgent(BaseAgent):
                 answer,
                 notion_title=f"Еженедельный аудит {datetime.now(_UTC).strftime('%d.%m.%Y')}",
                 notion_source="scheduler:weekly_audit",
-                show_dashboard=False,
                 chat_id=chat_id,
             )
             logger.info(f"[Питер/weekly_audit] отправлен в chat_id={chat_id}")
@@ -1107,7 +1098,6 @@ class PeterAgent(BaseAgent):
             answer,
             notion_title=f"ABC {datetime.now(_UTC).strftime('%d.%m.%Y')}",
             notion_source="cmd:abc",
-            show_dashboard=False,
             update=update,
             after_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("📊 Отчёт", callback_data="pnext:report"),

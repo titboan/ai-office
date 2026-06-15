@@ -14,6 +14,8 @@ const fmtDate = (iso: string) => {
   return `${d}.${m}`
 }
 
+const tooltipStyle = { backgroundColor: 'var(--tooltip-bg)', color: 'var(--tooltip-text)', border: '1px solid var(--tooltip-border)' }
+
 export default function RevenueChart({ data, sales }: Props) {
   const salesMap = new Map(sales.map(s => [s.date, s]))
   const merged = data.map(r => ({
@@ -25,16 +27,16 @@ export default function RevenueChart({ data, sales }: Props) {
   }))
 
   return (
-    <div className="bg-white rounded-xl p-4 shadow-sm">
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
       <h2 className="text-sm font-semibold mb-3">Выручка по дням</h2>
       <ResponsiveContainer width="100%" height={180}>
         <ComposedChart data={merged} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
-          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={fmtDate} />
-          <YAxis tick={{ fontSize: 10 }} tickFormatter={fmt} width={36} />
+          <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'currentColor' }} tickFormatter={fmtDate} />
+          <YAxis tick={{ fontSize: 10, fill: 'currentColor' }} tickFormatter={fmt} width={36} />
           <Tooltip
             formatter={(v: number) => [`${v.toLocaleString()} ₽`]}
             labelFormatter={fmtDate}
-            contentStyle={{ color: '#1f2937' }}
+            contentStyle={tooltipStyle}
           />
           <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
           <Area type="monotone" dataKey="wb_s" name="WB выкупы" fill="#7c3aed" stroke="none" fillOpacity={0.18} legendType="none" />

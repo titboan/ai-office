@@ -23,22 +23,22 @@ export default function DrrGauge({ revenue, adv }: { revenue: RevenueRow[]; adv:
   const ozon = byMp('ozon')
 
   return (
-    <div className="bg-white rounded-xl p-4 shadow-sm">
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
       <h2 className="text-sm font-semibold mb-3">ДРР по площадкам</h2>
       <div className="flex gap-4">
         {[{ label: '🟣 WB', ...wb }, { label: '🔵 Ozon', ...ozon }].map(({ label, r, s, drr: d }) => (
           <div key={label} className="flex-1 text-center">
-            <div className="text-xs text-gray-500 mb-1">{label}</div>
+            <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">{label}</div>
             <div className={`text-2xl font-bold ${color(d)}`}>
               {d !== null ? `${d.toFixed(1)}%` : '—'}
             </div>
-            <div className="text-xs text-gray-400 mt-1">
+            <div className="text-xs text-gray-400 dark:text-gray-500 mt-1">
               {r.toLocaleString()} ₽ / реклама {s.toLocaleString()} ₽
             </div>
           </div>
         ))}
       </div>
-      <div className="flex gap-2 mt-3 text-xs text-gray-400 justify-center">
+      <div className="flex gap-2 mt-3 text-xs text-gray-400 dark:text-gray-500 justify-center">
         <span className="text-green-600">●</span> &lt;20% норма
         <span className="text-yellow-500 ml-2">●</span> 20-30% высокий
         <span className="text-red-500 ml-2">●</span> &gt;30% критично

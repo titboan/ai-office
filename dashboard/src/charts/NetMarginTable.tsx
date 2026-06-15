@@ -12,13 +12,13 @@ export default function NetMarginTable({ data }: { data: NetMarginRow[] }) {
   if (!data.length) return null
   const rows = data.slice(0, 10)
   return (
-    <div className="bg-white rounded-xl p-4 shadow-sm">
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
       <h2 className="text-sm font-semibold mb-1">NET маржа (реальные выплаты)</h2>
-      <p className="text-xs text-gray-400 mb-3">Выплата − себестоимость после всех вычетов маркетплейса</p>
+      <p className="text-xs text-gray-400 dark:text-gray-500 mb-3">Выплата − себестоимость после всех вычетов маркетплейса</p>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
-            <tr className="text-gray-400 border-b">
+            <tr className="text-gray-400 dark:text-gray-500 border-b dark:border-gray-700">
               <th className="text-left pb-2 font-medium">Товар</th>
               <th className="text-right pb-2 font-medium">Выплата</th>
               <th className="text-right pb-2 font-medium">Комиссия</th>
@@ -28,13 +28,13 @@ export default function NetMarginTable({ data }: { data: NetMarginRow[] }) {
           </thead>
           <tbody>
             {rows.map((r, i) => (
-              <tr key={i} className="border-b border-gray-50">
+              <tr key={i} className="border-b border-gray-100 dark:border-gray-700">
                 <td className="py-1.5 pr-2">
                   <div className="font-medium">{r.product_name}</div>
-                  <div className="text-gray-400">{r.marketplace}</div>
+                  <div className="text-gray-400 dark:text-gray-500">{r.marketplace}</div>
                 </td>
                 <td className="text-right py-1.5">{fmt(r.payout)} ₽</td>
-                <td className="text-right py-1.5 text-gray-500">{fmt(r.commission)} ₽</td>
+                <td className="text-right py-1.5 text-gray-500 dark:text-gray-400">{fmt(r.commission)} ₽</td>
                 <td className="text-right py-1.5 font-medium">{fmt(r.net_profit)} ₽</td>
                 <td className={`text-right py-1.5 font-bold ${marginColor(r.net_margin_pct)}`}>
                   {r.net_margin_pct}%

@@ -134,7 +134,3 @@ description: >
 `base_agent.handle_voice` не вызывает `handle_message` в группах.
 `Max._handle_group_message` сам проверяет триггер: `has_mention` / `starts_with_max` / `is_reply_to_bot`.
 
-## DataLens
-
-- URL: https://datalens.yandex/zhnao5ut1xvmj
-- Подключение: maglev.proxy.rlwy.net:12614, база railway

@@ -54,7 +54,7 @@ ai-office/
 
 ## Инструменты
 
-Python 3.11, PTB 22.7, asyncio, asyncpg, aiohttp · Redis (кеш, TTL, locks) · PostgreSQL Railway (task queue, orders, stocks, reviews, adv stats) · Claude API claude-sonnet-4-6 tool_use · Railway (деплой) · Notion API · DataLens (дашборды)
+Python 3.11, PTB 22.7, asyncio, asyncpg, aiohttp · Redis (кеш, TTL, locks) · PostgreSQL Railway (task queue, orders, stocks, reviews, adv stats) · Claude API claude-sonnet-4-6 tool_use · Railway (деплой) · Notion API · React Mini App (Vercel, дашборды)
 
 ---
 

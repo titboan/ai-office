@@ -24,6 +24,9 @@ export default function App() {
     const tg = (window as any).Telegram?.WebApp
     tg?.ready()
     tg?.expand()
+    if (tg?.colorScheme === 'dark') {
+      document.documentElement.classList.add('dark')
+    }
   }, [])
 
   useEffect(() => {
@@ -75,7 +78,7 @@ export default function App() {
               key={d}
               onClick={() => setDays(d)}
               className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
-                days === d ? 'bg-purple-600 text-white' : 'bg-white text-gray-600'
+                days === d ? 'bg-purple-600 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300'
               }`}
             >
               {d}д
@@ -85,11 +88,11 @@ export default function App() {
       </div>
 
       {loading && (
-        <div className="text-center py-12 text-gray-400 text-sm">Загружаю данные…</div>
+        <div className="text-center py-12 text-gray-400 dark:text-gray-500 text-sm">Загружаю данные…</div>
       )}
 
       {error && (
-        <div className="bg-red-50 text-red-600 rounded-xl p-4 text-sm">
+        <div className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-xl p-4 text-sm">
           ❌ {error}
         </div>
       )}
@@ -99,9 +102,9 @@ export default function App() {
           {/* KPI cards — 6 штук, 2 строки по 3 */}
           <div className="grid grid-cols-3 gap-2">
             {kpiCards.map(({ label, value, color }) => (
-              <div key={label} className="bg-white rounded-xl p-3 shadow-sm text-center">
-                <div className="text-xs text-gray-500">{label}</div>
-                <div className={`text-lg font-bold mt-0.5 ${color || 'text-gray-800'}`}>{value}</div>
+              <div key={label} className="bg-white dark:bg-gray-800 rounded-xl p-3 shadow-sm text-center">
+                <div className="text-xs text-gray-500 dark:text-gray-400">{label}</div>
+                <div className={`text-lg font-bold mt-0.5 ${color || 'text-gray-800 dark:text-gray-100'}`}>{value}</div>
               </div>
             ))}
           </div>
@@ -139,7 +142,7 @@ export default function App() {
           {/* MoM динамика */}
           <MomChart data={data.mom_trends ?? []} />
 
-          <div className="text-center text-xs text-gray-400 pb-2">
+          <div className="text-center text-xs text-gray-400 dark:text-gray-500 pb-2">
             За {data.period_days} дней с {data.date_from}
           </div>
         </>

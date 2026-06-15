@@ -13,12 +13,12 @@ export default function ReturnsTable({ data }: { data: ReturnRow[] }) {
   if (!data.length) return null
   const rows = data.slice(0, 8)
   return (
-    <div className="bg-white rounded-xl p-4 shadow-sm">
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
       <h2 className="text-sm font-semibold mb-3">Топ возвратов</h2>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
-            <tr className="text-gray-400 border-b">
+            <tr className="text-gray-400 dark:text-gray-500 border-b dark:border-gray-700">
               <th className="text-left pb-2 font-medium">Товар</th>
               <th className="text-right pb-2 font-medium">Кол-во</th>
               <th className="text-right pb-2 font-medium">Сумма</th>
@@ -27,7 +27,7 @@ export default function ReturnsTable({ data }: { data: ReturnRow[] }) {
           </thead>
           <tbody>
             {rows.map((r, i) => (
-              <tr key={i} className="border-b border-gray-50">
+              <tr key={i} className="border-b border-gray-100 dark:border-gray-700">
                 <td className="py-1.5 pr-2 font-medium">{r.product_name || r.product_id}</td>
                 <td className="text-right py-1.5">{r.returns_count}</td>
                 <td className="text-right py-1.5">{fmt(r.return_amount)} ₽</td>

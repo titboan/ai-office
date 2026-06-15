@@ -14,7 +14,6 @@ description: >
 
 - Использовать `DATABASE_PUBLIC_URL` (не `DATABASE_URL`)
 - Railway Console: вкладка Console для SQL, не Data
-- DataLens TCP-прокси: maglev.proxy.rlwy.net:12614
 
 ## Task Queue (Марта)
 
@@ -99,7 +98,7 @@ digest_channels  -- каналы: chat_id, username, title, added_by, last_check
 ## VIEW
 
 ```sql
-stocks_unified      -- marketplace_stocks + product_mapping (для DataLens)
+stocks_unified      -- marketplace_stocks + product_mapping
 adv_stats_unified   -- marketplace_adv_stats + wb_campaigns WHERE marketplace='wb'
 adv_stats_summary   -- агрегат: total_views, total_clicks, avg_ctr, total_spend
 ```
