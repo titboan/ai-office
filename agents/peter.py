@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from loguru import logger
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
-from telegram.ext import CommandHandler, ContextTypes
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from config import config
 from tools import save_research
@@ -858,21 +858,93 @@ class PeterAgent(BaseAgent):
             "💡 Пример: /report цель=100000 период=14"
         )
 
+    _PETER_MENU_KEYBOARD = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 Отчёт",   callback_data="pmenu:report"),
+            InlineKeyboardButton("🔍 Аудит",   callback_data="pmenu:audit"),
+        ],
+        [
+            InlineKeyboardButton("📣 ДРР",     callback_data="pmenu:drr"),
+            InlineKeyboardButton("🔻 Воронка", callback_data="pmenu:funnel"),
+        ],
+        [
+            InlineKeyboardButton("🔤 ABC",     callback_data="pmenu:abc"),
+            InlineKeyboardButton("💬 Вопрос",  callback_data="pmenu:analyze"),
+        ],
+    ])
+
+    _PETER_MENU_HINTS: dict[str, str] = {
+        "report": (
+            "📊 <b>Отчёт о продажах</b>\n\n"
+            "Полный анализ за 14 дней: выручка, топ-товары, план роста.\n\n"
+            "/report — запустить\n"
+            "/report цель=300000 период=30 — с параметрами"
+        ),
+        "audit": (
+            "🔍 <b>Аудит магазина</b>\n\n"
+            "SWOT-анализ, KPI, сильные и слабые стороны.\n\n"
+            "/audit — запустить"
+        ),
+        "drr": (
+            "📣 <b>ДРР и ROAS</b>\n\n"
+            "Эффективность рекламы по каждому товару за 30 дней.\n\n"
+            "/drr — запустить"
+        ),
+        "funnel": (
+            "🔻 <b>Воронка конверсии</b>\n\n"
+            "Просмотры → корзина → заказ по карточкам.\n"
+            "Требует предварительного /sync_funnel у Макса.\n\n"
+            "/funnel — запустить"
+        ),
+        "abc": (
+            "🔤 <b>ABC-анализ</b>\n\n"
+            "Скоро — ранжирование товаров по вкладу в выручку.\n"
+            "Пока используй /report для топ-товаров."
+        ),
+        "analyze": (
+            "💬 <b>Произвольный анализ</b>\n\n"
+            "Напиши вопрос напрямую, например:\n"
+            "<i>Питер, какие товары стоит вывести из оборота?</i>\n\n"
+            "/analyze [вопрос] — или просто напиши мне"
+        ),
+    }
+
+    async def cmd_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/menu — главное меню Питера."""
+        await update.message.reply_text(
+            "📋 <b>Меню Питера</b>\nВыбери аналитический инструмент:",
+            parse_mode="HTML",
+            reply_markup=self._PETER_MENU_KEYBOARD,
+        )
+
+    async def _handle_peter_menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработчик inline-кнопок меню Питера (pmenu:*)."""
+        query = update.callback_query
+        await query.answer()
+        cmd = query.data.split(":", 1)[1] if ":" in query.data else ""
+        text = self._PETER_MENU_HINTS.get(cmd, "❓ Неизвестный раздел")
+        await query.message.reply_text(text, parse_mode="HTML")
+
     def _bot_commands(self) -> list:
         from telegram import BotCommand
         return [
-            BotCommand("start", "Запуск и помощь"),
-            BotCommand("report", "Отчёт о продажах и план роста"),
-            BotCommand("audit", "Полная оценка магазина (SWOT, KPI)"),
-            BotCommand("drr", "ДРР и ROAS по товарам"),
-            BotCommand("funnel", "Воронка конверсии карточек"),
+            BotCommand("start",   "Запуск и помощь"),
+            BotCommand("menu",    "Меню аналитических команд"),
+            BotCommand("report",  "Отчёт о продажах и план роста"),
+            BotCommand("audit",   "Полная оценка магазина (SWOT, KPI)"),
+            BotCommand("drr",     "ДРР и ROAS по товарам"),
+            BotCommand("funnel",  "Воронка конверсии карточек"),
             BotCommand("analyze", "Произвольный бизнес-анализ"),
-            BotCommand("reset", "Очистить историю диалога"),
+            BotCommand("reset",   "Очистить историю диалога"),
         ]
 
     def _register_extra_handlers(self) -> None:
+        self.app.add_handler(CommandHandler("menu",    self.cmd_menu))
         self.app.add_handler(CommandHandler("report",  self.cmd_report))
         self.app.add_handler(CommandHandler("analyze", self.cmd_analyze))
         self.app.add_handler(CommandHandler("audit",   self.cmd_audit))
         self.app.add_handler(CommandHandler("drr",     self.cmd_drr))
         self.app.add_handler(CommandHandler("funnel",  self.cmd_funnel))
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_peter_menu_callback, pattern=r"^pmenu:")
+        )

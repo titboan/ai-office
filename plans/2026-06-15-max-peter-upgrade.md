@@ -1,6 +1,6 @@
 # План: Улучшение Макса и Питера — полный апгрейд аналитики
 
-**Статус:** в работе  
+**Статус:** Фаза 1 завершена. Фаза 2 — следующая.  
 **Дата:** 2026-06-15
 
 ---
@@ -22,8 +22,8 @@
 **Проблема:** `/sync_fin` только ручная → Питер часто без NET-маржи.  
 **Решение:** Фоновая задача, воскресенье 01:30 UTC.
 
-- [ ] Добавить `_scheduled_fin_sync_loop()` в `agents/max.py`
-- [ ] Зарегистрировать в `main.py` рядом с `_scheduled_adv_sync_loop`
+- [x] Добавить `_scheduled_fin_sync_loop()` в `main.py`
+- [x] Зарегистрировать рядом с `_scheduled_adv_sync_loop` (воскресенье 01:30 UTC)
 
 ```python
 # Паттерн: аналогичен _scheduled_adv_sync_loop (03:00 UTC)
@@ -36,8 +36,8 @@
 
 **Проблема:** Борис не видит что именно пустое без самостоятельной диагностики.
 
-- [ ] Добавить `cmd_data_status()` в `agents/max.py`
-- [ ] Зарегистрировать хэндлер в `main.py`
+- [x] Добавить `cmd_data_status()` в `agents/max.py`
+- [x] Зарегистрировать хэндлер в `_register_extra_handlers`
 
 **Вывод команды:**
 ```
@@ -89,8 +89,8 @@ GROUP BY 1 ORDER BY 1
 
 ### A5 — Алерт "кончаются остатки" (stock_days < 7)
 
-- [ ] Добавить `_check_stock_alerts(chat_id)` в `agents/max.py`
-- [ ] Вызвать после `sync_marketplace_data()` и в `_daily_snapshot_loop` (01:00 UTC)
+- [x] Добавить `_check_stock_alerts(chat_id)` в `agents/max.py`
+- [x] Вызвать в `cmd_sync` (после send_daily_summary) и в `_daily_snapshot_loop` (01:00 UTC)
 
 **SQL:** `stock / (orders_14d / 14)` — stock_days, фильтр `< 7 OR stock = 0`
 
@@ -157,8 +157,8 @@ CREATE TABLE marketplace_questions (
 
 **Почему важно:** `/v1/analytics/data` уже используем — достаточно добавить метрику `avg_search_position`. Никакого нового эндпоинта.
 
-- [ ] В `OzonClient.get_funnel_stats()` добавить `"avg_search_position"` в metrics
-- [ ] Добавить колонку `avg_search_position` в `product_funnel_stats`
+- [x] В `OzonClient.get_funnel_stats()` добавить `"avg_search_position"` в metrics (metrics[3])
+- [x] Колонка `avg_position` уже есть в `product_funnel_stats` — данные пишутся через существующий `upsert_funnel_stat`
 - [ ] Питер использует в `/funnel` для объяснения причин низких просмотров
 
 ---
@@ -265,9 +265,9 @@ CREATE TABLE product_search_keywords (
 [◀ Назад]
 ```
 
-- [ ] Добавить `cmd_menu()` в `agents/max.py` с двухуровневым inline-keyboard
-- [ ] Callback-хэндлеры для каждого подменю (pattern `menu_*`)
-- [ ] Добавить кнопку `📱 Меню` в приветственное сообщение `/start`
+- [x] Добавить `cmd_menu()` в `agents/max.py` с двухуровневым inline-keyboard
+- [x] Callback-хэндлеры для каждого подменю (pattern `menu_*`)
+- [x] Добавить кнопку `📋 Меню` в `/start` (в `_build_keyboard`, callback `menu_back`)
 
 ### C2 — `/menu` у Питера
 
@@ -281,8 +281,8 @@ CREATE TABLE product_search_keywords (
 
 При нажатии кнопки — сразу запускает команду. "❓ Свой вопрос" просит ввести текст.
 
-- [ ] Добавить `cmd_menu()` в `agents/peter.py`
-- [ ] Каждая кнопка вызывает соответствующий обработчик
+- [x] Добавить `cmd_menu()` в `agents/peter.py`
+- [x] Каждая кнопка показывает описание и clickable-команду
 
 ### C3 — Контекстные подсказки после синхрона
 
@@ -298,7 +298,7 @@ CREATE TABLE product_search_keywords (
 [📈 Открыть отчёт]
 ```
 
-- [ ] В конце каждого `cmd_sync_*` добавить inline-кнопку следующего шага
+- [x] В конце `cmd_sync` и `cmd_sync_adv` добавить inline-кнопку следующего шага (callback `menu_c3:*`)
 
 ### C4 — Inline-кнопки "Что дальше?" у Питера
 
@@ -347,9 +347,9 @@ CREATE TABLE product_search_keywords (
 /shop_kpi — рейтинг продавца
 ```
 
-- [ ] Добавить `cmd_help()` в `agents/max.py`
-- [ ] Зарегистрировать `/help` в `main.py`
-- [ ] Кнопка `📖 Справка` в главном меню
+- [x] Добавить `cmd_help()` в `agents/max.py`
+- [x] Зарегистрировать `/help` в `_register_extra_handlers`
+- [x] Кнопка `ℹ️ Справка` в главном меню (callback menu_help)
 
 ---
 

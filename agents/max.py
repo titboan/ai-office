@@ -317,7 +317,10 @@ class MaxAgent(BaseAgent):
             InlineKeyboardButton("📦 Сводка магазина",   callback_data="onboard:daily_summary"),
         ]
         row2b = [InlineKeyboardButton("🔄 Синхронизировать", callback_data="onboard:sync")]
-        row3 = [InlineKeyboardButton("❓ Что я умею",  callback_data="onboard:help")]
+        row3 = [
+            InlineKeyboardButton("📋 Меню",         callback_data="menu_back"),
+            InlineKeyboardButton("❓ Что я умею",   callback_data="onboard:help"),
+        ]
 
         rows = [row1, row2, row2b]
         update_row = []
@@ -1898,6 +1901,14 @@ class MaxAgent(BaseAgent):
         await update.message.reply_text("⏳ Синхронизирую данные…")
         await self.send_daily_summary(owner_chat_id=chat_id, target_chat_id=target, bot=context.bot)
         logger.info("[Макс/sync] send_daily_summary завершён")
+        await self._check_stock_alerts(chat_id)
+        await update.message.reply_text(
+            "💡 Данные обновлены — готов к анализу!",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📊 Отчёт у Питера", callback_data="menu_c3:report"),
+                InlineKeyboardButton("🔻 Воронка",        callback_data="menu_c3:funnel"),
+            ]]),
+        )
 
     async def cmd_sync_adv(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/sync_adv — вручную запустить синхронизацию рекламной статистики (WB + Ozon)."""
@@ -1907,8 +1918,10 @@ class MaxAgent(BaseAgent):
         try:
             await self.sync_ad_stats(chat_id)
             await update.message.reply_text(
-                "✅ Синк рекламы завершён. Проверь логи [Макс/adv] / [OzonPerf] "
-                "и таблицу marketplace_adv_stats."
+                "✅ Реклама обновлена — данные в marketplace_adv_stats.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("💰 Смотреть ДРР у Питера", callback_data="menu_c3:drr"),
+                ]]),
             )
         except Exception as e:
             logger.error(f"[Макс/adv] /sync_adv ошибка: {e}", exc_info=True)
@@ -2614,21 +2627,304 @@ class MaxAgent(BaseAgent):
             "💡 Пример: /cost КБ50 850"
         )
 
+    async def _check_stock_alerts(self, chat_id: int) -> None:
+        """Проверяет остатки и шлёт алерт если stock_days < 7 или stock = 0."""
+        try:
+            from db import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT s.marketplace, s.product_id,
+                           COALESCE(m.display_name, s.product_id) AS name,
+                           SUM(s.stock)::int AS total_stock,
+                           COALESCE(
+                               (SELECT SUM(o.quantity) / 14.0
+                                FROM marketplace_orders o
+                                WHERE o.chat_id = $1
+                                  AND o.marketplace = s.marketplace
+                                  AND o.product_id  = s.product_id
+                                  AND o.order_date >= NOW() - INTERVAL '14 days'),
+                               0
+                           ) AS daily_velocity
+                    FROM marketplace_stocks s
+                    LEFT JOIN product_mapping m ON (
+                        (s.marketplace = 'wb'   AND m.wb_article    = s.product_id) OR
+                        (s.marketplace = 'ozon' AND m.ozon_offer_id = s.product_id)
+                    )
+                    WHERE s.chat_id = $1
+                    GROUP BY s.marketplace, s.product_id, m.display_name
+                """, chat_id)
+
+            alerts = []
+            for r in rows:
+                stock = int(r["total_stock"] or 0)
+                vel   = float(r["daily_velocity"] or 0)
+                days_left = (stock / vel) if vel > 0 else (999 if stock > 0 else 0)
+                mp_label  = "🟣 WB" if r["marketplace"] == "wb" else "🔵 Ozon"
+                if stock == 0:
+                    alerts.append(f"{mp_label} <b>{r['name']}</b> — ❌ нет остатков")
+                elif days_left < 7:
+                    alerts.append(f"{mp_label} <b>{r['name']}</b> — ⚠️ {int(days_left)} дн.")
+
+            if not alerts:
+                return
+
+            text = "⚠️ <b>Кончаются остатки:</b>\n\n" + "\n".join(alerts[:15])
+            if len(alerts) > 15:
+                text += f"\n…и ещё {len(alerts) - 15} позиций"
+            await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            logger.info(f"[Макс/stock_alerts] chat={chat_id} алертов: {len(alerts)}")
+        except Exception as e:
+            logger.error(f"[Макс/stock_alerts] ошибка: {e}", exc_info=True)
+
+    _MENU_MAIN_KEYBOARD = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 Аналитика",     callback_data="menu_cat:analytics"),
+            InlineKeyboardButton("🔄 Синхронизация", callback_data="menu_cat:sync"),
+        ],
+        [
+            InlineKeyboardButton("💬 Отзывы",        callback_data="menu_cat:reviews"),
+            InlineKeyboardButton("📦 Товары",         callback_data="menu_cat:products"),
+        ],
+        [InlineKeyboardButton("ℹ️ Справка",           callback_data="menu_help")],
+    ])
+
+    _MENU_SUBMENUS: dict[str, tuple[str, list]] = {
+        "analytics": ("📊 Аналитика", [
+            [
+                InlineKeyboardButton("📈 /data_status",  callback_data="menu_cmd:data_status"),
+                InlineKeyboardButton("🏪 /shop_kpi",     callback_data="menu_cmd:shop_kpi"),
+            ],
+            [InlineKeyboardButton("🔍 /sync_funnel — воронка", callback_data="menu_cmd:sync_funnel")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="menu_back")],
+        ]),
+        "sync": ("🔄 Синхронизация", [
+            [InlineKeyboardButton("📦 /sync — заказы и остатки", callback_data="menu_cmd:sync")],
+            [InlineKeyboardButton("📣 /sync_adv — реклама",      callback_data="menu_cmd:sync_adv")],
+            [InlineKeyboardButton("💰 /sync_fin — финотчёт",     callback_data="menu_cmd:sync_fin")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="menu_back")],
+        ]),
+        "reviews": ("💬 Отзывы и вопросы", [
+            [
+                InlineKeyboardButton("📬 /reviews",  callback_data="menu_cmd:reviews"),
+                InlineKeyboardButton("⏳ /pending",  callback_data="menu_cmd:pending"),
+            ],
+            [InlineKeyboardButton("◀️ Назад", callback_data="menu_back")],
+        ]),
+        "products": ("📦 Товары", [
+            [
+                InlineKeyboardButton("📋 /products", callback_data="menu_cmd:products"),
+                InlineKeyboardButton("💲 /cost",     callback_data="menu_cmd:cost"),
+            ],
+            [
+                InlineKeyboardButton("🗺️ /map",       callback_data="menu_cmd:map"),
+                InlineKeyboardButton("🔄 /sync_sku",  callback_data="menu_cmd:sync_sku"),
+            ],
+            [InlineKeyboardButton("◀️ Назад", callback_data="menu_back")],
+        ]),
+    }
+
+    async def cmd_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/menu — главное меню Макса."""
+        await update.message.reply_text(
+            "📋 <b>Меню Макса</b>\nВыбери раздел:",
+            parse_mode="HTML",
+            reply_markup=self._MENU_MAIN_KEYBOARD,
+        )
+
+    async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/help — справочник всех команд."""
+        await update.message.reply_text(_HELP_TEXT, parse_mode="HTML")
+
+    async def _send_data_status(self, chat_id: int, msg) -> None:
+        """Отправить состояние данных в msg (Message или query.message)."""
+        try:
+            from db import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT 'Заказы'        AS label, COUNT(*)          AS cnt,
+                           MAX(created_at) AS last_ts
+                    FROM marketplace_orders WHERE chat_id = $1
+                    UNION ALL
+                    SELECT 'Остатки',       COUNT(*), MAX(created_at)
+                    FROM marketplace_stocks WHERE chat_id = $1
+                    UNION ALL
+                    SELECT 'Отзывы',        COUNT(*), MAX(created_at)
+                    FROM marketplace_reviews WHERE chat_id = $1
+                    UNION ALL
+                    SELECT 'Реклама',       COUNT(*), MAX(stat_date)
+                    FROM marketplace_adv_stats WHERE chat_id = $1
+                    UNION ALL
+                    SELECT 'Финотчёт',      COUNT(*), MAX(report_date)
+                    FROM marketplace_financial_report WHERE chat_id = $1
+                    UNION ALL
+                    SELECT 'Воронка',       COUNT(*), MAX(stat_date)
+                    FROM product_funnel_stats WHERE chat_id = $1
+                """, chat_id, chat_id, chat_id, chat_id, chat_id, chat_id)
+
+            now = datetime.now(_UTC)
+            lines = ["<b>📊 Состояние данных</b>\n"]
+            for r in rows:
+                last = r["last_ts"]
+                if last is None:
+                    age = "нет данных"
+                else:
+                    if hasattr(last, "tzinfo") and last.tzinfo is None:
+                        last = last.replace(tzinfo=_UTC)
+                    delta = now - last
+                    if delta.days > 0:
+                        age = f"{delta.days}д назад"
+                    else:
+                        hours = delta.seconds // 3600
+                        age = f"{hours}ч назад" if hours else "только что"
+                lines.append(f"• {r['label']}: <b>{r['cnt']}</b> записей — {age}")
+
+            await msg.reply_text("\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"[Макс/data_status] ошибка: {e}", exc_info=True)
+            await msg.reply_text(f"❌ Ошибка получения статуса: {e}")
+
+    async def cmd_data_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/data_status — состояние данных в БД по таблицам."""
+        chat_id = update.effective_user.id
+        await self._send_data_status(chat_id, update.message)
+
+    async def _handle_menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработчик inline-кнопок меню (menu_cat:*, menu_cmd:*, menu_back, menu_help)."""
+        query = update.callback_query
+        await query.answer()
+        data = query.data
+        chat_id = query.from_user.id
+        msg = query.message
+
+        if data == "menu_back":
+            await query.edit_message_text(
+                "📋 <b>Меню Макса</b>\nВыбери раздел:",
+                parse_mode="HTML",
+                reply_markup=self._MENU_MAIN_KEYBOARD,
+            )
+            return
+
+        if data == "menu_help":
+            await msg.reply_text(_HELP_TEXT, parse_mode="HTML")
+            return
+
+        if data.startswith("menu_cat:"):
+            cat = data.split(":", 1)[1]
+            submenu = self._MENU_SUBMENUS.get(cat)
+            if not submenu:
+                return
+            title, buttons = submenu
+            await query.edit_message_text(
+                f"<b>{title}</b>\nВыбери действие:",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+            return
+
+        if data.startswith("menu_c3:"):
+            key = data.split(":", 1)[1]
+            hints = {
+                "report": "📊 Перейди к Питеру и запроси /report",
+                "drr":    "💰 Перейди к Питеру и запроси /drr",
+                "funnel": "🔻 Перейди к Питеру и запроси /funnel",
+            }
+            await query.answer(hints.get(key, "Следующий шаг"), show_alert=True)
+            return
+
+        if data.startswith("menu_cmd:"):
+            cmd = data.split(":", 1)[1]
+
+            if cmd == "data_status":
+                await self._send_data_status(chat_id, msg)
+
+            elif cmd == "sync":
+                await msg.reply_text("⏳ Синхронизирую данные…")
+                await self.send_daily_summary(
+                    owner_chat_id=chat_id,
+                    target_chat_id=msg.chat_id,
+                    bot=context.bot,
+                )
+
+            elif cmd == "sync_adv":
+                await msg.reply_text("⏳ Синхронизирую рекламу…")
+                try:
+                    await self.sync_ad_stats(chat_id)
+                    await msg.reply_text("✅ Синк рекламы завершён.")
+                except Exception as e:
+                    await msg.reply_text(f"❌ Ошибка: {e}")
+
+            elif cmd == "sync_fin":
+                await msg.reply_text("⏳ Загружаю финотчёт…")
+                try:
+                    await self.sync_financial_report(chat_id, days=90)
+                    await msg.reply_text("✅ Финотчёт синхронизирован.")
+                except Exception as e:
+                    await msg.reply_text(f"❌ Ошибка: {e}")
+
+            elif cmd == "sync_funnel":
+                await msg.reply_text("⏳ Синхронизирую воронку…")
+                try:
+                    counts = await self.sync_funnel(chat_id)
+                    await msg.reply_text(
+                        f"✅ Воронка синхронизирована\n"
+                        f"WB: {counts.get('wb', 0)} записей\n"
+                        f"Ozon: {counts.get('ozon', 0)} записей"
+                    )
+                except Exception as e:
+                    await msg.reply_text(f"❌ Ошибка: {e}")
+
+            elif cmd == "shop_kpi":
+                await msg.reply_text("⏳ Получаю KPI магазина…")
+                try:
+                    results = await self.sync_shop_kpi(chat_id)
+                    if not results:
+                        await msg.reply_text("⚠️ Данные KPI недоступны.")
+                        return
+                    lines = ["<b>Рейтинг продавца</b>"]
+                    for mp, kpi in results.items():
+                        label = "🟣 WB" if mp == "wb" else "🔵 Ozon"
+                        rating = kpi.get("rating") or 0
+                        ret    = kpi.get("return_pct") or 0
+                        cancel = kpi.get("cancellation_pct") or 0
+                        lines.append(f"{label}: ⭐ {rating:.2f} | Возврат: {ret:.1f}% | Отмена: {cancel:.1f}%")
+                    await msg.reply_text("\n".join(lines), parse_mode="HTML")
+                except Exception as e:
+                    await msg.reply_text(f"❌ Ошибка: {e}")
+
+            elif cmd in ("reviews", "pending", "products", "cost", "map", "sync_sku"):
+                hints = {
+                    "reviews":  "💬 Отзывы — используй команду /reviews",
+                    "pending":  "⏳ Отложенные — используй команду /pending",
+                    "products": "📦 Каталог — используй команду /products",
+                    "cost":     "💲 Себестоимость — используй команду /cost <артикул> <сумма>",
+                    "map":      "🗺️ Реестр — используй команду /map name=X wb=Y ozon=Z",
+                    "sync_sku": "🔄 Sync SKU — используй команду /sync_sku",
+                }
+                await msg.reply_text(hints[cmd])
+
     def _bot_commands(self) -> list:
         from telegram import BotCommand
         return [
-            BotCommand("start", "Главное меню магазина"),
-            BotCommand("sync", "Синхронизировать заказы, остатки, отзывы"),
-            BotCommand("sync_adv", "Синхронизировать рекламную статистику"),
-            BotCommand("products", "Список товаров и себестоимость"),
-            BotCommand("cost", "Задать себестоимость товара"),
-            BotCommand("map", "Добавить товар в реестр"),
-            BotCommand("cancel", "Отменить активный мастер"),
-            BotCommand("reset", "Очистить историю диалога"),
+            BotCommand("start",       "Главное меню магазина"),
+            BotCommand("menu",        "Меню всех команд"),
+            BotCommand("sync",        "Синхронизировать заказы, остатки, отзывы"),
+            BotCommand("sync_adv",    "Синхронизировать рекламную статистику"),
+            BotCommand("data_status", "Состояние данных в БД"),
+            BotCommand("products",    "Список товаров и себестоимость"),
+            BotCommand("cost",        "Задать себестоимость товара"),
+            BotCommand("map",         "Добавить товар в реестр"),
+            BotCommand("help",        "Справочник команд"),
+            BotCommand("cancel",      "Отменить активный мастер"),
+            BotCommand("reset",       "Очистить историю диалога"),
         ]
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("start",         self.cmd_start))
+        self.app.add_handler(CommandHandler("menu",          self.cmd_menu))
+        self.app.add_handler(CommandHandler("help",          self.cmd_help))
+        self.app.add_handler(CommandHandler("data_status",   self.cmd_data_status))
         self.app.add_handler(CommandHandler("add_shop",      self.cmd_add_shop))
         self.app.add_handler(CommandHandler("shops",         self.cmd_shops))
         self.app.add_handler(CommandHandler("pending",       self.cmd_pending))
@@ -2647,6 +2943,9 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("cost",          self.cmd_cost_wizard))
         self.app.add_handler(CommandHandler("add",           self.cmd_add))
         self.app.add_handler(CommandHandler("cancel",        self.cmd_cancel))
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_menu_callback, pattern=r"^menu_")
+        )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_onboard_callback, pattern=r"^onboard:")
         )

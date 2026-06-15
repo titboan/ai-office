@@ -347,6 +347,46 @@ async def run_all_async() -> None:
 
     asyncio.create_task(_scheduled_adv_sync_loop())
 
+    async def _scheduled_fin_sync_loop():
+        """Еженедельный финотчёт — воскресенье 01:30 UTC (04:30 МСК)."""
+        from datetime import datetime, timezone, timedelta
+        from db import get_all_active_shops
+
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                # weekday(): 0=пн … 6=вс
+                days_until_sunday = (6 - now.weekday()) % 7
+                if days_until_sunday == 0 and (now.hour > 1 or (now.hour == 1 and now.minute >= 30)):
+                    days_until_sunday = 7
+                target = (now + timedelta(days=days_until_sunday)).replace(
+                    hour=1, minute=30, second=0, microsecond=0
+                )
+                wait_seconds = (target - now).total_seconds()
+                logger.info(f"[fin_sync] следующий запуск через {wait_seconds/3600:.1f} ч (вс 01:30 UTC)")
+                await asyncio.sleep(wait_seconds)
+
+                if max_agent is None:
+                    continue
+
+                shops = await get_all_active_shops()
+                unique_chats = list({s["chat_id"] for s in shops})
+
+                for chat_id in unique_chats:
+                    try:
+                        await max_agent.sync_financial_report(chat_id, days=90)
+                        logger.info(f"[fin_sync] chat_id={chat_id} завершено")
+                    except Exception as e:
+                        logger.error(f"[fin_sync] chat_id={chat_id} ошибка: {e}")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[fin_sync] критическая ошибка: {e}")
+                await asyncio.sleep(60)
+
+    asyncio.create_task(_scheduled_fin_sync_loop())
+
     async def _weekly_audit_loop():
         """Еженедельный аудит магазина — понедельник 07:00 UTC (10:00 МСК)."""
         from datetime import datetime, timezone, timedelta
@@ -457,6 +497,13 @@ async def run_all_async() -> None:
                         logger.info(f"[snapshot] chat={chat_id} stock history: {len(stocks)} позиций за {yesterday}")
                     except Exception as e:
                         logger.error(f"[snapshot] stocks chat={chat_id}: {e}")
+
+                    # Алерт остатков после ежедневного снимка
+                    if max_agent is not None:
+                        try:
+                            await max_agent._check_stock_alerts(chat_id)
+                        except Exception as e:
+                            logger.error(f"[snapshot] stock_alerts chat={chat_id}: {e}")
 
             except asyncio.CancelledError:
                 break
@@ -590,6 +637,7 @@ async def run_all_async() -> None:
     logger.info("[main] Negative reviews task запущен (каждые 15 минут)")
     logger.info("[main] Scheduled reviews task запущен (06:00, 11:00, 17:00 UTC)")
     logger.info("[main] Adv sync task запущен (03:00 UTC / 06:00 МСК)")
+    logger.info("[main] Fin sync task запущен (вс 01:30 UTC / 04:30 МСК)")
     logger.info("[main] Weekly audit task запущен (пн 07:00 UTC / 10:00 МСК)")
     logger.info(f"[main] Tender digest task запущен ({config.TENDER_SCAN_HOUR_UTC}:00 UTC / 08:00 МСК)")
     logger.info("[main] Daily snapshot task запущен (01:00 UTC — выручка + остатки)")
