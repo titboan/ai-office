@@ -29,6 +29,7 @@ export default function MarginChart({ wb, ozon }: { wb: MarginRow[]; ozon: Margi
               `${v}% | прибыль ${fmt(props.payload.op_profit)} ₽`
             ]}
             labelFormatter={(label: string) => label}
+            contentStyle={{ color: '#1f2937' }}
           />
           <ReferenceLine y={20} stroke="#d97706" strokeDasharray="3 3" label={{ value: '20%', fontSize: 9, fill: '#d97706' }} />
           <Bar dataKey="profitability" name="Маржа">

@@ -9,6 +9,11 @@ interface Props {
 const fmt = (v: number) =>
   v >= 1000 ? `${(v / 1000).toFixed(0)}к` : String(v)
 
+const fmtDate = (iso: string) => {
+  const [, m, d] = iso.split('-')
+  return `${d}.${m}`
+}
+
 export default function RevenueChart({ data, sales }: Props) {
   const salesMap = new Map(sales.map(s => [s.date, s]))
   const merged = data.map(r => ({
@@ -24,9 +29,13 @@ export default function RevenueChart({ data, sales }: Props) {
       <h2 className="text-sm font-semibold mb-3">Выручка по дням</h2>
       <ResponsiveContainer width="100%" height={180}>
         <ComposedChart data={merged} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
-          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={d => d.slice(5)} />
+          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={fmtDate} />
           <YAxis tick={{ fontSize: 10 }} tickFormatter={fmt} width={36} />
-          <Tooltip formatter={(v: number) => [`${v.toLocaleString()} ₽`]} />
+          <Tooltip
+            formatter={(v: number) => [`${v.toLocaleString()} ₽`]}
+            labelFormatter={fmtDate}
+            contentStyle={{ color: '#1f2937' }}
+          />
           <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
           <Area type="monotone" dataKey="wb_s" name="WB выкупы" fill="#7c3aed" stroke="none" fillOpacity={0.18} legendType="none" />
           <Area type="monotone" dataKey="ozon_s" name="Ozon выкупы" fill="#2563eb" stroke="none" fillOpacity={0.18} legendType="none" />

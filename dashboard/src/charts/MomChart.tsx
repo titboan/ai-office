@@ -16,7 +16,7 @@ export default function MomChart({ data }: { data: MomRow[] }) {
         <BarChart data={rows} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
           <XAxis dataKey="label" tick={{ fontSize: 10 }} />
           <YAxis tick={{ fontSize: 10 }} tickFormatter={fmt} width={36} />
-          <Tooltip formatter={(v: number) => [`${v.toLocaleString()} ₽`]} />
+          <Tooltip formatter={(v: number) => [`${v.toLocaleString()} ₽`]} contentStyle={{ color: '#1f2937' }} />
           <Bar dataKey="revenue" name="Выручка" fill="#7c3aed" radius={[4, 4, 0, 0]} />
         </BarChart>
       </ResponsiveContainer>

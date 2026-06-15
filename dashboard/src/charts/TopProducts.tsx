@@ -15,7 +15,7 @@ export default function TopProducts({ data }: { data: ProductRow[] }) {
             tickFormatter={v => v >= 1000 ? `${(v / 1000).toFixed(0)}к` : String(v)} />
           <YAxis type="category" dataKey="product_name" tick={{ fontSize: 10 }} width={72}
             tickFormatter={(v: string) => v.length > 8 ? v.slice(0, 7) + '…' : v} />
-          <Tooltip formatter={(v: number) => [`${v.toLocaleString()} ₽`]} />
+          <Tooltip formatter={(v: number) => [`${v.toLocaleString()} ₽`]} contentStyle={{ color: '#1f2937' }} />
           <Bar dataKey="revenue" name="Выручка">
             {top10.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
           </Bar>

@@ -24,7 +24,7 @@ export default function CtrRoas({ data }: { data: ProductMetric[] }) {
           <BarChart data={withSpend} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
             <XAxis dataKey="name" tick={{ fontSize: 9 }} />
             <YAxis tick={{ fontSize: 10 }} unit="%" width={32} />
-            <Tooltip formatter={(v: number) => [`${v.toFixed(2)}%`]} />
+            <Tooltip formatter={(v: number) => [`${v.toFixed(2)}%`]} contentStyle={{ color: '#1f2937' }} />
             <ReferenceLine y={1} stroke="#dc2626" strokeDasharray="3 3" />
             <ReferenceLine y={3} stroke="#059669" strokeDasharray="3 3" />
             <Bar dataKey="avg_ctr" name="CTR">
@@ -39,7 +39,7 @@ export default function CtrRoas({ data }: { data: ProductMetric[] }) {
           <BarChart data={withSpend} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
             <XAxis dataKey="name" tick={{ fontSize: 9 }} />
             <YAxis tick={{ fontSize: 10 }} width={32} />
-            <Tooltip formatter={(v: number) => [`${v.toFixed(2)}x`]} />
+            <Tooltip formatter={(v: number) => [`${v.toFixed(2)}x`]} contentStyle={{ color: '#1f2937' }} />
             <ReferenceLine y={2} stroke="#dc2626" strokeDasharray="3 3" />
             <ReferenceLine y={5} stroke="#059669" strokeDasharray="3 3" />
             <Bar dataKey="roas" name="ROAS">
