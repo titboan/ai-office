@@ -354,6 +354,15 @@ class PeterAgent(BaseAgent):
                 LIMIT 10
             """, chat_id)
 
+            # 9. Топ ключевых слов WB (для SEO-контекста)
+            kw_top = await conn.fetch("""
+                SELECT DISTINCT ON (keyword) keyword, position, search_count, ctr
+                FROM product_search_keywords
+                WHERE chat_id = $1 AND marketplace = 'wb'
+                ORDER BY keyword, search_count DESC NULLS LAST
+                LIMIT 15
+            """, chat_id)
+
         return {
             "period_days":  days,
             "date_from":    date_from,
@@ -366,6 +375,7 @@ class PeterAgent(BaseAgent):
             "low_stocks":   [dict(r) for r in low_stocks],
             "mom_trends":   [dict(r) for r in mom],
             "returns_top":  [dict(r) for r in returns_top],
+            "kw_top":       [dict(r) for r in kw_top],
         }
 
     async def _collect_advanced_data(self, chat_id: int, days: int = 14) -> dict:
@@ -610,6 +620,13 @@ class PeterAgent(BaseAgent):
                 f"{json.dumps(data['returns_top'], ensure_ascii=False, default=str, indent=2)}"
             )
 
+        kw_str = ""
+        if data.get("kw_top"):
+            kw_str = (
+                f"\n\nКЛЮЧЕВЫЕ СЛОВА WB (топ по охвату):\n"
+                f"{json.dumps(data['kw_top'], ensure_ascii=False, default=str, indent=2)}"
+            )
+
         prompt = f"""Проанализируй данные магазинов за последние {days} дней.
 {goal_str}
 
@@ -617,7 +634,7 @@ class PeterAgent(BaseAgent):
 {json.dumps(data, ensure_ascii=False, default=str, indent=2)}
 
 РАСШИРЕННЫЕ ДАННЫЕ (тренд, CTR/ROAS по товарам, остатки):
-{json.dumps(adv_data, ensure_ascii=False, default=str, indent=2)}{mom_str}{returns_str}
+{json.dumps(adv_data, ensure_ascii=False, default=str, indent=2)}{mom_str}{returns_str}{kw_str}
 
 ВАЖНО:
 - Данные по заказам, не по выкупам. Реальная выручка ниже на % возвратов.
@@ -632,6 +649,7 @@ class PeterAgent(BaseAgent):
 - Если margin_ozon пустой — Ozon-заказы есть, но маппинг SKU не позволил посчитать маржу.
 - mom_trends — помесячная выручка и заказы за последние 60 дней. Если 2 месяца — посчитай MoM рост: (текущий месяц / предыдущий − 1) × 100%. Выведи одной строкой в блоке отчёта.
 - returns_top — товары с наибольшей суммой возвратов за 30 дней (если есть данные после /sync_returns). Укажи топ-3 по return_amount и возможные причины. Если пусто — данные не синхронизированы (/sync_returns у Макса).
+- kw_top — топ ключевых слов WB по охвату (если есть данные после /sync_keywords). Укажи ключи с лучшей позицией (чем меньше число, тем выше в поиске) и наибольшим search_count. Если пусто — данные не синхронизированы (/sync_keywords у Макса).
 {"- Цель: " + str(goal) + " ₽/день суммарно WB+Ozon." if goal else ""}
 
 Дай конкретный анализ по формату из system prompt с 5 практическими действиями."""

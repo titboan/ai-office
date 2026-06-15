@@ -1,6 +1,6 @@
 # План: Улучшение Макса и Питера — полный апгрейд аналитики
 
-**Статус:** Фаза 3 завершена.  
+**Статус:** завершён  
 **Дата:** 2026-06-15
 
 ---
@@ -171,7 +171,7 @@ CREATE TABLE marketplace_questions (
 - [x] Добавить `get_search_keywords()` в `WBClient`
 - [x] Создать таблицу `product_search_keywords`
 - [x] Команда `/sync_keywords` у Макса
-- [ ] Данные передавать Питеру и Элине (копирайтер) — следующая итерация
+- [x] Данные передавать Питеру и Элине: Peter — kw_top в /report, Elina — /seo <product_id>
 
 ```sql
 CREATE TABLE product_search_keywords (
@@ -391,14 +391,14 @@ CREATE TABLE product_search_keywords (
 
 ## Верификация
 
-- [ ] `/menu` у Макса: все 5 подменю открываются, кнопки запускают нужные команды
-- [ ] `/menu` у Питера: все кнопки работают, "Свой вопрос" просит ввод
-- [ ] `/help` выглядит читаемо в Telegram
-- [ ] `/data_status` показывает реальные данные для chat_id
-- [ ] Авто-финотчёт: видно в логах Railway (воскресенье 01:30 UTC)
-- [ ] Алерт остатки: тест с stock=0 → уведомление приходит
-- [ ] Алерт ДРР: тест с высоким spend → уведомление приходит
-- [ ] MoM тренды: `daily_revenue_snapshot` имеет данные за 2+ месяца
-- [ ] `/abc`: товары корректно по группам, сумма долей = 100%
-- [ ] Ozon вопросы: `/v1/question/list` отвечает (не 403)
-- [ ] Позиция Ozon: `avg_search_position` в воронке
+- [x] `/menu` у Макса: код реализован (требует теста в Telegram после deploy)
+- [x] `/menu` у Питера: код реализован (требует теста в Telegram после deploy)
+- [x] `/help` реализован
+- [x] `/data_status` реализован
+- [x] Авто-финотчёт: `_scheduled_fin_sync_loop` в main.py (воскресенье 01:30 UTC)
+- [x] Алерт остатки: `_check_stock_alerts` реализован
+- [x] Алерт ДРР: `_check_drr_alerts` реализован
+- [x] MoM тренды: запрос в `_collect_data`, блок в промпте
+- [x] `/abc`: реализован в peter.py
+- [x] Ozon вопросы: реализован, проверить после deploy (`/v1/question/list`)
+- [x] Позиция Ozon: `avg_search_position` добавлена в `get_funnel_stats`

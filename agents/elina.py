@@ -111,6 +111,51 @@ class ElinaAgent(BaseAgent):
         result = await self.handle_task(brief, from_agent="команды /write")
         await _send_rich(self.bot_token, update.effective_chat.id, result)
 
+    async def cmd_seo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/seo <product_id> — SEO-карточка на основе ключевых слов WB."""
+        product_id = " ".join(context.args).strip() if context.args else ""
+        if not product_id:
+            await update.message.reply_text(
+                "Использование: /seo <product_id>\n"
+                "Пример: /seo 12345678\n\n"
+                "product_id — артикул WB (nm_id). Данные берутся из /sync_keywords у Макса."
+            )
+            return
+
+        chat_id = update.effective_user.id
+        await update.message.reply_text("🔍 Ищу ключевые слова…")
+
+        from db import get_keywords_top
+        keywords = await get_keywords_top(chat_id, marketplace="wb", product_id=product_id, limit=30)
+
+        if not keywords:
+            await update.message.reply_text(
+                f"❌ Ключевые слова для товара {product_id} не найдены.\n"
+                "Сначала запусти /sync_keywords у Макса."
+            )
+            return
+
+        kw_lines = "\n".join(
+            f"- {k['keyword']} (позиция: {k['position'] or '?'}, охват: {k['search_count'] or '?'})"
+            for k in keywords[:20]
+        )
+        product_name = keywords[0].get("product_name") or product_id
+
+        brief = (
+            f"Напиши SEO-оптимизированную карточку товара для Wildberries.\n\n"
+            f"Товар: {product_name} (артикул {product_id})\n\n"
+            f"Ключевые слова из WB-поиска (по убыванию охвата):\n{kw_lines}\n\n"
+            f"Требования:\n"
+            f"1. Заголовок (до 60 символов) — включи 2-3 ключа с лучшей позицией\n"
+            f"2. Описание (300-500 символов) — естественно вписать топ-5 ключей\n"
+            f"3. Характеристики (5-7 пунктов) — использовать ключевые слова в формулировках\n"
+            f"4. Не перечислять ключи подряд — текст должен читаться естественно"
+        )
+
+        await update.message.reply_text("✍️ Пишу SEO-карточку…")
+        result = await self.handle_task(brief, from_agent=f"/seo product={product_id}")
+        await _send_rich(self.bot_token, update.effective_chat.id, result)
+
     async def cmd_post(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/post <тема> — написать пост для Telegram."""
         topic = " ".join(context.args) if context.args else ""
@@ -134,8 +179,9 @@ class ElinaAgent(BaseAgent):
             "📌 **Команды:**\n"
             "/write <бриф> — написать текст по заданию\n"
             "/post <тема> — написать пост для Telegram\n"
+            "/seo <product_id> — SEO-карточка по ключевым словам WB\n"
             "/reset — очистить историю\n\n"
-            "💡 Пример: /write «карточка товара: термокружка 500мл»"
+            "💡 Пример: /seo 12345678 — карточка на основе реальных поисковых запросов"
         )
 
     def _bot_commands(self) -> list:
@@ -144,9 +190,11 @@ class ElinaAgent(BaseAgent):
             BotCommand("start", "Запуск и помощь"),
             BotCommand("write", "Написать текст по брифу"),
             BotCommand("post", "Написать пост для Telegram"),
+            BotCommand("seo", "SEO-карточка по ключевым словам WB"),
             BotCommand("reset", "Очистить историю диалога"),
         ]
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("write", self.cmd_write))
-        self.app.add_handler(CommandHandler("post", self.cmd_post))
+        self.app.add_handler(CommandHandler("post",  self.cmd_post))
+        self.app.add_handler(CommandHandler("seo",   self.cmd_seo))

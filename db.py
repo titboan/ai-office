@@ -1368,6 +1368,40 @@ async def upsert_search_keyword(
         )
 
 
+async def get_keywords_top(
+    chat_id: int,
+    marketplace: str = "wb",
+    product_id: str | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Топ ключевых слов по search_count. Если product_id задан — только по нему."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if product_id:
+            rows = await conn.fetch(
+                """
+                SELECT product_id, product_name, keyword, position, search_count, ctr, conv_rate, stat_date
+                FROM product_search_keywords
+                WHERE chat_id=$1 AND marketplace=$2 AND product_id=$3
+                ORDER BY search_count DESC NULLS LAST
+                LIMIT $4
+                """,
+                chat_id, marketplace, product_id, limit,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT ON (keyword) product_id, product_name, keyword, position, search_count, ctr, conv_rate, stat_date
+                FROM product_search_keywords
+                WHERE chat_id=$1 AND marketplace=$2
+                ORDER BY keyword, search_count DESC NULLS LAST
+                LIMIT $3
+                """,
+                chat_id, marketplace, limit,
+            )
+        return [dict(r) for r in rows]
+
+
 # ── Аналитика возвратов ────────────────────────────────────────────────────────
 
 async def upsert_returns_analytics(
