@@ -213,23 +213,7 @@ class MaxAgent(BaseAgent):
     #  Запуск — устанавливаем меню бота только с /start                   #
     # ------------------------------------------------------------------ #
 
-    async def start_polling_async(self) -> None:
-        await super().start_polling_async()
-        try:
-            await self.app.bot.set_my_commands([
-                BotCommand("start",     "Управление отзывами"),
-                BotCommand("products",  "📦 Каталог: товары и с/с"),
-                BotCommand("map",       "✏️ Товар в реестр: name= wb= ozon="),
-                BotCommand("cost",      "💰 Себестоимость: <артикул> <сумма>"),
-                BotCommand("sync",      "🔄 Синхронизация заказов/остатков"),
-                BotCommand("sync_adv",    "📊 Синхронизация рекламы"),
-                BotCommand("sync_fin",    "💰 Финансовые отчёты (комиссии, выплаты)"),
-                BotCommand("sync_funnel", "📈 Воронка конверсии карточек"),
-                BotCommand("sync_sku",    "🔗 Подтянуть Ozon SKU в реестр"),
-            ])
-            logger.info("[Макс] BotCommand menu установлен")
-        except Exception as e:
-            logger.warning(f"[Макс] set_my_commands error: {e}")
+    # start_polling_async не переопределяем — BaseAgent._post_init уже вызывает _bot_commands()
 
     # ------------------------------------------------------------------ #
     #  handle_task (заглушка)                                              #
@@ -1411,18 +1395,19 @@ class MaxAgent(BaseAgent):
                 client = WBClient(shop["api_token"])
                 pool = await get_pool()
                 async with pool.acquire() as conn:
+                    # marketplace_sales хранит nmId как строку — надёжный источник
                     rows = await conn.fetch(
-                        "SELECT DISTINCT product_id FROM marketplace_stocks WHERE chat_id=$1 AND marketplace='wb' LIMIT 50",
+                        """SELECT DISTINCT product_id FROM marketplace_sales
+                           WHERE chat_id=$1 AND marketplace='wb'
+                             AND product_id ~ E'^\\\\d+$'
+                           LIMIT 50""",
                         chat_id,
                     )
-                nm_ids = []
-                for r in rows:
-                    try:
-                        nm_ids.append(int(r["product_id"]))
-                    except (ValueError, TypeError):
-                        pass
+                nm_ids = [int(r["product_id"]) for r in rows if r["product_id"]]
                 if not nm_ids:
-                    await update.message.reply_text("⚠️ Нет товаров WB в базе. Сначала запусти /sync.")
+                    await update.message.reply_text(
+                        "⚠️ Нет данных о продажах WB в базе. Сначала запусти /sync."
+                    )
                     return
                 keywords = await client.get_search_keywords(nm_ids, date_from, date_to)
                 for kw in keywords:
@@ -3324,17 +3309,26 @@ class MaxAgent(BaseAgent):
     def _bot_commands(self) -> list:
         from telegram import BotCommand
         return [
-            BotCommand("start",       "Главное меню магазина"),
-            BotCommand("menu",        "Меню всех команд"),
-            BotCommand("sync",        "Синхронизировать заказы, остатки, отзывы"),
-            BotCommand("sync_adv",    "Синхронизировать рекламную статистику"),
-            BotCommand("data_status", "Состояние данных в БД"),
-            BotCommand("products",    "Список товаров и себестоимость"),
-            BotCommand("cost",        "Задать себестоимость товара"),
-            BotCommand("map",         "Добавить товар в реестр"),
-            BotCommand("help",        "Справочник команд"),
-            BotCommand("cancel",      "Отменить активный мастер"),
-            BotCommand("reset",       "Очистить историю диалога"),
+            BotCommand("start",            "Главное меню магазина"),
+            BotCommand("menu",             "Меню всех команд"),
+            BotCommand("sync",             "Синхронизация заказов, остатков, отзывов"),
+            BotCommand("sync_adv",         "Синхронизация рекламной статистики"),
+            BotCommand("sync_fin",         "Финансовые отчёты (комиссии, выплаты)"),
+            BotCommand("sync_funnel",      "Воронка конверсии карточек"),
+            BotCommand("sync_sku",         "Подтянуть Ozon SKU в реестр"),
+            BotCommand("sync_keywords",    "Ключевые слова и позиции WB"),
+            BotCommand("sync_returns",     "Аналитика возвратов WB + Ozon"),
+            BotCommand("sync_promotions",  "Акции и кампании WB + Ozon"),
+            BotCommand("data_status",      "Состояние данных в БД"),
+            BotCommand("products",         "Список товаров и себестоимость"),
+            BotCommand("cost",             "Задать себестоимость товара"),
+            BotCommand("map",              "Добавить товар в реестр"),
+            BotCommand("shop_kpi",         "KPI магазина (рейтинг, штрафы)"),
+            BotCommand("pending",          "Отзывы и вопросы ожидающие ответа"),
+            BotCommand("reviews",          "Статистика отзывов сегодня"),
+            BotCommand("help",             "Справочник команд"),
+            BotCommand("cancel",           "Отменить активный мастер"),
+            BotCommand("reset",            "Очистить историю диалога"),
         ]
 
     def _register_extra_handlers(self) -> None:
