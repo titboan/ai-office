@@ -13,6 +13,8 @@ from __future__ import annotations
 import html
 import re
 
+from utils.tg_rich import RICH_MARKDOWN_FORMAT_RULES  # noqa: F401
+
 # Characters that need escaping in MarkdownV2 plain text segments
 _MDV2_SPECIAL = r'\_*[]()~`>#+-=|{}.!'
 
@@ -116,6 +118,8 @@ def strip_html(text: str) -> str:
 
 
 # ── Formatting instructions for system prompts ────────────────────────────────
+
+from utils.tg_rich import RICH_MARKDOWN_FORMAT_RULES  # noqa: F401 — re-export
 
 MARKDOWN_FORMAT_RULES = """
 Форматируй ответы в MarkdownV2 для Telegram:
