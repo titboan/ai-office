@@ -1923,6 +1923,7 @@ class MaxAgent(BaseAgent):
                     InlineKeyboardButton("💰 Смотреть ДРР у Питера", callback_data="menu_c3:drr"),
                 ]]),
             )
+            await self._check_drr_alerts(chat_id)
         except Exception as e:
             logger.error(f"[Макс/adv] /sync_adv ошибка: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка синка рекламы: {e}")
@@ -2676,6 +2677,65 @@ class MaxAgent(BaseAgent):
             logger.info(f"[Макс/stock_alerts] chat={chat_id} алертов: {len(alerts)}")
         except Exception as e:
             logger.error(f"[Макс/stock_alerts] ошибка: {e}", exc_info=True)
+
+    async def _check_drr_alerts(self, chat_id: int) -> None:
+        """Проверяет ДРР по товарам за 7 дней и шлёт алерт если ДРР > 25% при расходе > 500₽."""
+        try:
+            from db import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT
+                        p.marketplace,
+                        p.product_id,
+                        COALESCE(m.display_name, p.product_id) AS name,
+                        SUM(p.spend)::numeric(12,2)             AS spend,
+                        COALESCE(SUM(o.seller_price * o.quantity), 0)::numeric(12,2) AS revenue,
+                        CASE WHEN COALESCE(SUM(o.seller_price * o.quantity), 0) > 0
+                             THEN ROUND(SUM(p.spend) /
+                                        SUM(o.seller_price * o.quantity) * 100, 1)
+                             ELSE NULL END                      AS drr
+                    FROM product_adv_stats p
+                    LEFT JOIN product_mapping m ON (
+                        m.wb_article = p.product_id OR m.ozon_sku = p.product_id
+                    )
+                    LEFT JOIN marketplace_orders o ON (
+                        o.chat_id    = p.chat_id
+                        AND o.product_id = p.product_id
+                        AND o.order_date >= NOW() - INTERVAL '7 days'
+                    )
+                    WHERE p.chat_id = $1 AND p.stat_date >= NOW() - INTERVAL '7 days'
+                    GROUP BY p.marketplace, p.product_id, m.display_name
+                    HAVING SUM(p.spend) > 500
+                    ORDER BY drr DESC NULLS LAST
+                """, chat_id)
+
+            alerts = []
+            for r in rows:
+                drr = float(r["drr"] or 0)
+                if drr > 25:
+                    mp_label = "🟣 WB" if r["marketplace"] == "wb" else "🔵 Ozon"
+                    spend   = float(r["spend"]   or 0)
+                    revenue = float(r["revenue"] or 0)
+                    alerts.append(
+                        f"{mp_label} <b>{r['name']}</b> — ДРР {drr}% "
+                        f"(расход {spend:,.0f}₽ / выручка {revenue:,.0f}₽)"
+                    )
+
+            if not alerts:
+                return
+
+            text = (
+                "🔴 <b>Высокий ДРР (&gt; 25%):</b>\n\n"
+                + "\n".join(alerts[:10])
+                + "\n\n💡 Запроси /drr у Питера для детального анализа"
+            )
+            if len(alerts) > 10:
+                text += f"\n…и ещё {len(alerts) - 10} позиций"
+            await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            logger.info(f"[Макс/drr_alerts] chat={chat_id} алертов: {len(alerts)}")
+        except Exception as e:
+            logger.error(f"[Макс/drr_alerts] ошибка: {e}", exc_info=True)
 
     _MENU_MAIN_KEYBOARD = InlineKeyboardMarkup([
         [

@@ -336,6 +336,7 @@ async def run_all_async() -> None:
                     try:
                         await max_agent.sync_ad_stats(chat_id)
                         logger.info(f"[adv_sync] chat_id={chat_id} завершено")
+                        await max_agent._check_drr_alerts(chat_id)
                     except Exception as e:
                         logger.error(f"[adv_sync] chat_id={chat_id} ошибка: {e}")
 

@@ -1,6 +1,6 @@
 # План: Улучшение Макса и Питера — полный апгрейд аналитики
 
-**Статус:** Фаза 1 завершена. Фаза 2 — следующая.  
+**Статус:** Фаза 2 завершена. Фаза 3 — следующая.  
 **Дата:** 2026-06-15
 
 ---
@@ -65,8 +65,8 @@ questions             45       1 день назад
 
 **Проблема:** `daily_revenue_snapshot` заполняется каждую ночь, но Питер её игнорирует.
 
-- [ ] Добавить MoM-запрос в `_collect_data()` в `agents/peter.py`
-- [ ] Добавить MoM-блок в `PETER_SYSTEM`
+- [x] Добавить MoM-запрос в `_collect_data()` в `agents/peter.py`
+- [x] Добавить MoM-блок в промпт `cmd_report` (ВАЖНО-секция)
 
 ```sql
 SELECT DATE_TRUNC('month', snapshot_date) AS month,
@@ -80,8 +80,8 @@ GROUP BY 1 ORDER BY 1
 
 ### A4 — Алерт ДРР > 25% после `/sync_adv`
 
-- [ ] Добавить `_check_drr_alerts(chat_id)` в `agents/max.py`
-- [ ] Вызвать после `sync_ad_stats()` в `cmd_sync_adv()` и `_scheduled_adv_sync_loop`
+- [x] Добавить `_check_drr_alerts(chat_id)` в `agents/max.py`
+- [x] Вызвать после `sync_ad_stats()` в `cmd_sync_adv()` и `_scheduled_adv_sync_loop`
 
 **SQL:** spend / revenue * 100 за 7 дней по товарам где spend > 500₽. Показывать только превышающих 25%.
 
@@ -98,9 +98,9 @@ GROUP BY 1 ORDER BY 1
 
 ### A6 — ABC-анализ `/abc [период=30]` у Питера
 
-- [ ] Добавить `cmd_abc()` в `agents/peter.py`
-- [ ] Добавить `PETER_ABC_PROMPT`
-- [ ] Зарегистрировать хэндлер в `main.py`
+- [x] Добавить `cmd_abc()` в `agents/peter.py`
+- [x] Добавить `PETER_ABC_PROMPT`
+- [x] Зарегистрировать хэндлер в `_register_extra_handlers` (peter.py)
 
 **SQL:** накопительная сумма выручки → A (0-80%), B (80-95%), C (95-100%)  
 **Вывод:** товары по группам с рекомендациями куда направить бюджет
@@ -159,7 +159,7 @@ CREATE TABLE marketplace_questions (
 
 - [x] В `OzonClient.get_funnel_stats()` добавить `"avg_search_position"` в metrics (metrics[3])
 - [x] Колонка `avg_position` уже есть в `product_funnel_stats` — данные пишутся через существующий `upsert_funnel_stat`
-- [ ] Питер использует в `/funnel` для объяснения причин низких просмотров
+- [x] Питер использует в `/funnel` для объяснения причин низких просмотров (avg_position уже в запросе)
 
 ---
 
@@ -312,8 +312,8 @@ CREATE TABLE product_search_keywords (
 [🔽 Воронка конверсии]  [📈 Полный отчёт]
 ```
 
-- [ ] Добавить `reply_markup` в `_send_answer()` у Питера
-- [ ] Callback-хэндлеры в `agents/peter.py`
+- [x] Добавить `after_markup` в `_send_answer()` у Питера
+- [x] Callback-хэндлер `pnext:*` в `agents/peter.py`
 
 ### C5 — `/help` — полное справочное руководство
 

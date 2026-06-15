@@ -139,6 +139,51 @@ Ozon: расход X₽ / оборот X₽ → ДРР X%  [норма 10-15%]
 - Если данных по товару нет в product_adv_stats — укажи суммарный ДРР по площадке"""
 
 
+PETER_ABC_PROMPT = """Ты проводишь ABC-анализ товарного ассортимента магазина.
+
+Форматируй ответ в Rich Markdown для Telegram: **жирный**, *курсив*, `код`, > цитата.
+Спецсимволы . ! ( ) - = писать как есть. Никаких HTML-тегов.
+
+ФОРМАТ ОТВЕТА (не длиннее 40 строк):
+
+🔤 **ABC-анализ за N дней**
+Оборот: X ₽ | Товаров: N
+
+**🟢 Группа A — 80% выручки (фокус внимания):**
+
+| Товар | Выручка | Доля |
+|---|---|---|
+| `КБ50` | X ₽ | X% |
+| `ТГ100` | X ₽ | X% |
+
+*A-товары — ваш приоритет. Держи остатки, масштабируй рекламу ROAS > 3.*
+
+**🟡 Группа B — следующие 15% (потенциал роста):**
+
+| Товар | Выручка | Доля |
+|---|---|---|
+| `ДС200` | X ₽ | X% |
+
+*Проверь ценообразование и контент — есть потенциал перехода в A.*
+
+**🔴 Группа C — последние 5% (пересмотр):**
+[кратко, если > 5 товаров — общим числом и суммарной долей]
+
+> Вывод: [X товаров дают Y% выручки — сфокусируй ресурсы на них]
+
+🎯 **Рекомендации:**
+- A: [конкретное действие с товаром и суммой]
+- B: [конкретное действие]
+- C: [вывести или оставить — обоснование]
+
+ПРАВИЛА:
+- Используй поле "name" (display_name товаров: КБ50, ТГ100 и т.д.)
+- A = накопительная доля 0-80%, B = 80-95%, C = 95-100%
+- Для C не перечисляй все если > 5 — сгруппируй
+- Если 1-2 товара занимают > 70% — это концентрационный риск, предупреди отдельно
+- Конкретные суммы и % в каждой рекомендации"""
+
+
 class PeterAgent(BaseAgent):
     name = "Питер"
     agent_key = "peter"
@@ -286,6 +331,16 @@ class PeterAgent(BaseAgent):
                 LIMIT 10
             """, chat_id)
 
+            # 7. MoM тренды из ночных снимков (последние 2 месяца)
+            mom = await conn.fetch("""
+                SELECT DATE_TRUNC('month', snapshot_date) AS month,
+                       SUM(revenue)::numeric(12,2) AS revenue,
+                       SUM(orders_count)::int      AS orders
+                FROM daily_revenue_snapshot
+                WHERE chat_id = $1 AND snapshot_date >= NOW() - INTERVAL '60 days'
+                GROUP BY 1 ORDER BY 1
+            """, chat_id)
+
         return {
             "period_days": days,
             "date_from":   date_from,
@@ -296,6 +351,7 @@ class PeterAgent(BaseAgent):
             "net_margin":  [dict(r) for r in net_margin],
             "adv":         [dict(r) for r in adv],
             "low_stocks":  [dict(r) for r in low_stocks],
+            "mom_trends":  [dict(r) for r in mom],
         }
 
     async def _collect_advanced_data(self, chat_id: int, days: int = 14) -> dict:
@@ -391,6 +447,26 @@ class PeterAgent(BaseAgent):
             "stock_velocity":  [dict(r) for r in stock_velocity],
         }
 
+    _PETER_NEXT_REPORT = InlineKeyboardMarkup([[
+        InlineKeyboardButton("💰 ДРР",     callback_data="pnext:drr"),
+        InlineKeyboardButton("🔻 Воронка", callback_data="pnext:funnel"),
+        InlineKeyboardButton("🔤 ABC",     callback_data="pnext:abc"),
+        InlineKeyboardButton("📋 Аудит",  callback_data="pnext:audit"),
+    ]])
+
+    _PETER_NEXT_DRR = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔻 Воронка",  callback_data="pnext:funnel"),
+        InlineKeyboardButton("📊 Отчёт",   callback_data="pnext:report"),
+    ]])
+
+    _PETER_NEXT_HINTS: dict[str, str] = {
+        "drr":    "💰 Запусти <code>/drr</code> — ДРР и ROAS по каждому товару",
+        "funnel": "🔻 Запусти <code>/funnel</code> — воронка конверсии карточек",
+        "abc":    "🔤 Запусти <code>/abc</code> — ABC-анализ: какие товары дают 80% выручки",
+        "audit":  "📋 Запусти <code>/audit</code> — полный аудит магазина",
+        "report": "📊 Запусти <code>/report</code> — отчёт о продажах",
+    }
+
     async def _send_answer(
         self,
         answer: str,
@@ -402,6 +478,7 @@ class PeterAgent(BaseAgent):
         update: Update | None = None,
         chat_id: int | None = None,
         bot=None,
+        after_markup: InlineKeyboardMarkup | None = None,
     ) -> None:
         notion_url = await save_research(
             title=notion_title,
@@ -421,6 +498,12 @@ class PeterAgent(BaseAgent):
                 ]])
                 markup_dict = markup.to_dict()
             await _send_rich(self.bot_token, _cid, answer, reply_markup_dict=markup_dict)
+            if after_markup:
+                await self.bot.send_message(
+                    chat_id=_cid,
+                    text="Что дальше?",
+                    reply_markup=after_markup,
+                )
 
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
         logger.info(f"[Питер] Задача от {from_agent}: {task!r}")
@@ -499,6 +582,13 @@ class PeterAgent(BaseAgent):
                 f"Разрыв: {gap:+,.0f} ₽/день"
             )
 
+        mom_str = ""
+        if data.get("mom_trends"):
+            mom_str = (
+                f"\n\nMoM ТРЕНДЫ (помесячно из ночных снимков):\n"
+                f"{json.dumps(data['mom_trends'], ensure_ascii=False, default=str, indent=2)}"
+            )
+
         prompt = f"""Проанализируй данные магазинов за последние {days} дней.
 {goal_str}
 
@@ -506,7 +596,7 @@ class PeterAgent(BaseAgent):
 {json.dumps(data, ensure_ascii=False, default=str, indent=2)}
 
 РАСШИРЕННЫЕ ДАННЫЕ (тренд, CTR/ROAS по товарам, остатки):
-{json.dumps(adv_data, ensure_ascii=False, default=str, indent=2)}
+{json.dumps(adv_data, ensure_ascii=False, default=str, indent=2)}{mom_str}
 
 ВАЖНО:
 - Данные по заказам, не по выкупам. Реальная выручка ниже на % возвратов.
@@ -519,6 +609,7 @@ class PeterAgent(BaseAgent):
 - product_metrics.roas — ROAS = оборот/расход. Если 0 — данные не синхронизированы.
 - stock_velocity.days_left — дней осталось стока при текущем темпе продаж. 999 = нет продаж.
 - Если margin_ozon пустой — Ozon-заказы есть, но маппинг SKU не позволил посчитать маржу.
+- mom_trends — помесячная выручка и заказы за последние 60 дней. Если 2 месяца — посчитай MoM рост: (текущий месяц / предыдущий − 1) × 100%. Выведи одной строкой в блоке отчёта.
 {"- Цель: " + str(goal) + " ₽/день суммарно WB+Ozon." if goal else ""}
 
 Дай конкретный анализ по формату из system prompt с 5 практическими действиями."""
@@ -536,6 +627,7 @@ class PeterAgent(BaseAgent):
             notion_title=f"Отчёт {datetime.now(_UTC).strftime('%d.%m.%Y')}",
             notion_source="cmd:report",
             update=update,
+            after_markup=self._PETER_NEXT_REPORT,
         )
 
     async def cmd_audit(
@@ -669,6 +761,7 @@ class PeterAgent(BaseAgent):
             notion_title=f"ДРР {datetime.now(_UTC).strftime('%d.%m.%Y')}",
             notion_source="cmd:drr",
             update=update,
+            after_markup=self._PETER_NEXT_DRR,
         )
 
     async def cmd_funnel(
@@ -843,6 +936,97 @@ class PeterAgent(BaseAgent):
         except Exception as e:
             logger.error(f"[Питер/weekly_audit] ошибка отправки: {e}")
 
+    async def cmd_abc(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/abc [период=30] — ABC-анализ товаров по вкладу в выручку."""
+        chat_id = update.effective_user.id
+        days = 30
+        if context.args:
+            try:
+                days = int(context.args[0])
+            except ValueError:
+                pass
+
+        await update.message.reply_text(f"🔤 ABC-анализ за {days} дней…")
+
+        from db import get_pool
+        pool = await get_pool()
+        date_from = (datetime.now(_UTC) - timedelta(days=days)).date()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT
+                    o.product_id,
+                    COALESCE(m.display_name, MAX(o.product_name)) AS name,
+                    SUM(o.seller_price * o.quantity)::numeric(12,2) AS revenue,
+                    SUM(o.quantity)::int AS qty
+                FROM marketplace_orders o
+                LEFT JOIN product_mapping m ON (
+                    m.wb_article = o.product_id OR m.ozon_sku = o.product_id
+                )
+                WHERE o.chat_id = $1 AND o.order_date >= $2
+                GROUP BY o.product_id, m.display_name
+                ORDER BY revenue DESC
+            """, chat_id, date_from)
+
+        if not rows:
+            await update.message.reply_text("❌ Нет данных о заказах. Запусти /sync у Макса.")
+            return
+
+        total_revenue = sum(float(r["revenue"] or 0) for r in rows)
+        if total_revenue == 0:
+            await update.message.reply_text("❌ Нет данных (выручка = 0).")
+            return
+
+        cumulative = 0.0
+        abc_data = []
+        for r in rows:
+            rev = float(r["revenue"] or 0)
+            cumulative += rev
+            cum_pct = cumulative / total_revenue * 100
+            abc_data.append({
+                "name": r["name"],
+                "product_id": r["product_id"],
+                "revenue": rev,
+                "qty": int(r["qty"] or 0),
+                "share_pct": round(rev / total_revenue * 100, 1),
+                "cumulative_pct": round(cum_pct, 1),
+                "group": "A" if cum_pct <= 80 else ("B" if cum_pct <= 95 else "C"),
+            })
+
+        prompt = (
+            f"ABC-анализ товаров за {days} дней. Общая выручка: {total_revenue:,.0f} ₽.\n\n"
+            f"ДАННЫЕ (отсортированы по выручке, с накопительной долей):\n"
+            f"{json.dumps(abc_data, ensure_ascii=False, indent=2)}\n\n"
+            f"Используй формат PETER_ABC_PROMPT."
+        )
+
+        try:
+            from anthropic import AsyncAnthropic
+            client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+            resp = await client.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=2048,
+                system=PETER_ABC_PROMPT,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            answer = resp.content[0].text
+        except Exception as e:
+            logger.error(f"[Питер/abc] ошибка Claude: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка анализа: {e}")
+            return
+
+        await self._send_answer(
+            answer,
+            notion_title=f"ABC {datetime.now(_UTC).strftime('%d.%m.%Y')}",
+            notion_source="cmd:abc",
+            show_dashboard=False,
+            update=update,
+            after_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📊 Отчёт", callback_data="pnext:report"),
+                InlineKeyboardButton("💰 ДРР",   callback_data="pnext:drr"),
+            ]]),
+        )
+
     def _help_text(self) -> str:
         return (
             "📊 **Питер** — бизнес-аналитик\n\n"
@@ -898,8 +1082,10 @@ class PeterAgent(BaseAgent):
         ),
         "abc": (
             "🔤 <b>ABC-анализ</b>\n\n"
-            "Скоро — ранжирование товаров по вкладу в выручку.\n"
-            "Пока используй /report для топ-товаров."
+            "Ранжирование товаров по вкладу в выручку:\n"
+            "A — 80%, B — следующие 15%, C — хвост.\n\n"
+            "/abc — запустить (период 30 дней)\n"
+            "/abc 14 — за 14 дней"
         ),
         "analyze": (
             "💬 <b>Произвольный анализ</b>\n\n"
@@ -925,6 +1111,14 @@ class PeterAgent(BaseAgent):
         text = self._PETER_MENU_HINTS.get(cmd, "❓ Неизвестный раздел")
         await query.message.reply_text(text, parse_mode="HTML")
 
+    async def _handle_peter_next_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработчик кнопок 'Что дальше?' у Питера (pnext:*)."""
+        query = update.callback_query
+        await query.answer()
+        cmd = query.data.split(":", 1)[1] if ":" in query.data else ""
+        text = self._PETER_NEXT_HINTS.get(cmd, "❓ Неизвестная команда")
+        await query.message.reply_text(text, parse_mode="HTML")
+
     def _bot_commands(self) -> list:
         from telegram import BotCommand
         return [
@@ -934,6 +1128,7 @@ class PeterAgent(BaseAgent):
             BotCommand("audit",   "Полная оценка магазина (SWOT, KPI)"),
             BotCommand("drr",     "ДРР и ROAS по товарам"),
             BotCommand("funnel",  "Воронка конверсии карточек"),
+            BotCommand("abc",     "ABC-анализ: какие товары дают 80% выручки"),
             BotCommand("analyze", "Произвольный бизнес-анализ"),
             BotCommand("reset",   "Очистить историю диалога"),
         ]
@@ -945,6 +1140,10 @@ class PeterAgent(BaseAgent):
         self.app.add_handler(CommandHandler("audit",   self.cmd_audit))
         self.app.add_handler(CommandHandler("drr",     self.cmd_drr))
         self.app.add_handler(CommandHandler("funnel",  self.cmd_funnel))
+        self.app.add_handler(CommandHandler("abc",     self.cmd_abc))
         self.app.add_handler(
             CallbackQueryHandler(self._handle_peter_menu_callback, pattern=r"^pmenu:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_peter_next_callback, pattern=r"^pnext:")
         )
