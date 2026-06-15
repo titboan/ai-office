@@ -64,65 +64,71 @@ WB: X ₽ (ДРР X%) | Ozon: X ₽ (ДРР X%)
 
 PETER_AUDIT_PROMPT = """Ты проводишь полный аудит магазина на маркетплейсах.
 
-ФОРМАТ ОТВЕТА (не длиннее 45 строк, HTML Telegram):
+Форматируй ответ в Rich Markdown для Telegram: **жирный**, *курсив*, `код`, > цитата.
+Спецсимволы . ! ( ) - = писать как есть. Никаких HTML-тегов.
 
-🏪 <b>Оценка магазина: X/10</b>
+ФОРМАТ ОТВЕТА (не длиннее 45 строк):
+
+🏪 **Оценка магазина: X/10**
 Оборот: X ₽/мес | Тренд: ↑/↓ X% | ДРР: X%
 
-💪 <b>Сильные стороны:</b>
+💪 **Сильные стороны:**
 1. [факт из данных с цифрой]
 2. [факт из данных с цифрой]
 3. [факт из данных с цифрой]
 
-⚠️ <b>Слабые стороны:</b>
+⚠️ **Слабые стороны:**
 1. [факт из данных с цифрой]
 2. [факт из данных с цифрой]
 3. [факт из данных с цифрой]
 
-🎯 <b>Приоритет №1 на ближайший месяц:</b>
+🎯 **Приоритет №1 на ближайший месяц:**
 [направление] — [конкретное обоснование с числами]
 
-📋 <b>Топ-5 действий прямо сейчас:</b>
+📋 **Топ-5 действий прямо сейчас:**
 1. [действие с конкретным товаром/суммой] — [ожидаемый эффект]
 2. ...
 5. ...
 
-📊 <b>KPI-дашборд:</b>
+📊 **KPI-дашборд:**
 Заказов/день: X | ДРР WB: X% | ДРР Ozon: X%
-Топ-CTR: <code>арт</code> X% | Худший-CTR: <code>арт</code> X%
+Топ-CTR: `арт` X% | Худший-CTR: `арт` X%
 Стоков < 14 дней: X позиций
 
-<blockquote>Главный вывод: [почему магазин там где он есть и куда идти]</blockquote>
+> Главный вывод: [почему магазин там где он есть и куда идти]
 
 ПРАВИЛА:
 - Оценка X/10: считай по факторам (рост оборота, CTR, ROAS, маржа, стоки, ДРР)
-- Каждое действие — конкретный товар <code>код</code> + конкретная сумма/процент
-- CTR < 1% → "переделать инфографику на <code>арт</code> — CTR X%, теряем X кликов/день"
-- ROAS < 2 → "отключить рекламу <code>арт</code> — убыток X₽/день"
-- days_left < 14 → "срочно заказать <code>арт</code> — осталось X дней"
+- Каждое действие — конкретный товар `код` + конкретная сумма/процент
+- CTR < 1% → "переделать инфографику на `арт` — CTR X%, теряем X кликов/день"
+- ROAS < 2 → "отключить рекламу `арт` — убыток X₽/день"
+- days_left < 14 → "срочно заказать `арт` — осталось X дней"
 - Если тренд недели +20% — отдельно отметь рост"""
 
 PETER_DRR_PROMPT = """Ты анализируешь рекламную эффективность магазина. Выдай краткий ДРР-отчёт.
 
-ФОРМАТ (не длиннее 30 строк, HTML Telegram):
+Форматируй ответ в Rich Markdown для Telegram: **жирный**, *курсив*, `код`, > цитата.
+Спецсимволы . ! ( ) - = писать как есть. Никаких HTML-тегов.
 
-📊 <b>ДРР-отчёт за N дней</b>
+ФОРМАТ (не длиннее 30 строк):
 
-<b>По площадкам:</b>
+📊 **ДРР-отчёт за N дней**
+
+**По площадкам:**
 WB: расход X₽ / оборот X₽ → ДРР X%  [норма 15-20%]
 Ozon: расход X₽ / оборот X₽ → ДРР X%  [норма 10-15%]
 
-<b>Топ-5 товаров по расходу:</b>
-<code>КБ50</code> — ДРР X%, ROAS X.X, CTR X% → [вердикт: 🟢 эффективно / 🟡 пересмотреть / 🔴 отключить]
+**Топ-5 товаров по расходу:**
+`КБ50` — ДРР X%, ROAS X.X, CTR X% → [вердикт: 🟢 эффективно / 🟡 пересмотреть / 🔴 отключить]
 ...
 
-⚠️ <b>Проблемные:</b>
+⚠️ **Проблемные:**
 [Товары с ДРР > 25% или ROAS < 2]
 
-✅ <b>Лидеры эффективности:</b>
+✅ **Лидеры эффективности:**
 [Товары с ROAS > 5]
 
-<blockquote>Рекомендация: [одно главное действие с суммой/товаром]</blockquote>
+> Рекомендация: [одно главное действие с суммой/товаром]
 
 ПРАВИЛА:
 - ДРР = (рекл. расход / оборот от заказов) × 100%
@@ -396,7 +402,6 @@ class PeterAgent(BaseAgent):
         update: Update | None = None,
         chat_id: int | None = None,
         bot=None,
-        parse_mode: str = "MarkdownV2",
     ) -> None:
         notion_url = await save_research(
             title=notion_title,
@@ -405,45 +410,17 @@ class PeterAgent(BaseAgent):
             agent="Питер",
         )
         if notion_url:
-            if parse_mode == "HTML":
-                answer = f'{answer}\n\n📄 <a href="{notion_url}">{notion_link_text}</a>'
-            else:
-                answer = f'{answer}\n\n📄 [{notion_link_text}]({notion_url})'
+            answer = f'{answer}\n\n📄 [{notion_link_text}]({notion_url})'
 
-        if parse_mode == "HTML":
-            # HTML-пути (audit, drr, weekly_audit) — отправляем через PTB
-            async def _send_chunk(send_fn, chunk: str, **kwargs) -> None:
-                try:
-                    await send_fn(chunk, parse_mode="HTML", **kwargs)
-                except Exception:
-                    await send_fn(chunk, **kwargs)
-
-            if update:
-                for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
-                    await _send_chunk(update.message.reply_text, chunk)
-                if show_dashboard and config.DASHBOARD_URL:
-                    markup = InlineKeyboardMarkup([[
-                        InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=config.DASHBOARD_URL))
-                    ]])
-                    await update.message.reply_text("Открыть интерактивный дашборд:", reply_markup=markup)
-            else:
-                _bot = bot or self.app.bot
-                for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
-                    await _send_chunk(
-                        lambda text, **kw: _bot.send_message(chat_id=chat_id, text=text, **kw),
-                        chunk,
-                    )
-        else:
-            # Rich Markdown путь (по умолчанию)
-            _cid = chat_id or (update.effective_chat.id if update else None)
-            if _cid:
-                markup_dict = None
-                if show_dashboard and config.DASHBOARD_URL and update:
-                    markup = InlineKeyboardMarkup([[
-                        InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=config.DASHBOARD_URL))
-                    ]])
-                    markup_dict = markup.to_dict()
-                await _send_rich(self.bot_token, _cid, answer, reply_markup_dict=markup_dict)
+        _cid = chat_id or (update.effective_chat.id if update else None)
+        if _cid:
+            markup_dict = None
+            if show_dashboard and config.DASHBOARD_URL and update:
+                markup = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=config.DASHBOARD_URL))
+                ]])
+                markup_dict = markup.to_dict()
+            await _send_rich(self.bot_token, _cid, answer, reply_markup_dict=markup_dict)
 
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
         logger.info(f"[Питер] Задача от {from_agent}: {task!r}")
@@ -595,7 +572,7 @@ class PeterAgent(BaseAgent):
 
 ВАЖНО:
 - Оценка X/10 должна отражать реальное состояние (не завышай и не занижай)
-- Каждое действие в топ-5 — конкретный товар <code>код</code> + цифры
+- Каждое действие в топ-5 — конкретный товар `код` + цифры
 - CTR данные в product_metrics.avg_ctr (0 = нет данных из рекламы)
 - ROAS в product_metrics.roas (0 = нет данных)
 - days_left в stock_velocity (999 = нет продаж по этому товару)
@@ -626,7 +603,6 @@ class PeterAgent(BaseAgent):
             notion_source="cmd:audit",
             notion_link_text="Аудит сохранён в Notion",
             update=update,
-            parse_mode="HTML",
         )
 
     async def cmd_drr(
@@ -693,7 +669,6 @@ class PeterAgent(BaseAgent):
             notion_title=f"ДРР {datetime.now(_UTC).strftime('%d.%m.%Y')}",
             notion_source="cmd:drr",
             update=update,
-            parse_mode="HTML",
         )
 
     async def cmd_funnel(
@@ -863,7 +838,6 @@ class PeterAgent(BaseAgent):
                 notion_source="scheduler:weekly_audit",
                 show_dashboard=False,
                 chat_id=chat_id,
-                parse_mode="HTML",
             )
             logger.info(f"[Питер/weekly_audit] отправлен в chat_id={chat_id}")
         except Exception as e:

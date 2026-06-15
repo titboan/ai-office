@@ -1,6 +1,6 @@
 # План: унификация формата Питера на Rich Markdown
 
-Статус: в работе
+Статус: завершён
 
 ## Контекст
 
@@ -22,7 +22,7 @@
 
 ## Фазы
 
-### [ ] Фаза 1 — Конвертация промптов
+### [x] Фаза 1 — Конвертация промптов
 
 Переписать `PETER_AUDIT_PROMPT` (строки 65–103) и `PETER_DRR_PROMPT` (строки 105–133)
 с HTML на Rich Markdown по таблице замен:
@@ -38,7 +38,7 @@
 Добавить в начало каждого промпта стандартные Rich Markdown правила (те же что в `PETER_SYSTEM`):
 спецсимволы без экранирования, не использовать HTML-теги.
 
-### [ ] Фаза 2 — Упрощение `_send_answer`
+### [x] Фаза 2 — Упрощение `_send_answer`
 
 Текущий `_send_answer` (строки 388–446) содержит `parse_mode: str = "MarkdownV2"` параметр
 и HTML-ветку (~15 строк). После фазы 1 HTML-ветка становится мёртвым кодом.
@@ -63,7 +63,7 @@ async def _send_answer(self, answer, *, notion_title, notion_source,
         await _send_rich(self.bot_token, _cid, answer, reply_markup_dict=markup_dict)
 ```
 
-### [ ] Фаза 3 — Обновить вызовы
+### [x] Фаза 3 — Обновить вызовы
 
 Убрать `parse_mode="HTML"` из трёх вызовов `_send_answer`:
 - `cmd_audit` (~строка 623)
