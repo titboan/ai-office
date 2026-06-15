@@ -1630,22 +1630,28 @@ class MaxAgent(BaseAgent):
         return grouped
 
     @staticmethod
+    def _article(name: str) -> str:
+        import re
+        m = re.search(r'\((.+)\)$', name.strip())
+        return m.group(1) if m else name
+
+    @staticmethod
     def _render_low(grouped: dict) -> list[str]:
-        out = []
+        rows = ["| Артикул | Регион | Шт |", "|---|---|---|"]
         for info in grouped.values():
-            out.append(f"📦 **{info['name']}**")
+            art = MaxAgent._article(info["name"])
             for region, qty in info["regions"].items():
-                out.append(f"  - {region}: {qty} шт")
-        return out
+                rows.append(f"| {art} | {region} | {qty} |")
+        return rows
 
     @staticmethod
     def _render_zero(grouped: dict) -> list[str]:
-        out = []
+        rows = ["| Артикул | Регионы |", "|---|---|"]
         for info in grouped.values():
+            art = MaxAgent._article(info["name"])
             regions = ", ".join(info["regions"].keys())
-            out.append(f"📦 **{info['name']}**")
-            out.append(f"  - {regions}")
-        return out
+            rows.append(f"| {art} | {regions} |")
+        return rows
 
     @staticmethod
     def _split_message(text: str, max_len: int = 4000) -> list[str]:
@@ -1805,10 +1811,10 @@ class MaxAgent(BaseAgent):
             lines.append("✅ Остатки в норме")
         else:
             if mp_low:
-                lines.append("## ⚠️ Заканчиваются (0 < stock ≤ 20)")
+                lines.append("## ⚠️ Заканчиваются (0 < stock ≤ 20)\n")
                 lines.extend(self._render_low(self._group_by_sku(mp_low, get_cluster)))
             if mp_zero:
-                lines.append("\n## ❌ Закончились на складах")
+                lines.append("\n## ❌ Закончились на складах\n")
                 lines.extend(self._render_zero(self._group_by_sku(mp_zero, get_cluster)))
 
         await _send_rich(config.MAX_BOT_TOKEN, target_chat_id, "\n".join(lines))
