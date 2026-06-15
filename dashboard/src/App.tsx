@@ -80,7 +80,7 @@ export default function App() {
             ))}
           </div>
 
-          <RevenueChart data={data.revenue_by_day} />
+          <RevenueChart data={data.revenue_by_day} sales={data.sales_by_day ?? []} />
           <SalesChart data={data.sales_by_day ?? []} />
           <TopProducts data={data.top_products} />
           <DrrGauge revenue={data.revenue} adv={data.adv} />
