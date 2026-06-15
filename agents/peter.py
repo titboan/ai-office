@@ -589,7 +589,19 @@ class PeterAgent(BaseAgent):
                 logger.warning(f"[Питер] handle_task: ошибка сбора данных: {e}")
 
         prompt = f"Аналитическая задача от {from_agent}: {task}{data_str}"
-        answer = await self.think(prompt, chat_id=chat_id, is_task=True)
+        try:
+            from anthropic import AsyncAnthropic
+            client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+            resp = await client.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=config.MAX_TOKENS,
+                system=PETER_SYSTEM,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            answer = resp.content[0].text
+        except Exception as e:
+            logger.warning(f"[Питер] handle_task: ошибка Claude: {e}")
+            answer = f"⚠️ Ошибка анализа: {e}"
         notion_url = await save_research(
             title=task[:50],
             content=_strip_html(answer),
@@ -697,7 +709,15 @@ class PeterAgent(BaseAgent):
 
         await update.message.reply_text("🤔 Анализирую…")
         try:
-            answer = await self.think(prompt, chat_id=chat_id, is_task=True, max_tokens=4096)
+            from anthropic import AsyncAnthropic
+            client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+            resp = await client.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=4096,
+                system=PETER_SYSTEM,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            answer = resp.content[0].text
         except Exception as e:
             logger.error(f"[Питер/report] ошибка Claude: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка анализа: {e}")
