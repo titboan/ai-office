@@ -389,25 +389,14 @@ async def run_all_async() -> None:
     asyncio.create_task(_scheduled_fin_sync_loop())
 
     async def _scheduled_questions_loop():
-        """Мониторинг вопросов покупателей WB + Ozon в 06:00, 11:00, 17:00 UTC."""
-        from datetime import datetime, timezone, timedelta
+        """Мониторинг вопросов покупателей WB + Ozon каждые 15 минут."""
         from db import get_all_active_shops
 
-        _FIRE_HOURS = {6, 11, 17}
+        _INTERVAL = 15 * 60  # 15 минут
 
         while True:
             try:
-                now = datetime.now(timezone.utc)
-                candidates = []
-                for h in _FIRE_HOURS:
-                    t = now.replace(hour=h, minute=0, second=0, microsecond=0)
-                    if t <= now:
-                        t += timedelta(days=1)
-                    candidates.append(t)
-                target = min(candidates)
-                wait_seconds = (target - now).total_seconds()
-                logger.info(f"[questions_scheduler] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
-                await asyncio.sleep(wait_seconds)
+                await asyncio.sleep(_INTERVAL)
 
                 if max_agent is None:
                     continue
