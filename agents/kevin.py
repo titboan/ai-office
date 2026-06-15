@@ -8,7 +8,7 @@ from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
 from tools import create_repo, create_file, create_branch, create_pull_request, enable_pages
-from utils.tg_format import strip_mdv2 as _strip_mdv2
+from utils.tg_rich import send_rich_or_fallback as _send_rich
 from .base_agent import BaseAgent
 
 
@@ -66,10 +66,11 @@ KEVIN_SYSTEM = """Ты — Кевин, разработчик ИИ-офиса с
 Для работы с GitHub используй доступные инструменты.
 Можешь вызывать несколько инструментов последовательно в одном ответе.
 
-Форматируй ответы пользователю в MarkdownV2 для Telegram:
-- *текст* — заголовки этапов
+Форматируй ответы пользователю в Rich Markdown для Telegram:
+- **текст** — заголовки этапов
 - `текст` — названия репо, ветки, URL
-- Спецсимволы . ! ( ) - = внутри текста экранируй через \
+- Спецсимволы . ! ( ) - = писать как есть, без экранирования
+- Длина ответа до 30 000 символов
 - НЕ используй HTML-теги: никаких <b>, <i>, <code>
 
 Отвечай по-русски."""
@@ -280,11 +281,7 @@ class KevinAgent(BaseAgent):
             return
         await update.message.reply_text("👨‍💻 Пишу код и создаю PR…")
         result = await self.handle_task(task, from_agent="команды /code")
-        for chunk in [result[i:i+4000] for i in range(0, len(result), 4000)]:
-            try:
-                await update.message.reply_text(chunk, parse_mode="MarkdownV2")
-            except Exception:
-                await update.message.reply_text(_strip_mdv2(chunk))
+        await _send_rich(self.bot_token, update.effective_chat.id, result)
 
     def _help_text(self) -> str:
         return (

@@ -6,7 +6,7 @@ from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
 from tools import save_content
-from utils.tg_format import strip_mdv2 as _strip_mdv2
+from utils.tg_rich import send_rich_or_fallback as _send_rich
 from .base_agent import BaseAgent
 
 
@@ -15,12 +15,13 @@ ELINA_SYSTEM = """Ты — Элина, копирайтер ИИ-офиса.
 Создаёшь тексты, посты (Telegram/Instagram/LinkedIn), email-рассылки, статьи, сценарии.
 Пиши живо, адаптируй тон под платформу, предлагай несколько вариантов заголовков.
 
-Форматируй ответы в MarkdownV2 для Telegram:
-- *текст* — заголовки и акценты
-- _текст_ — подзаголовки и пояснения
+Форматируй ответы в Rich Markdown для Telegram:
+- **текст** — заголовки и акценты
+- *текст* — подзаголовки и пояснения
 - > текст — готовые тексты для публикации
 - Эмодзи по тематике контента
-- Спецсимволы . ! ( ) - = внутри текста экранируй через \
+- Спецсимволы . ! ( ) - = писать как есть, без экранирования
+- Длина ответа до 30 000 символов
 - НЕ используй HTML-теги: никаких <b>, <i>, <code>
 
 Отвечай по-русски, творчески."""
@@ -108,12 +109,7 @@ class ElinaAgent(BaseAgent):
             return
         await update.message.reply_text("✍️ Пишу текст…")
         result = await self.handle_task(brief, from_agent="команды /write")
-        # Разбиваем если длинный ответ
-        for chunk in [result[i : i + 4000] for i in range(0, len(result), 4000)]:
-            try:
-                await update.message.reply_text(chunk, parse_mode="MarkdownV2")
-            except Exception:
-                await update.message.reply_text(_strip_mdv2(chunk))
+        await _send_rich(self.bot_token, update.effective_chat.id, result)
 
     async def cmd_post(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/post <тема> — написать пост для Telegram."""
@@ -129,10 +125,7 @@ class ElinaAgent(BaseAgent):
             f"Напиши Telegram-пост на тему: {topic}",
             from_agent="команды /post",
         )
-        try:
-            await update.message.reply_text(result, parse_mode="MarkdownV2")
-        except Exception:
-            await update.message.reply_text(_strip_mdv2(result))
+        await _send_rich(self.bot_token, update.effective_chat.id, result)
 
     def _help_text(self) -> str:
         return (

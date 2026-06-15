@@ -8,7 +8,8 @@ from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
 from tools import save_research
-from utils.tg_format import MARKDOWN_FORMAT_RULES, strip_html as _strip_html, strip_mdv2 as _strip_mdv2
+from utils.tg_format import strip_html as _strip_html, strip_mdv2 as _strip_mdv2
+from utils.tg_rich import send_rich_or_fallback as _send_rich
 from .base_agent import BaseAgent
 
 _UTC = timezone.utc
@@ -23,24 +24,31 @@ PETER_SYSTEM = f"""Ты Питер, бизнес-аналитик команды
 Используй display_name товаров (короткие коды: КБ50, ТГ100 и т.д.), не SKU и не длинные названия.
 Никаких упоминаний возвратов.
 
-{MARKDOWN_FORMAT_RULES}
-Эмодзи для разделов: 📊 📈 🎯 ⚠️ ⬆️ 📸 📦 💰 🔄
+Форматируй ответы в Rich Markdown для Telegram:
+- **текст** — заголовки разделов и ключевые числа
+- *текст* — пояснения и уточнения
+- `текст` — артикулы, коды товаров
+- > текст — главный инсайт
+- | таблица | — сравнительные данные (со строкой |---|---|)
+- Эмодзи в начале разделов: 📊 📈 🎯 ⚠️ ⬆️ 📸 📦 💰 🔄
+- Спецсимволы . ! ( ) - = писать как есть, без экранирования
+- НЕ используй HTML-теги: никаких <b>, <i>, <code>
 
 Пример структуры:
-📊 *Оборот за N дней:* X ₽ \(Y ₽/день\)
-WB: X ₽ \(ДРР X%\) | Ozon: X ₽ \(ДРР X%\)
-Тренд: WB ↑X% | Ozon ↓X% \(неделя к неделе\)
+📊 **Оборот за N дней:** X ₽ (Y ₽/день)
+WB: X ₽ (ДРР X%) | Ozon: X ₽ (ДРР X%)
+Тренд: WB ↑X% | Ozon ↓X% (неделя к неделе)
 
-Топ\-3: `КБ50` — X ₽/день, `ТГ100` — X ₽/день
+Топ-3: `КБ50` — X ₽/день, `ТГ100` — X ₽/день
 
 📈 Сейчас: X ₽/день → цель: Y ₽/день → не хватает: Z ₽/день
 
-🎯 *Plan \(топ\-5 действий\):*
-1\. ⬆️ Реклама `КБ50` \+5 000₽/нед → ROAS 4\.2x → \+Y₽/день
-2\. 📸 Переделать фото `ТГ100` — CTR 0\.7% \(норма 2\-3%\), теряем X кликов/день
-3\. 📦 Заказать `КБ30` — осталось 8 дней, провал стока = \-Y₽
-4\. 💰 Снизить ставку `ДС200` — ROAS 1\.1, тратим X₽ в минус
-5\. 🔄 Перенести бюджет Ozon→WB — ДРР Ozon 35% vs WB 18%
+🎯 **Plan (топ-5 действий):**
+1. ⬆️ Реклама `КБ50` +5 000₽/нед → ROAS 4.2x → +Y₽/день
+2. 📸 Переделать фото `ТГ100` — CTR 0.7% (норма 2-3%), теряем X кликов/день
+3. 📦 Заказать `КБ30` — осталось 8 дней, провал стока = -Y₽
+4. 💰 Снизить ставку `ДС200` — ROAS 1.1, тратим X₽ в минус
+5. 🔄 Перенести бюджет Ozon→WB — ДРР Ozon 35% vs WB 18%
 
 > Главный инсайт одной строкой
 
@@ -400,28 +408,40 @@ class PeterAgent(BaseAgent):
             else:
                 answer = f'{answer}\n\n📄 [{notion_link_text}]({notion_url})'
 
-        async def _send_chunk(send_fn, chunk: str, **kwargs) -> None:
-            try:
-                await send_fn(chunk, parse_mode=parse_mode, **kwargs)
-            except Exception:
-                plain = _strip_mdv2(chunk) if parse_mode == "MarkdownV2" else chunk
-                await send_fn(plain, **kwargs)
+        if parse_mode == "HTML":
+            # HTML-пути (audit, drr, weekly_audit) — отправляем через PTB
+            async def _send_chunk(send_fn, chunk: str, **kwargs) -> None:
+                try:
+                    await send_fn(chunk, parse_mode="HTML", **kwargs)
+                except Exception:
+                    await send_fn(chunk, **kwargs)
 
-        if update:
-            for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
-                await _send_chunk(update.message.reply_text, chunk)
-            if show_dashboard and config.DASHBOARD_URL:
-                markup = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=config.DASHBOARD_URL))
-                ]])
-                await update.message.reply_text("Открыть интерактивный дашборд:", reply_markup=markup)
+            if update:
+                for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
+                    await _send_chunk(update.message.reply_text, chunk)
+                if show_dashboard and config.DASHBOARD_URL:
+                    markup = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=config.DASHBOARD_URL))
+                    ]])
+                    await update.message.reply_text("Открыть интерактивный дашборд:", reply_markup=markup)
+            else:
+                _bot = bot or self.app.bot
+                for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
+                    await _send_chunk(
+                        lambda text, **kw: _bot.send_message(chat_id=chat_id, text=text, **kw),
+                        chunk,
+                    )
         else:
-            _bot = bot or self.app.bot
-            for chunk in [answer[i:i+4000] for i in range(0, len(answer), 4000)]:
-                await _send_chunk(
-                    lambda text, **kw: _bot.send_message(chat_id=chat_id, text=text, **kw),
-                    chunk,
-                )
+            # Rich Markdown путь (по умолчанию)
+            _cid = chat_id or (update.effective_chat.id if update else None)
+            if _cid:
+                markup_dict = None
+                if show_dashboard and config.DASHBOARD_URL and update:
+                    markup = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=config.DASHBOARD_URL))
+                    ]])
+                    markup_dict = markup.to_dict()
+                await _send_rich(self.bot_token, _cid, answer, reply_markup_dict=markup_dict)
 
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
         logger.info(f"[Питер] Задача от {from_agent}: {task!r}")
@@ -793,11 +813,7 @@ class PeterAgent(BaseAgent):
             return
         await update.message.reply_text("📊 Анализирую…")
         result = await self.handle_task(data, from_agent="команды /analyze")
-        for chunk in [result[i:i+4000] for i in range(0, len(result), 4000)]:
-            try:
-                await update.message.reply_text(chunk, parse_mode="MarkdownV2")
-            except Exception:
-                await update.message.reply_text(_strip_mdv2(chunk))
+        await _send_rich(self.bot_token, update.effective_chat.id, result)
 
     async def run_weekly_audit(self, chat_id: int) -> None:
         """Автоматический еженедельный аудит — вызывается из планировщика."""

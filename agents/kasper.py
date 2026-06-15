@@ -8,7 +8,7 @@ from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
 from tools import search_web, save_research
-from utils.tg_format import strip_mdv2 as _strip_mdv2
+from utils.tg_rich import send_rich_or_fallback as _send_rich
 from .base_agent import BaseAgent
 
 # Порог: если ответ длиннее — сохраняем полный текст в Notion,
@@ -26,13 +26,15 @@ KASPER_SYSTEM = """Ты — Каспер, исследователь ИИ-офи
 
 Отвечай по-русски, аналитически.
 
-Форматируй ответы в MarkdownV2 для Telegram:
-- *текст* — заголовки разделов (Факты, Анализ, Выводы, Рекомендации)
-- _текст_ — пояснения и уточнения
+Форматируй ответы в Rich Markdown для Telegram:
+- **текст** — заголовки разделов (Факты, Анализ, Выводы, Рекомендации)
+- *текст* — пояснения и уточнения
 - `текст` — URL-адреса, числовые данные, технические термины
 - > текст — ключевые выводы и инсайты
+- | таблица | — сравнительные данные до 20 колонок
 - Эмодзи в начале разделов (🔍 📊 💡 ✅)
-- Спецсимволы . ! ( ) - = внутри текста экранируй через \
+- Спецсимволы . ! ( ) - = писать как есть, без экранирования
+- Длина ответа до 30 000 символов — используй подробные структуры
 - НЕ используй HTML-теги: никаких <b>, <i>, <code>"""
 
 
@@ -179,13 +181,8 @@ class KasperAgent(BaseAgent):
             )
 
             # ── Шаг 4: отправка пользователю ─────────────────────────────────
-            logger.info(f"[Каспер] Шаг 4 — reply_text ({len(answer)} симв.)")
-            chunks = [answer[i : i + 4000] for i in range(0, len(answer), 4000)]
-            for chunk in chunks:
-                try:
-                    await update.message.reply_text(chunk, parse_mode="MarkdownV2")
-                except Exception:
-                    await update.message.reply_text(_strip_mdv2(chunk))
+            logger.info(f"[Каспер] Шаг 4 — send_rich ({len(answer)} симв.)")
+            await _send_rich(self.bot_token, chat_id, answer)
 
             logger.info(f"[Каспер] Ответ отправлен")
             await self.post_to_group(answer[:500] + ("…" if len(answer) > 500 else ""))
@@ -248,11 +245,7 @@ class KasperAgent(BaseAgent):
             return
         await update.message.reply_text(f"🔍 Ищу информацию по теме: {topic}…")
         result = await self.handle_task(topic, from_agent="команды /research")
-        for chunk in [result[i : i + 4000] for i in range(0, len(result), 4000)]:
-            try:
-                await update.message.reply_text(chunk, parse_mode="MarkdownV2")
-            except Exception:
-                await update.message.reply_text(_strip_mdv2(chunk))
+        await _send_rich(self.bot_token, update.effective_chat.id, result)
 
     def _help_text(self) -> str:
         return (
