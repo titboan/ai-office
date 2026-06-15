@@ -1763,31 +1763,90 @@ class MaxAgent(BaseAgent):
             return line
 
         date_str = now_msk.strftime("%d.%m.%Y")
-        lines = [f"# 💰 Статистика — {date_str}\n"]
 
+        def _fmt(n: float) -> str:
+            return f"{int(round(n)):,}".replace(",", " ") + " ₽"
+
+        def _get_o(m: dict, mp: str) -> tuple[int, float]:
+            r = m.get(mp, {})
+            return int(r.get("orders") or 0), float(r.get("revenue") or 0)
+
+        def _get_s(m: dict, mp: str) -> tuple[int, float]:
+            r = m.get(mp, {})
+            return int(r.get("orders") or 0), float(r.get("revenue") or 0)
+
+        def _delta(cc: int, cr: float, pc: int, pr: float) -> str:
+            if pc == 0 and pr == 0:
+                return "—"
+            parts = []
+            dc, dr = cc - pc, cr - pr
+            if dc != 0:
+                parts.append(f"{'▲+' if dc > 0 else '▼'}{abs(dc)}")
+            if abs(dr) >= 1:
+                parts.append(f"{'▲+' if dr > 0 else '▼'}{_fmt(abs(dr))}")
+            return " ".join(parts) or "="
+
+        _MP = [("wb", "🟣 WB"), ("ozon", "🔵 Ozon")]
+        lines = [f"# 💰 Статистика — {date_str}", ""]
+
+        # Сегодня
         lines.append(f"## 📅 Сегодня ({_fmt_date(today_start)})")
-        for mp in ("wb", "ozon"):
-            lines.append(_mp_line(mp, ord_today, sal_today, cmp_orders=ord_yday, cmp_label="вчера"))
+        lines.append("")
+        lines.append("| | Заказы | Выручка | Δ к вчера |")
+        lines.append("|---|---|---|---|")
+        for mp, emoji in _MP:
+            cnt, rev = _get_o(ord_today, mp)
+            pc, pr = _get_o(ord_yday, mp)
+            lines.append(f"| {emoji} | {cnt} | {_fmt(rev)} | {_delta(cnt, rev, pc, pr)} |")
 
-        lines.append(f"\n## 📅 Вчера ({_fmt_date(yesterday_start)})")
-        for mp in ("wb", "ozon"):
-            lines.append(_mp_line(mp, ord_yday, sal_yday))
+        # Вчера
+        lines.append("")
+        lines.append(f"## 📅 Вчера ({_fmt_date(yesterday_start)})")
+        lines.append("")
+        lines.append("| | Заказы | Выручка | Выкуп / Дост. | Выручка |")
+        lines.append("|---|---|---|---|---|")
+        for mp, emoji in _MP:
+            cnt, rev = _get_o(ord_yday, mp)
+            sc, sr = _get_s(sal_yday, mp)
+            sal_lbl = "дост." if mp == "ozon" else "выкуп."
+            lines.append(
+                f"| {emoji} | {cnt} | {_fmt(rev)} "
+                f"| {f'{sc} {sal_lbl}' if sc else '—'} | {_fmt(sr) if sc else '—'} |"
+            )
 
-        lines.append(f"\n## 📅 Неделю назад ({_fmt_date(week_ago_start)})")
-        for mp in ("wb", "ozon"):
-            lines.append(_mp_line(mp, ord_wago, sal_wago))
+        # Неделю назад
+        lines.append("")
+        lines.append(f"## 📅 Неделю назад ({_fmt_date(week_ago_start)})")
+        lines.append("")
+        lines.append("| | Заказы | Выручка |")
+        lines.append("|---|---|---|")
+        for mp, emoji in _MP:
+            cnt, rev = _get_o(ord_wago, mp)
+            lines.append(f"| {emoji} | {cnt} | {_fmt(rev)} |")
 
-        # Показывать динамику за 7 дней только если данные за пред. неделю достаточно полные (≥5 дней)
+        # За 7 дней
         prev_week_days = await get_orders_days_count(owner_chat_id, prev_week_start, prev_week_end)
         prev_week_has_data = prev_week_days >= 5
         logger.info(f"[sales_summary] prev_week_days={prev_week_days}, show_delta={prev_week_has_data}")
-        lines.append("\n## 📈 За 7 дней")
-        for mp in ("wb", "ozon"):
-            lines.append(_mp_line(
-                mp, ord_week, sal_week,
-                cmp_orders=ord_prev_week if prev_week_has_data else None,
-                cmp_label="пред. неделе" if prev_week_has_data else "",
-            ))
+        lines.append("")
+        lines.append("## 📈 За 7 дней")
+        lines.append("")
+        if prev_week_has_data:
+            lines.append("| | Заказы | Выручка | Выкуп / Дост. | Δ к пред. неделе |")
+            lines.append("|---|---|---|---|---|")
+        else:
+            lines.append("| | Заказы | Выручка | Выкуп / Дост. |")
+            lines.append("|---|---|---|---|")
+        for mp, emoji in _MP:
+            cnt, rev = _get_o(ord_week, mp)
+            sc, sr = _get_s(sal_week, mp)
+            sal_lbl = "дост." if mp == "ozon" else "выкуп."
+            s_str = f"{sc} / {_fmt(sr)}" if sc else "—"
+            row = f"| {emoji} | {cnt} | {_fmt(rev)} | {s_str} |"
+            if prev_week_has_data:
+                pc, pr = _get_o(ord_prev_week, mp)
+                row += f" {_delta(cnt, rev, pc, pr)} |"
+            lines.append(row)
 
         await _send_rich(config.MAX_BOT_TOKEN, target_chat_id, "\n".join(lines))
 
