@@ -101,7 +101,7 @@ export default function App() {
             {kpiCards.map(({ label, value, color }) => (
               <div key={label} className="bg-white rounded-xl p-3 shadow-sm text-center">
                 <div className="text-xs text-gray-500">{label}</div>
-                <div className={`text-lg font-bold mt-0.5 ${color}`}>{value}</div>
+                <div className={`text-lg font-bold mt-0.5 ${color || 'text-gray-800'}`}>{value}</div>
               </div>
             ))}
           </div>
