@@ -9,6 +9,10 @@
 !.env.example          # шаблон — коммитить можно
 notion_ids.txt         # генерируется setup_notion.py, содержит реальные ID баз
 
+# ── Frontend (dashboard) ──────────────────────────────────────────────────────
+dashboard/node_modules/
+dashboard/dist/
+
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]

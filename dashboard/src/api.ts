@@ -14,6 +14,29 @@ export interface StockVelocity {
 }
 export interface DayRevenue { date: string; wb: number; ozon: number }
 
+export interface MarginRow {
+  product_id: string; product_name: string
+  revenue: number; qty: number; cost: number
+  op_profit: number; profitability: number
+}
+export interface NetMarginRow {
+  marketplace: string; product_id: string; product_name: string
+  qty: number; revenue: number; payout: number
+  commission: number; logistics: number; storage: number; penalty: number
+  cost_per_unit: number; net_profit: number; net_margin_pct: number
+}
+export interface MomRow { month: string; revenue: number; orders: number }
+export interface ReturnRow {
+  product_id: string; product_name: string
+  returns_count: number; return_amount: number; return_rate: number
+}
+export interface KwRow { keyword: string; position: number; search_count: number; ctr: number }
+export interface FunnelRow {
+  product_id: string; name: string; marketplace: string
+  views: number; add_to_cart: number; orders_count: number; buyouts: number
+  view_to_cart_pct: number; cart_to_order_pct: number
+}
+
 export interface DashboardData {
   period_days: number
   date_from: string
@@ -27,6 +50,13 @@ export interface DashboardData {
   revenue_by_day: DayRevenue[]
   orders_by_day: DayRevenue[]
   sales_by_day: DayRevenue[]
+  margin_wb: MarginRow[]
+  margin_ozon: MarginRow[]
+  net_margin: NetMarginRow[]
+  mom_trends: MomRow[]
+  returns_top: ReturnRow[]
+  kw_top: KwRow[]
+  funnel: FunnelRow[]
 }
 
 const API_URL = import.meta.env.VITE_API_URL ?? ''

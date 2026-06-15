@@ -463,12 +463,38 @@ class PeterAgent(BaseAgent):
                 LIMIT 15
             """, chat_id, date_from, days)
 
+            # 4. Воронка конверсии по товарам
+            funnel = await conn.fetch("""
+                SELECT
+                    f.product_id,
+                    COALESCE(m.display_name, f.product_id) AS name,
+                    f.marketplace,
+                    SUM(f.views)::bigint        AS views,
+                    SUM(f.add_to_cart)::bigint  AS add_to_cart,
+                    SUM(f.orders_count)::bigint AS orders_count,
+                    SUM(f.buyouts)::bigint      AS buyouts,
+                    CASE WHEN SUM(f.views) > 0
+                         THEN ROUND(SUM(f.add_to_cart)::numeric / SUM(f.views) * 100, 2)
+                         ELSE 0 END AS view_to_cart_pct,
+                    CASE WHEN SUM(f.add_to_cart) > 0
+                         THEN ROUND(SUM(f.orders_count)::numeric / SUM(f.add_to_cart) * 100, 2)
+                         ELSE 0 END AS cart_to_order_pct
+                FROM product_funnel_stats f
+                LEFT JOIN product_mapping m
+                       ON m.wb_article = f.product_id OR m.ozon_sku = f.product_id
+                WHERE f.chat_id = $1 AND f.stat_date >= $2
+                GROUP BY f.product_id, m.display_name, f.marketplace
+                ORDER BY views DESC
+                LIMIT 15
+            """, chat_id, date_from)
+
         return {
             "period_days":     days,
             "date_from":       date_from,
             "trend":           [dict(r) for r in trend],
             "product_metrics": [dict(r) for r in product_metrics],
             "stock_velocity":  [dict(r) for r in stock_velocity],
+            "funnel":          [dict(r) for r in funnel],
         }
 
     _PETER_NEXT_REPORT = InlineKeyboardMarkup([[
