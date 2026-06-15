@@ -29,7 +29,7 @@ PTB 22.7 не оборачивает метод → вызываем через 
 
 ## Фазы
 
-### [ ] Фаза 1 — Инфраструктура (`utils/tg_rich.py` — новый файл)
+### [x] Фаза 1 — Инфраструктура (`utils/tg_rich.py` — новый файл)
 
 ```python
 RICH_MARKDOWN_FORMAT_RULES = """
@@ -91,7 +91,7 @@ async def send_rich_or_fallback(
 
 ---
 
-### [ ] Фаза 2 — `base_agent.py`: центральный путь отправки
+### [x] Фаза 2 — `base_agent.py`: центральный путь отправки
 
 **`_notify_user()` (line 745):**
 - Порог чанкинга: 4 000 → **30 000** (практически все отчёты влезают целиком)
@@ -104,7 +104,7 @@ async def send_rich_or_fallback(
 
 ---
 
-### [ ] Фаза 3 — Системные промпты агентов (GFM вместо MarkdownV2)
+### [x] Фаза 3 — Системные промпты агентов (GFM вместо MarkdownV2)
 
 **`utils/tg_format.py`:**
 - Добавить `from utils.tg_rich import RICH_MARKDOWN_FORMAT_RULES` (re-export)
@@ -133,7 +133,7 @@ async def send_rich_or_fallback(
 
 ---
 
-### [ ] Фаза 4 — Хардкод-строки в `marta.py` и `base_agent.py`
+### [x] Фаза 4 — Хардкод-строки в `marta.py` и `base_agent.py`
 
 Ручные MarkdownV2-строки в коде (не вывод Claude) → Rich Markdown:
 - `*текст*` → `**текст**` (bold в GFM = двойные звёздочки)
@@ -146,7 +146,7 @@ async def send_rich_or_fallback(
 
 ---
 
-### [ ] Фаза 5 — Кастомные пути отправки в агентах
+### [x] Фаза 5 — Кастомные пути отправки в агентах
 
 **`peter.py` — `_send_answer()` (line 378):**
 - MarkdownV2-путь (default) → `send_rich_or_fallback(self.bot_token, chat_id, text)`
@@ -200,4 +200,4 @@ async def send_rich_or_fallback(
 5. Fallback: на время подменить токен → убедиться что приходит читаемый HTML, не ошибка
 6. Ева/Тина/Max-отчёты — убедиться что НЕ изменились
 
-Статус: **в работе**
+Статус: **завершён**
