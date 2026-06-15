@@ -1374,6 +1374,16 @@ class MaxAgent(BaseAgent):
 
     async def cmd_sync_keywords(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/sync_keywords — синхронизация ключевых слов и позиций WB."""
+        await update.message.reply_text(
+            "⚠️ <b>Функция временно недоступна</b>\n\n"
+            "WB закрыл публичный API для ключевых слов (/api/v1/analytics/search-keywords → 404).\n"
+            "Данные о позициях доступны только через дашборд WB Analytics в браузере.\n\n"
+            "Следим за обновлениями документации WB API.",
+            parse_mode="HTML",
+        )
+        return
+
+        # ──────── код ниже сохранён до появления рабочего endpoint ────────
         chat_id = update.effective_user.id
         await update.message.reply_text("🔑 Синхронизирую ключевые слова WB…")
         from db import get_marketplace_shops, upsert_search_keyword, get_pool
@@ -3332,7 +3342,6 @@ class MaxAgent(BaseAgent):
             BotCommand("sync_fin",         "Финансовые отчёты (комиссии, выплаты)"),
             BotCommand("sync_funnel",      "Воронка конверсии карточек"),
             BotCommand("sync_sku",         "Подтянуть Ozon SKU в реестр"),
-            BotCommand("sync_keywords",    "Ключевые слова и позиции WB"),
             BotCommand("sync_returns",     "Аналитика возвратов WB + Ozon"),
             BotCommand("sync_promotions",  "Акции и кампании WB + Ozon"),
             BotCommand("data_status",      "Состояние данных в БД"),
