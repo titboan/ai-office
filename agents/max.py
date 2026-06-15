@@ -1633,9 +1633,9 @@ class MaxAgent(BaseAgent):
     def _render_low(grouped: dict) -> list[str]:
         out = []
         for info in grouped.values():
-            out.append(f"📦 <b>{escape(info['name'])}</b>")
+            out.append(f"📦 **{info['name']}**")
             for region, qty in info["regions"].items():
-                out.append(f"  • {region}: {qty} шт")
+                out.append(f"  - {region}: {qty} шт")
         return out
 
     @staticmethod
@@ -1643,8 +1643,8 @@ class MaxAgent(BaseAgent):
         out = []
         for info in grouped.values():
             regions = ", ".join(info["regions"].keys())
-            out.append(f"📦 <b>{escape(info['name'])}</b>")
-            out.append(f"  • {regions}")
+            out.append(f"📦 **{info['name']}**")
+            out.append(f"  - {regions}")
         return out
 
     @staticmethod
@@ -1800,19 +1800,18 @@ class MaxAgent(BaseAgent):
         mp_low  = [s for s in low_stocks if s["marketplace"] == marketplace and 0 < s["stock"] <= 20]
         mp_zero = [s for s in low_stocks if s["marketplace"] == marketplace and s["stock"] == 0]
 
-        lines = [f"{emoji} <b>{label} — остатки</b>\n"]
+        lines = [f"# {emoji} {label} — остатки\n"]
         if not mp_low and not mp_zero:
             lines.append("✅ Остатки в норме")
         else:
             if mp_low:
-                lines.append("⚠️ <b>Заканчиваются</b> (0 < stock ≤ 20)")
+                lines.append("## ⚠️ Заканчиваются (0 < stock ≤ 20)")
                 lines.extend(self._render_low(self._group_by_sku(mp_low, get_cluster)))
             if mp_zero:
-                lines.append("\n❌ <b>Закончились на складах</b>")
+                lines.append("\n## ❌ Закончились на складах")
                 lines.extend(self._render_zero(self._group_by_sku(mp_zero, get_cluster)))
 
-        for part in self._split_message("\n".join(lines)):
-            await _bot.send_message(chat_id=target_chat_id, text=part, parse_mode="HTML")
+        await _send_rich(config.MAX_BOT_TOKEN, target_chat_id, "\n".join(lines))
 
     async def send_daily_summary(self, owner_chat_id: int, target_chat_id: int, bot=None) -> None:
         """Синхронизировать данные и отправить ежедневную сводку тремя сообщениями."""
