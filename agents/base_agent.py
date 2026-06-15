@@ -24,6 +24,7 @@ from telegram.ext import (
 from config import config
 from db import log_event
 from utils.tg_format import clean_agent_output as _clean_output, escape_mdv2 as _escape_mdv2, strip_mdv2 as _strip_mdv2
+from utils.tg_rich import send_rich_or_fallback as _send_rich
 from task_queue import (
     get_next_task,
     mark_running,
@@ -438,10 +439,16 @@ class BaseAgent(ABC):
         ]
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(self._help_text(), parse_mode="MarkdownV2")
+        await _send_rich(
+            self.bot_token, update.effective_chat.id, self._help_text(),
+            reply_to_message_id=update.message.message_id,
+        )
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(self._help_text(), parse_mode="MarkdownV2")
+        await _send_rich(
+            self.bot_token, update.effective_chat.id, self._help_text(),
+            reply_to_message_id=update.message.message_id,
+        )
 
     async def cmd_reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id
@@ -464,10 +471,10 @@ class BaseAgent(ABC):
             await context.bot.send_chat_action(chat_id=chat_id, action="typing")
             answer = await self.think(user_text, chat_id)
             answer = _clean_output(answer)
-            try:
-                await update.message.reply_text(answer, parse_mode="MarkdownV2")
-            except Exception:
-                await update.message.reply_text(_strip_mdv2(answer))
+            await _send_rich(
+                self.bot_token, update.effective_chat.id, answer,
+                reply_to_message_id=update.message.message_id,
+            )
             logger.info(f"[{self.name}] Ответ отправлен ({len(answer)} символов)")
 
             await self.post_to_group(answer)
@@ -690,7 +697,7 @@ class BaseAgent(ABC):
                                 "marta": getattr(config, "MARTA_BOT_TOKEN", None),
                             }
                             reply_token = _ORIGIN_TOKENS.get(task.from_agent)
-                            result_msg = f"✅ {self.emoji} <b>{self.name}:</b>\n\n{result}"
+                            result_msg = f"✅ {self.emoji} **{self.name}:**\n\n{result}"
                             await self._notify_user(
                                 task.chat_id,
                                 result_msg,
@@ -709,7 +716,7 @@ class BaseAgent(ABC):
                     if task.chain_id:
                         await self._handle_chain_failure(task)
                     elif task.chat_id:
-                        await self._notify_user(task.chat_id, f"⏱️ {self.emoji} *{_escape_mdv2(self.name)}*: задача превысила лимит времени\\.\n\nПопробуй разбить задачу на части\\.")
+                        await self._notify_user(task.chat_id, f"⏱️ {self.emoji} **{self.name}**: задача превысила лимит времени.\n\nПопробуй разбить задачу на части.")
                 except Exception as e:
                     await mark_failed(task.id, f"{type(e).__name__}: {e}", retry=True)
                     await log_event(
@@ -743,38 +750,18 @@ class BaseAgent(ABC):
         return _re.sub(r"<[^>]+>", "", text)
 
     async def _notify_user(self, chat_id: int, text: str, reply_markup=None, bot_token: str | None = None) -> None:
-        """Отправить сообщение пользователю.
+        """Отправить сообщение пользователю через Rich Messages (Bot API 10.1).
 
-        bot_token — если передан, использует этот токен вместо своего (для ответа через Марту).
-        Разбивает длинные сообщения на части (лимит Telegram 4096 символов).
-        Fallback: MarkdownV2 → escape всего текста → plain text.
+        bot_token — если передан, использует этот токен (для ответа через Марту).
+        Fallback: sendRichMessage → sendMessage HTML → plain text.
         """
         token = bot_token or self.bot_token
         if not token:
             return
-
         text = _clean_output(text)
-        chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)]
-
-        async def _send(bot: Bot) -> None:
-            for i, chunk in enumerate(chunks):
-                markup = reply_markup if i == len(chunks) - 1 else None
-                try:
-                    await bot.send_message(chat_id=chat_id, text=chunk, parse_mode="MarkdownV2", reply_markup=markup)
-                except Exception as e:
-                    logger.warning(f"[{self.name}] MarkdownV2 rejected ({e!s:.80}), пробую plain text")
-                    plain = _strip_mdv2(chunk)
-                    try:
-                        await bot.send_message(chat_id=chat_id, text=plain, reply_markup=markup)
-                    except Exception as e2:
-                        logger.warning(f"[{self.name}] plain text тоже не отправился: {e2}")
-
+        markup_dict = reply_markup.to_dict() if reply_markup else None
         try:
-            if self.app and (not bot_token or bot_token == self.bot_token):
-                await _send(self.app.bot)
-            else:
-                async with Bot(token=token) as bot:
-                    await _send(bot)
+            await _send_rich(token, chat_id, text, reply_markup_dict=markup_dict)
         except Exception as e:
             logger.warning(f"[{self.name}] _notify_user ошибка (chat={chat_id}): {e}")
 
@@ -879,22 +866,22 @@ class BaseAgent(ABC):
                         if len(_re.sub(r"<[^>]+>", "", r_result)) > 200:
                             excerpt += "…"
                         if excerpt:
-                            result_lines += f"{emoji} <b>{name}:</b> {excerpt}\n\n"
+                            result_lines += f"{emoji} **{name}:** {excerpt}\n\n"
 
                 notion_url = (
                     f"https://notion.so/{notion_page_id.replace('-', '')}"
                     if notion_page_id else None
                 )
 
-                final_msg = "🎉 <b>Команда завершила работу!</b>\n\n"
+                final_msg = "🎉 **Команда завершила работу!**\n\n"
                 if result_lines:
                     final_msg += result_lines
                 if github_pages_url:
-                    final_msg += f'🌐 <a href="{github_pages_url}">Открыть сайт</a>\n'
+                    final_msg += f'🌐 [Открыть сайт]({github_pages_url})\n'
                 elif github_repo_url:
-                    final_msg += f'📦 <a href="{github_repo_url}">Репозиторий</a>\n'
+                    final_msg += f'📦 [Репозиторий]({github_repo_url})\n'
                 if notion_url:
-                    final_msg += f'📋 <a href="{notion_url}">Открыть в Notion</a>'
+                    final_msg += f'📋 [Открыть в Notion]({notion_url})'
 
                 buttons = []
                 if github_pages_url:
