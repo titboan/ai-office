@@ -307,7 +307,7 @@ class WBClient:
                 "product_name": item.get("subject", "") or supplier_article,
                 "quantity":    int(item.get("quantity", 1) or 1),
                 "seller_price": float(item.get("priceWithDisc") or 0),
-                "order_date":   item.get("lastChangeDate", ""),
+                "order_date":   item.get("date") or item.get("lastChangeDate", ""),
             })
         logger.info(f"[WB.get_orders_all] итого не отменённых: {len(results)}")
         logger.info(f"[WB.get_orders_all] sample order_ids: {[o.get('order_id') for o in results[:3]]}")
@@ -1321,8 +1321,7 @@ class OzonClient:
                     "product_id":   str((dims[0] if dims else {}).get("id", "")),
                     "product_name": str((dims[0] if dims else {}).get("name", "")),
                     "quantity":     qty,
-                    # TODO: seller_price для Ozon — отдельная склейка posting (/v3/posting/*, products[].price) с analytics по SKU (Шаг 1b)
-                    "seller_price": None,
+                    "seller_price": round(rev / qty, 2) if qty > 0 else None,
                     "order_date":   df_str,
                 })
             if len(rows) < 1000 or offset >= 10000:

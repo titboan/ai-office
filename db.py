@@ -857,7 +857,10 @@ async def save_order(
                 (chat_id, marketplace, order_id, product_id, product_name,
                  quantity, order_date, seller_price)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            ON CONFLICT (marketplace, order_id) DO NOTHING
+            ON CONFLICT (marketplace, order_id) DO UPDATE
+                SET seller_price = EXCLUDED.seller_price
+                WHERE marketplace_orders.seller_price IS NULL
+                  AND EXCLUDED.seller_price IS NOT NULL
             """,
             chat_id, marketplace, order_id, product_id, product_name,
             quantity, order_date, seller_price,
