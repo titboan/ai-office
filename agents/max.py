@@ -3095,7 +3095,10 @@ class MaxAgent(BaseAgent):
                                 FROM marketplace_orders o
                                 WHERE o.chat_id = $1
                                   AND o.marketplace = s.marketplace
-                                  AND o.product_id  = s.product_id
+                                  -- marketplace_stocks хранит ozon_offer_id, marketplace_orders — ozon_sku
+                                  AND o.product_id  = CASE WHEN s.marketplace = 'ozon'
+                                                            THEN COALESCE(m.ozon_sku, s.product_id)
+                                                            ELSE s.product_id END
                                   AND o.order_date >= NOW() - INTERVAL '14 days'),
                                0
                            ) AS daily_velocity
@@ -3105,7 +3108,7 @@ class MaxAgent(BaseAgent):
                         (s.marketplace = 'ozon' AND m.ozon_offer_id = s.product_id)
                     )
                     WHERE s.chat_id = $1
-                    GROUP BY s.marketplace, s.product_id, m.display_name
+                    GROUP BY s.marketplace, s.product_id, m.display_name, m.ozon_sku
                 """, chat_id)
 
             alerts = []
