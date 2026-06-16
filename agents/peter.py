@@ -420,7 +420,8 @@ class PeterAgent(BaseAgent):
                 GROUP BY marketplace
             """, chat_id)
 
-            # 2. CTR, ROAS, расход по товарам (из product_adv_stats + orders)
+            # 2. CTR, ROAS, расход по товарам (из product_adv_stats + выкупы)
+            # ROAS = выкупы (продажи, без возвратов) / расход на рекламу
             product_metrics = await conn.fetch("""
                 SELECT
                     p.product_id,
@@ -433,12 +434,12 @@ class PeterAgent(BaseAgent):
                          ELSE 0 END                                 AS avg_ctr,
                     SUM(p.spend)::numeric(12,2)                     AS adv_spend,
                     SUM(p.orders_count)::integer                    AS adv_orders,
-                    COALESCE(o.revenue, 0)::numeric(12,2)           AS revenue,
+                    COALESCE(s.buyouts, 0)::numeric(12,2)           AS buyouts,
                     CASE WHEN SUM(p.spend) > 0
-                         THEN ROUND(COALESCE(o.revenue, 0) / SUM(p.spend), 2)
+                         THEN ROUND(COALESCE(s.buyouts, 0) / SUM(p.spend), 2)
                          ELSE 0 END                                 AS roas,
-                    CASE WHEN COALESCE(o.revenue, 0) > 0
-                         THEN ROUND(SUM(p.spend) / COALESCE(o.revenue, 0) * 100, 2)
+                    CASE WHEN COALESCE(s.buyouts, 0) > 0
+                         THEN ROUND(SUM(p.spend) / COALESCE(s.buyouts, 0) * 100, 2)
                          ELSE NULL END                              AS drr
                 FROM product_adv_stats p
                 LEFT JOIN product_mapping m
@@ -446,13 +447,13 @@ class PeterAgent(BaseAgent):
                        OR m.ozon_sku   = p.product_id
                 LEFT JOIN (
                     SELECT product_id,
-                           SUM(seller_price * quantity)::numeric(12,2) AS revenue
-                    FROM marketplace_orders
-                    WHERE chat_id = $1 AND order_date >= $2
+                           SUM(price * quantity)::numeric(12,2) AS buyouts
+                    FROM marketplace_sales
+                    WHERE chat_id = $1 AND sale_date >= $2 AND is_return = FALSE
                     GROUP BY product_id
-                ) o ON o.product_id = p.product_id
+                ) s ON s.product_id = p.product_id
                 WHERE p.chat_id = $1 AND p.stat_date >= $2
-                GROUP BY p.product_id, m.display_name, p.marketplace, o.revenue
+                GROUP BY p.product_id, m.display_name, p.marketplace, s.buyouts
                 ORDER BY adv_spend DESC
                 LIMIT 20
             """, chat_id, date_from)
@@ -697,7 +698,7 @@ class PeterAgent(BaseAgent):
 - Если net_margin НЕ пустой — используй его как основной показатель прибыльности, не GROSS.
 - Комиссия WB ~15-25%, логистика ~50-150₽/заказ; Ozon ~5-15%.
 - product_metrics.avg_ctr — CTR из рекламы (если 0 — данные ещё не накоплены после /sync_adv).
-- product_metrics.roas — ROAS = оборот/расход. Если 0 — данные не синхронизированы.
+- product_metrics.roas — ROAS = выкупы (продажи без возвратов)/расход на рекламу. Если 0 — данные не синхронизированы.
 - stock_velocity.days_left — дней осталось стока при текущем темпе продаж. 999 = нет продаж.
 - Если margin_ozon пустой — Ozon-заказы есть, но маппинг SKU не позволил посчитать маржу.
 - mom_trends — помесячная выручка и заказы за последние 60 дней. Если 2 месяца — посчитай MoM рост: (текущий месяц / предыдущий − 1) × 100%. Выведи одной строкой в блоке отчёта.
@@ -830,12 +831,12 @@ class PeterAgent(BaseAgent):
 ОБОРОТ ПО ПЛОЩАДКАМ:
 {json.dumps(data["revenue"], ensure_ascii=False, default=str, indent=2)}
 
-МЕТРИКИ ПО ТОВАРАМ (CTR, ROAS, расход, оборот):
+МЕТРИКИ ПО ТОВАРАМ (CTR, ROAS, расход, выкупы):
 {json.dumps(adv_data["product_metrics"], ensure_ascii=False, default=str, indent=2)}
 
 ВАЖНО:
-- ДРР = adv_spend / revenue × 100%
-- ROAS = revenue / adv_spend
+- ДРР = adv_spend / buyouts × 100%
+- ROAS = buyouts / adv_spend (выкупы, без возвратов)
 - Если product_metrics пустой — данные ещё не синхронизированы (/sync_adv)
 - avg_ctr в процентах (2.5 = 2.5%)
 - Используй display_name товаров (поле "name") если есть

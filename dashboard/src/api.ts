@@ -6,7 +6,7 @@ export interface TrendRow { marketplace: string; week_current: number; week_prev
 export interface ProductMetric {
   product_id: string; name: string; marketplace: string
   views: number; clicks: number; avg_ctr: number
-  adv_spend: number; adv_orders: number; revenue: number; roas: number
+  adv_spend: number; adv_orders: number; buyouts: number; roas: number
 }
 export interface StockVelocity {
   marketplace: string; product_id: string; name: string

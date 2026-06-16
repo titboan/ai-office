@@ -13,7 +13,7 @@ description: >
 
 - `/report [цель=200000] [период=14]` — полный анализ: выручка, NET-маржа, ДРР по товару, остатки
 - `/audit` — 30-дневный аудит: оценка X/10, SWOT, KPI, топ-5 действий → Notion
-- `/drr [период=14]` — ДРР и ROAS по товару (из product_adv_stats JOIN marketplace_orders)
+- `/drr [период=14]` — ДРР и ROAS по товару (из product_adv_stats JOIN marketplace_sales, ROAS = выкупы/расход на рекламу)
 - `/funnel` — анализ воронки: views→cart→order, где узкое место
 - `/analyze <вопрос>` — произвольный бизнес-анализ
 
