@@ -338,6 +338,38 @@ async def run_all_async() -> None:
 
     asyncio.create_task(_scheduled_questions_loop())
 
+    async def _scheduled_orders_sync_loop():
+        """Синхронизация заказов, продаж и остатков WB + Ozon каждый час."""
+        from db import get_all_active_shops
+
+        _INTERVAL = 60 * 60  # 1 час
+
+        while True:
+            try:
+                await asyncio.sleep(_INTERVAL)
+
+                if max_agent is None:
+                    continue
+
+                shops = await get_all_active_shops()
+                unique_chats = list({s["chat_id"] for s in shops})
+                logger.info(f"[orders_sync] синхронизация для {len(unique_chats)} пользователей")
+
+                for chat_id in unique_chats:
+                    try:
+                        await max_agent.sync_marketplace_data(chat_id)
+                        logger.info(f"[orders_sync] chat_id={chat_id} завершено")
+                    except Exception as e:
+                        logger.error(f"[orders_sync] chat_id={chat_id} ошибка: {e}")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[orders_sync] критическая ошибка: {e}")
+                await asyncio.sleep(60)
+
+    asyncio.create_task(_scheduled_orders_sync_loop())
+
     async def _weekly_audit_loop():
         """Еженедельный аудит магазина — понедельник 07:00 UTC (10:00 МСК)."""
         from datetime import datetime, timezone, timedelta
