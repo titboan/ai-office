@@ -6,6 +6,7 @@
 
 - [no-big-rewrites.md](no-big-rewrites.md) — эволюция, не переписывание (>40% файла — спросить)
 - [check-infra-before-code.md](check-infra-before-code.md) — проверять инфраструктурные ограничения ДО написания кода
+- [verify-external-api-fields-before-merge.md](verify-external-api-fields-before-merge.md) — проверять имена полей внешнего API на живых данных ДО мерджа
 - [russia-payment-constraints.md](russia-payment-constraints.md) — в РФ не работают международные платёжные инструменты
 
 ## Git и деплой
