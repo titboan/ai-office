@@ -481,8 +481,8 @@ class PeterAgent(BaseAgent):
                          ELSE 999 END                              AS days_left
                 FROM marketplace_stocks s
                 LEFT JOIN product_mapping m
-                       ON m.wb_article = s.product_id
-                       OR m.ozon_offer_id = s.product_id
+                       ON (s.marketplace = 'wb'   AND m.wb_article    = s.product_id)
+                       OR (s.marketplace = 'ozon' AND m.ozon_offer_id = s.product_id)
                 LEFT JOIN (
                     SELECT
                         o.marketplace,
@@ -503,8 +503,11 @@ class PeterAgent(BaseAgent):
                 WHERE s.chat_id = $1
                 GROUP BY s.marketplace, s.product_id, m.display_name, v.daily_orders
                 ORDER BY days_left ASC
-                LIMIT 15
             """, chat_id, date_from, days)
+            # LIMIT не ставим здесь: товар может продаваться на WB и Ozon с разной
+            # скоростью, и обрезка по строкам до группировки на фронте выкидывала
+            # одну из площадок (см. retrospectives/2026-06-16_dashboard-sync-roas-ozon-id-mismatch.md).
+            # Товаров мало (десятки), фронт сам группирует по display_name и берёт топ-15.
 
             # 4. Воронка конверсии по товарам
             funnel = await conn.fetch("""
