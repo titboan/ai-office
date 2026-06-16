@@ -1422,129 +1422,98 @@ class OzonClient:
         logger.info(f"[Ozon.get_financial_report] {date_from}–{date_to}: {len(results)} агрегатов")
         return results
 
-    _MARKETING_SERVICES = {
-        "MarketingSellerLeadOrders",
-        "MarketingSellerSearch",
-        "SellerClicksMarketing",
-        "SellerPremiumSubscription",
-        "PremiumCashback",
-        "MarketingSellerBrandBanner",
-        "ClientServiceFinancial",
-    }
-
-    # Логистика, эквайринг и комиссии — НЕ реклама, не входят в ДРР.
-    # Уже учитываются в get_fin_finreport (logistics/commission → payout → NET-маржа).
-    # Перечислены здесь только чтобы не дублировать ntfy-алерт об "неизвестном сервисе".
-    _NON_MARKETING_SERVICES = {
-        "MarketplaceServiceItemDirectFlowLogistic",
-        "ItemAgentServiceStarsMembership",
-        "MarketplaceRedistributionOfAcquiringOperation",
-        "MarketplaceServiceItemRedistributionLastMileCourier",
-        "MarketplaceServiceProductMovementFromWarehouse",
-        "MarketplaceServiceBrandCommission",
-        "MarketplaceServiceItemReturnFlowLogistic",
-        "MarketplaceServiceItemDeliveryToHandoverPlaceOzon",
-    }
-
     async def get_fin_adv_spend(self, date_from: str, date_to: str) -> list[dict]:
-        """Рекламные расходы из финансовых транзакций Ozon (все типы: Premium, бренд, оплата за заказ, клики).
+        """ВРЕМЕННО ДИАГНОСТИЧЕСКАЯ: попытка найти Premium/бренд/CPC/CPO расходы в финтранзакциях Ozon.
 
-        Читает /v3/finance/transaction/list, извлекает маркетинговые services[],
-        группирует по дате. Возвращает [{"date": "YYYY-MM-DD", "adv_spend": float}].
-        При встрече неизвестного сервиса с суммой > 1000 ₽ отправляет ntfy-алерт.
+        Прошлая версия искала их в services[] заказов/возвратов (transaction_type=orders/returns) —
+        там оказалась только логистика (DirectFlowLogistic, LastMileCourier и т.п.), реклама не нашлась.
+        Реальная реклама из приложения Ozon (Premium, бренд, CPC, CPO) туда не попадает.
+
+        Эта версия дополнительно опрашивает transaction_type=services/compensation/other
+        (на случай если "all" в Ozon API их не включает — известная особенность) и логирует
+        ВСЕ операции верхнего уровня (operation_type + amount), не только services[] внутри заказов.
+        По этому логу нужно вручную найти operation_type для Premium/бренда/CPO и точные суммы.
+
+        Возвращает [] до тех пор, пока реальные operation_type не будут известны и зашиты в код.
         """
         import json as _json
         from collections import defaultdict as _dd
         url = f"{self._BASE}/v3/finance/transaction/list"
-        daily: dict[str, float] = {}
-        all_services: dict[str, float] = _dd(float)   # для аудита
-        page = 1
+        all_services:   dict[str, float] = _dd(float)   # services[] внутри заказов/возвратов (для аудита)
+        all_operations: dict[str, float] = _dd(float)   # operation_type верхнего уровня (для аудита)
+        seen_op_ids: set = set()
 
-        while True:
-            body = {
-                "filter": {
-                    "date": {
-                        "from": f"{date_from}T00:00:00.000Z",
-                        "to":   f"{date_to}T23:59:59.000Z",
+        for tx_type in ("all", "services", "compensation", "other"):
+            page = 1
+            while True:
+                body = {
+                    "filter": {
+                        "date": {
+                            "from": f"{date_from}T00:00:00.000Z",
+                            "to":   f"{date_to}T23:59:59.000Z",
+                        },
+                        "transaction_type": tx_type,
                     },
-                    "transaction_type": "all",
-                },
-                "page":      page,
-                "page_size": 1000,
-            }
-            data = None
-            async with aiohttp.ClientSession() as s:
-                for attempt in range(3):
-                    try:
-                        async with s.post(
-                            url, json=body, headers=self._headers(),
-                            timeout=aiohttp.ClientTimeout(total=30),
-                        ) as resp:
-                            raw = await resp.text()
-                            if resp.status == 429:
-                                await asyncio.sleep(60)
-                                continue
-                            if resp.status != 200:
-                                logger.error(f"[Ozon.get_fin_adv_spend] HTTP {resp.status}: {raw[:200]}")
+                    "page":      page,
+                    "page_size": 1000,
+                }
+                data = None
+                async with aiohttp.ClientSession() as s:
+                    for attempt in range(3):
+                        try:
+                            async with s.post(
+                                url, json=body, headers=self._headers(),
+                                timeout=aiohttp.ClientTimeout(total=30),
+                            ) as resp:
+                                raw = await resp.text()
+                                if resp.status == 429:
+                                    await asyncio.sleep(60)
+                                    continue
+                                if resp.status != 200:
+                                    logger.error(f"[Ozon.get_fin_adv_spend] HTTP {resp.status}: {raw[:200]}")
+                                    break
+                                data = _json.loads(raw)
                                 break
-                            data = _json.loads(raw)
+                        except Exception as e:
+                            logger.error(f"[Ozon.get_fin_adv_spend] {e}")
                             break
-                    except Exception as e:
-                        logger.error(f"[Ozon.get_fin_adv_spend] {e}")
-                        break
-            if data is None:
-                break
+                if data is None:
+                    break
 
-            operations = (data.get("result") or {}).get("operations") or []
-            for op in operations:
-                op_date = (op.get("operation_date") or date_from)[:10]
-                for svc in (op.get("services") or []):
-                    name  = svc.get("name", "")
-                    price = abs(float(svc.get("price", 0) or 0))
-                    if price > 0:
-                        all_services[name] += price
-                        if name in self._MARKETING_SERVICES:
-                            daily[op_date] = daily.get(op_date, 0.0) + price
+                operations = (data.get("result") or {}).get("operations") or []
+                for op in operations:
+                    op_id = op.get("operation_id")
+                    if op_id is not None:
+                        if op_id in seen_op_ids:
+                            continue
+                        seen_op_ids.add(op_id)
 
-            page_count = (data.get("result") or {}).get("page_count") or 1
-            if page >= page_count or not operations:
-                break
-            page += 1
+                    op_type = op.get("operation_type") or op.get("operation_type_name") or "?"
+                    amount  = abs(float(op.get("amount", 0) or 0))
+                    if amount > 0:
+                        all_operations[op_type] += amount
 
-        # Логируем все встреченные сервисы для аудита
+                    for svc in (op.get("services") or []):
+                        name  = svc.get("name", "")
+                        price = abs(float(svc.get("price", 0) or 0))
+                        if price > 0:
+                            all_services[name] += price
+
+                page_count = (data.get("result") or {}).get("page_count") or 1
+                if page >= page_count or not operations:
+                    break
+                page += 1
+
         logger.info(
-            "[Ozon.get_fin_adv_spend] все сервисы с расходами: "
+            "[Ozon.get_fin_adv_spend] services[] внутри заказов/возвратов: "
             + ", ".join(f"{n}={v:.0f}₽" for n, v in sorted(all_services.items(), key=lambda x: -x[1]))
         )
-
-        # Алерт если нашли неизвестный сервис с крупной суммой
-        unknown = {
-            n: v for n, v in all_services.items()
-            if n not in self._MARKETING_SERVICES
-            and n not in self._NON_MARKETING_SERVICES
-            and v > 1000
-        }
-        if unknown:
-            try:
-                from config import config as _cfg
-                from tools.ntfy import send_push
-                lines = "\n".join(f"• {n}: {v:,.0f} руб." for n, v in sorted(unknown.items(), key=lambda x: -x[1]))
-                await send_push(
-                    title="Ozon: новый тип рекламных расходов",
-                    message=(
-                        f"В финотчёте Ozon появились списания с неизвестными названиями — "
-                        f"они НЕ учтены в ДРР.\n\n{lines}\n\n"
-                        f"Добавь эти названия в _MARKETING_SERVICES в tools/marketplace.py."
-                    ),
-                    topic=_cfg.NTFY_TOPIC,
-                    priority="high",
-                )
-            except Exception as e:
-                logger.error(f"[Ozon.get_fin_adv_spend] ntfy alert failed: {e}")
-
-        results = [{"date": d, "adv_spend": round(v, 2)} for d, v in sorted(daily.items())]
-        logger.info(f"[Ozon.get_fin_adv_spend] {date_from}–{date_to}: {len(results)} дней рекламных расходов")
-        return results
+        logger.info(
+            "[Ozon.get_fin_adv_spend] операции верхнего уровня (operation_type=amount): "
+            + ", ".join(f"{n}={v:.0f}₽" for n, v in sorted(all_operations.items(), key=lambda x: -x[1]))
+        )
+        logger.info(f"[Ozon.get_fin_adv_spend] {date_from}–{date_to}: реклама не определена, диагностика выше")
+        return []
 
     async def get_funnel_stats(self, date_from: str, date_to: str) -> list[dict]:
         """Воронка конверсии карточки Ozon через /v1/analytics/data с метриками показов и корзины."""
@@ -1723,13 +1692,15 @@ class OzonPerformanceClient:
             return []
         headers = {"Authorization": f"Bearer {token}"}
 
-        # Шаг 1: получить список кампаний
+        # Шаг 1: получить список кампаний — без фильтра по state, иначе теряем
+        # завершённые/остановленные кампании (CPO/брендовые часто короткие).
+        # Статистика всё равно запрашивается за конкретный период date_from–date_to,
+        # кампании без активности в этом периоде отсеются позже при парсинге CSV.
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"{self._BASE}/api/client/campaign",
                     headers=headers,
-                    params={"state": "CAMPAIGN_STATE_RUNNING"},
                     timeout=_TIMEOUT,
                 ) as resp:
                     if resp.status != 200:
@@ -1759,7 +1730,7 @@ class OzonPerformanceClient:
         if not campaign_ids:
             logger.info("[OzonPerf] нет кампаний")
             return []
-        logger.info(f"[OzonPerf] всего RUNNING: {len(all_campaigns)}, после фильтра: {len(active)}")
+        logger.info(f"[OzonPerf] всего кампаний: {len(all_campaigns)}, после фильтра: {len(active)}")
 
         # Шаги 2-4: для каждого батча: создать UUID → поллить → скачать CSV
         # API допускает только 1 активный запрос — поэтому строго последовательно
