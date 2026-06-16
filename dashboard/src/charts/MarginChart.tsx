@@ -4,6 +4,7 @@ import { NetMarginRow } from '../api'
 function barColor(pct: number) {
   if (pct < 10) return '#dc2626'
   if (pct < 30) return '#d97706'
+  if (pct < 50) return '#f59e0b'
   return '#059669'
 }
 
@@ -35,16 +36,17 @@ export default function MarginChart({ data }: { data: NetMarginRow[] }) {
             labelFormatter={(label: string) => label}
             contentStyle={tooltipStyle}
           />
-          <ReferenceLine y={20} stroke="#d97706" strokeDasharray="3 3" label={{ value: '20%', fontSize: 9, fill: '#d97706' }} />
+          <ReferenceLine y={50} stroke="#059669" strokeDasharray="3 3" label={{ value: 'цель 50%', fontSize: 9, fill: '#059669' }} />
           <Bar dataKey="net_margin_pct_total" name="Маржа">
             {combined.map((d, i) => <Cell key={i} fill={barColor(d.net_margin_pct_total ?? 0)} />)}
           </Bar>
         </BarChart>
       </ResponsiveContainer>
       <div className="flex gap-2 mt-2 text-xs text-gray-400 dark:text-gray-500 justify-center">
-        <span className="text-green-600">●</span> &gt;30% хорошо
-        <span className="text-yellow-500 ml-2">●</span> 10-30%
-        <span className="text-red-500 ml-2">●</span> &lt;10% убыток
+        <span className="text-green-600">●</span> ≥50% цель
+        <span className="text-yellow-500 ml-2">●</span> 30-50%
+        <span className="text-orange-500 ml-2">●</span> 10-30%
+        <span className="text-red-500 ml-2">●</span> &lt;10%
       </div>
     </div>
   )

@@ -17,7 +17,9 @@ export interface DayRevenue { date: string; wb: number; ozon: number }
 export interface NetMarginRow {
   product_name: string
   qty_wb: number; payout_wb: number; net_profit_wb: number; net_margin_pct_wb: number | null
+  recommended_price_wb: number | null; at_target_wb: boolean
   qty_ozon: number; payout_ozon: number; net_profit_ozon: number; net_margin_pct_ozon: number | null
+  recommended_price_ozon: number | null; at_target_ozon: boolean
   net_profit_total: number; net_margin_pct_total: number | null
 }
 export interface MomRow { month: string; revenue: number; orders: number }

@@ -305,6 +305,45 @@ class PeterAgent(BaseAgent):
                 HAVING COALESCE(SUM(f.payout), 0) != 0
             """, chat_id, date_from)
 
+            # Средняя цена продажи (с учётом скидки селлера) за тот же период — нужна, чтобы
+            # перевести "требуемый payout на штуку" в рекомендованную розничную цену. payout уже
+            # очищен от комиссии/логистики/хранения МП, а seller_price — это то, что видит
+            # покупатель/продавец на площадке (та же цена, на которую раньше сверялись с
+            # пользователем: 541,44₽ WB / 797₽ Ozon для КБ50).
+            avg_price_raw = await conn.fetch("""
+                SELECT COALESCE(m.display_name, o.product_id) AS product_name, o.marketplace,
+                       (SUM(o.seller_price * o.quantity) / SUM(o.quantity))::numeric(12,2) AS avg_price
+                FROM marketplace_orders o
+                LEFT JOIN product_mapping m
+                       ON (o.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.')) = LOWER(REPLACE(o.product_id, ',', '.')))
+                       OR (o.marketplace = 'ozon' AND m.ozon_sku = o.product_id)
+                WHERE o.chat_id = $1 AND o.order_date >= $2
+                  AND o.seller_price IS NOT NULL AND o.seller_price > 0
+                GROUP BY o.marketplace, COALESCE(m.display_name, o.product_id)
+                HAVING SUM(o.quantity) > 0
+            """, chat_id, date_from)
+            avg_price = {(r["product_name"], r["marketplace"]): float(r["avg_price"]) for r in avg_price_raw}
+
+            TARGET = config.TARGET_NET_MARGIN_PCT / 100.0
+            denom = (1 - TAX_RATE) - TARGET  # required_payout_per_unit = cost / denom
+
+            def _recommend(name: str, mp: str, qty: int, payout: float, cost: float, margin_pct: float | None):
+                """Целевая цена площадки для выхода на TARGET NET-маржу, или None если уже выше цели/нет данных."""
+                if margin_pct is None or qty <= 0 or cost <= 0 or denom <= 0:
+                    return None, margin_pct is not None and margin_pct >= TARGET * 100
+                at_target = margin_pct >= TARGET * 100
+                if at_target:
+                    return None, True
+                price = avg_price.get((name, mp))
+                payout_per_unit = payout / qty
+                if not price or payout_per_unit <= 0:
+                    return None, False
+                required_payout_per_unit = cost / denom
+                take_home_ratio = payout_per_unit / price
+                if take_home_ratio <= 0:
+                    return None, False
+                return round(required_payout_per_unit / take_home_ratio), False
+
             net_margin = []
             for r in net_margin_raw:
                 qty_wb, payout_wb = r["qty_wb"] or 0, r["payout_wb"] or 0
@@ -316,14 +355,26 @@ class PeterAgent(BaseAgent):
                 payout_total = float(payout_wb) + float(payout_ozon)
                 profit_total = profit_wb + profit_ozon
 
+                margin_pct_wb = round(profit_wb / float(payout_wb) * 100, 1) if payout_wb else None
+                margin_pct_ozon = round(profit_ozon / float(payout_ozon) * 100, 1) if payout_ozon else None
+
+                recommended_price_wb, at_target_wb = _recommend(
+                    r["product_name"], "wb", qty_wb, float(payout_wb), float(cost_wb), margin_pct_wb)
+                recommended_price_ozon, at_target_ozon = _recommend(
+                    r["product_name"], "ozon", qty_ozon, float(payout_ozon), float(cost_ozon), margin_pct_ozon)
+
                 net_margin.append({
                     "product_name": r["product_name"],
                     "qty_wb": qty_wb, "payout_wb": float(payout_wb),
                     "net_profit_wb": round(profit_wb, 2),
-                    "net_margin_pct_wb": round(profit_wb / float(payout_wb) * 100, 1) if payout_wb else None,
+                    "net_margin_pct_wb": margin_pct_wb,
+                    "recommended_price_wb": recommended_price_wb,
+                    "at_target_wb": at_target_wb,
                     "qty_ozon": qty_ozon, "payout_ozon": float(payout_ozon),
                     "net_profit_ozon": round(profit_ozon, 2),
-                    "net_margin_pct_ozon": round(profit_ozon / float(payout_ozon) * 100, 1) if payout_ozon else None,
+                    "net_margin_pct_ozon": margin_pct_ozon,
+                    "recommended_price_ozon": recommended_price_ozon,
+                    "at_target_ozon": at_target_ozon,
                     "net_profit_total": round(profit_total, 2),
                     "net_margin_pct_total": round(profit_total / payout_total * 100, 1) if payout_total else None,
                 })
@@ -739,7 +790,8 @@ class PeterAgent(BaseAgent):
 - Данные по заказам, не по выкупам. Реальная выручка ниже на % возвратов.
 - net_margin — ОСНОВНОЙ показатель рентабельности: payout − себестоимость − налог {int(config.NET_MARGIN_TAX_RATE*100)}% от payout. Используй его, не margin_wb/margin_ozon.
 - net_margin: одна строка = один товар (product_name), без дублей. qty_wb/payout_wb/net_profit_wb/net_margin_pct_wb — показатели по WB, аналогично _ozon — по Ozon, _total — сумма по обеим площадкам. Если qty_wb=0 — товара нет на WB (аналогично для Ozon), не показывай нулевую колонку как площадку с продажами.
-- Формируй net_margin как одну таблицу: товар | WB (шт/прибыль/%) | Ozon (шт/прибыль/%) | Итого (прибыль/%). Список короткий (товаров немного) — выводи ВСЕ строки, не выбирай топ-N.
+- Целевая NET-маржа — {config.TARGET_NET_MARGIN_PCT:.0f}% (config.TARGET_NET_MARGIN_PCT). at_target_wb/at_target_ozon=true → площадка уже на цели или выше, отмечай "✅ норма", не выводи лишних чисел. Если false и recommended_price_wb/ozon не null — это целевая розничная цена площадки, при которой маржа выйдет на {config.TARGET_NET_MARGIN_PCT:.0f}%; явно называй её "рекомендованная цена" и говори, на сколько ₽/% поднять текущую цену. Если recommended_price_* = null при at_target=false — не хватает данных (нет себестоимости через /cost или нет заказов за период) — скажи это прямо, не придумывай число.
+- Формируй net_margin как одну таблицу: товар | WB (шт/прибыль/%/рекоменд. цена) | Ozon (шт/прибыль/%/рекоменд. цена) | Итого (прибыль/%). Список короткий (товаров немного) — выводи ВСЕ строки, не выбирай топ-N.
 - Если net_margin пустой — запусти /sync_fin у Макса. Только тогда временно используй margin_wb/margin_ozon (GROSS, без комиссий МП и без налога — переоценивает прибыль) и явно предупреди, что это грубая оценка.
 - Комиссия WB ~15-25%, логистика ~50-150₽/заказ; Ozon ~5-15%.
 - product_metrics.avg_ctr — CTR из рекламы (если 0 — данные ещё не накоплены после /sync_adv).
