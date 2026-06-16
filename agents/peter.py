@@ -278,39 +278,56 @@ class PeterAgent(BaseAgent):
             """, chat_id, date_from)
 
             # 5. NET-маржа из финансовых отчётов (выплата минус себестоимость минус налог от выплаты)
+            # Одна строка на товар (по display_name), WB и Ozon — отдельные колонки, не отдельные
+            # строки: иначе при сбое join (например "гб2.5" вместо "гб2,5" в сыром WB-артикуле)
+            # товар тихо дублируется в выводе под сырым кодом вместо отображаемого имени.
+            # REPLACE(...,',','.') в условии join — WB иногда отдаёт десятичный артикул через точку,
+            # а в product_mapping он записан через запятую (опечатка на стороне WB, не у нас).
             TAX_RATE = config.NET_MARGIN_TAX_RATE
-            net_margin = await conn.fetch(f"""
+            net_margin_raw = await conn.fetch("""
                 SELECT
-                    f.marketplace,
-                    f.product_id,
                     COALESCE(m.display_name, f.product_id) AS product_name,
-                    SUM(f.quantity)::int                    AS qty,
-                    SUM(f.revenue)::numeric(12,2)           AS revenue,
-                    SUM(f.payout)::numeric(12,2)            AS payout,
-                    SUM(f.commission)::numeric(12,2)        AS commission,
-                    SUM(f.logistics)::numeric(12,2)         AS logistics,
-                    SUM(f.storage)::numeric(12,2)           AS storage,
-                    SUM(f.penalty)::numeric(12,2)           AS penalty,
-                    COALESCE(MAX(c.cost), 0)::numeric(12,2) AS cost_per_unit,
-                    (SUM(f.payout) * (1 - {TAX_RATE})
-                     - SUM(f.quantity) * COALESCE(MAX(c.cost), 0))::numeric(12,2) AS net_profit,
-                    CASE WHEN SUM(f.payout) > 0
-                         THEN ROUND((SUM(f.payout) * (1 - {TAX_RATE})
-                                     - SUM(f.quantity) * COALESCE(MAX(c.cost), 0))
-                                    / SUM(f.payout) * 100, 1)
-                         ELSE 0 END                         AS net_margin_pct
+                    SUM(f.quantity) FILTER (WHERE f.marketplace = 'wb')::int            AS qty_wb,
+                    SUM(f.payout)   FILTER (WHERE f.marketplace = 'wb')::numeric(12,2)  AS payout_wb,
+                    SUM(f.quantity) FILTER (WHERE f.marketplace = 'ozon')::int          AS qty_ozon,
+                    SUM(f.payout)   FILTER (WHERE f.marketplace = 'ozon')::numeric(12,2) AS payout_ozon,
+                    COALESCE(MAX(c.cost) FILTER (WHERE c.marketplace = 'wb'), 0)::numeric(12,2)   AS cost_wb,
+                    COALESCE(MAX(c.cost) FILTER (WHERE c.marketplace = 'ozon'), 0)::numeric(12,2) AS cost_ozon
                 FROM marketplace_financial_report f
                 LEFT JOIN product_mapping m
                        -- WB: sa_name из финотчёта приходит в нижнем регистре, wb_article — как ввёл селлер
-                       ON (f.marketplace = 'wb'   AND LOWER(m.wb_article) = LOWER(f.product_id))
+                       ON (f.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.')) = LOWER(REPLACE(f.product_id, ',', '.')))
                        -- Ozon: /v3/finance/transaction/list отдаёт items[].sku, не offer_id
                        OR (f.marketplace = 'ozon' AND m.ozon_sku = f.product_id)
                 LEFT JOIN product_costs c ON c.mapping_id = m.id AND c.marketplace = f.marketplace
                 WHERE f.chat_id = $1 AND f.report_date >= $2
-                GROUP BY f.marketplace, f.product_id, m.display_name
-                ORDER BY net_profit DESC
-                LIMIT 15
+                GROUP BY COALESCE(m.display_name, f.product_id)
+                HAVING COALESCE(SUM(f.payout), 0) != 0
             """, chat_id, date_from)
+
+            net_margin = []
+            for r in net_margin_raw:
+                qty_wb, payout_wb = r["qty_wb"] or 0, r["payout_wb"] or 0
+                qty_ozon, payout_ozon = r["qty_ozon"] or 0, r["payout_ozon"] or 0
+                cost_wb, cost_ozon = r["cost_wb"] or 0, r["cost_ozon"] or 0
+
+                profit_wb = float(payout_wb) * (1 - TAX_RATE) - qty_wb * float(cost_wb)
+                profit_ozon = float(payout_ozon) * (1 - TAX_RATE) - qty_ozon * float(cost_ozon)
+                payout_total = float(payout_wb) + float(payout_ozon)
+                profit_total = profit_wb + profit_ozon
+
+                net_margin.append({
+                    "product_name": r["product_name"],
+                    "qty_wb": qty_wb, "payout_wb": float(payout_wb),
+                    "net_profit_wb": round(profit_wb, 2),
+                    "net_margin_pct_wb": round(profit_wb / float(payout_wb) * 100, 1) if payout_wb else None,
+                    "qty_ozon": qty_ozon, "payout_ozon": float(payout_ozon),
+                    "net_profit_ozon": round(profit_ozon, 2),
+                    "net_margin_pct_ozon": round(profit_ozon / float(payout_ozon) * 100, 1) if payout_ozon else None,
+                    "net_profit_total": round(profit_total, 2),
+                    "net_margin_pct_total": round(profit_total / payout_total * 100, 1) if payout_total else None,
+                })
+            net_margin.sort(key=lambda x: x["net_profit_total"], reverse=True)
 
             # 6. Рекламные расходы
             # Для Ozon берём реальный расход из финотчёта (marketplace_fin_adv),
@@ -721,7 +738,8 @@ class PeterAgent(BaseAgent):
 ВАЖНО:
 - Данные по заказам, не по выкупам. Реальная выручка ниже на % возвратов.
 - net_margin — ОСНОВНОЙ показатель рентабельности: payout − себестоимость − налог {int(config.NET_MARGIN_TAX_RATE*100)}% от payout. Используй его, не margin_wb/margin_ozon.
-- net_margin_pct = (payout × (1 − {config.NET_MARGIN_TAX_RATE}) − qty × cost) / payout × 100.
+- net_margin: одна строка = один товар (product_name), без дублей. qty_wb/payout_wb/net_profit_wb/net_margin_pct_wb — показатели по WB, аналогично _ozon — по Ozon, _total — сумма по обеим площадкам. Если qty_wb=0 — товара нет на WB (аналогично для Ozon), не показывай нулевую колонку как площадку с продажами.
+- Формируй net_margin как одну таблицу: товар | WB (шт/прибыль/%) | Ozon (шт/прибыль/%) | Итого (прибыль/%). Список короткий (товаров немного) — выводи ВСЕ строки, не выбирай топ-N.
 - Если net_margin пустой — запусти /sync_fin у Макса. Только тогда временно используй margin_wb/margin_ozon (GROSS, без комиссий МП и без налога — переоценивает прибыль) и явно предупреди, что это грубая оценка.
 - Комиссия WB ~15-25%, логистика ~50-150₽/заказ; Ozon ~5-15%.
 - product_metrics.avg_ctr — CTR из рекламы (если 0 — данные ещё не накоплены после /sync_adv).
