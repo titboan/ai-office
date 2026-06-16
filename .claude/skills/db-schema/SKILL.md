@@ -32,11 +32,11 @@ tasks
 ```sql
 marketplace_shops        -- магазины: api_token, statistics_token, client_id
 marketplace_reviews      -- отзывы: статус, generated_reply, final_reply
-marketplace_orders       -- заказы WB + Ozon
-marketplace_sales        -- выкупы WB + Ozon delivered
+marketplace_orders       -- заказы WB (wb_article) + Ozon (product_id = SKU, числовой!)
+marketplace_sales        -- выкупы WB + Ozon (product_id = offer_id, строка!) delivered
                          --   is_return BOOLEAN DEFAULT FALSE
                          --   WB: saleID=S... → продажа, saleID=R... → возврат
-marketplace_stocks       -- остатки WB (supplierArticle) + Ozon (offer_id), текущий снимок
+marketplace_stocks       -- остатки WB (supplierArticle) + Ozon (product_id = offer_id, строка!), текущий снимок
 marketplace_adv_stats    -- рекламная статистика WB и Ozon (кампания/день)
 
 wb_campaigns             -- названия WB кампаний (вручную — API 404)
@@ -55,6 +55,7 @@ product_adv_stats        -- реклама на уровне товара (produ
   chat_id, marketplace, product_id, campaign_id, stat_date
   views, clicks, ctr, spend, orders_count
   UNIQUE(chat_id, marketplace, product_id, stat_date)
+  Ozon product_id = SKU (числовой)
 ```
 
 ## Аналитические таблицы (новые)
@@ -73,6 +74,7 @@ product_funnel_stats           -- воронка конверсии карточ
   views, add_to_cart, orders_count, buyouts, avg_position
   conv_view_to_cart, conv_cart_to_order
   UNIQUE(chat_id, marketplace, product_id, stat_date)
+  Ozon product_id = SKU (числовой)
   -- WB: /api/v1/analytics/nm-report/grouped
   -- Ozon: /v1/analytics/data с metrics=[views, conv_tocart, ordered_units]
 
@@ -111,3 +113,7 @@ adv_stats_summary   -- агрегат: total_views, total_clicks, avg_ctr, total
 - Цена селлера и реализация — РАЗНЫЕ поля (см. skills/max-api)
 - `marketplace_financial_report.report_date` — всегда понедельник недели (агрегат за неделю)
 - Ozon возвраты уже агрегированы в `marketplace_financial_report` (tx_type="returns"), в `marketplace_sales.is_return` они не дублируются
+- **КРИТИЧНО для джойнов по Ozon `product_id`**: для WB везде один и тот же `wb_article`, но для Ozon в БД ходят ДВА разных идентификатора под одним именем колонки `product_id`:
+  - `offer_id` (строка, как у WB) — в `marketplace_sales`, `marketplace_stocks`, `marketplace_financial_report`
+  - `sku` (число) — в `marketplace_orders`, `product_adv_stats`, `product_funnel_stats`
+  - Прямой джойн `a.product_id = b.product_id` между таблицами из разных списков для Ozon никогда не совпадёт. Мостить через `product_mapping.ozon_offer_id`/`ozon_sku`, причём per-marketplace (не объединять скорость продаж/метрики WB и Ozon в одно число при трансляции). Баг такого типа уже находили и чинили дважды (`agents/peter.py::_collect_advanced_data`, `agents/max.py::_check_stock_alerts`) — см. `retrospectives/2026-06-16_dashboard-sync-roas-ozon-id-mismatch.md`.

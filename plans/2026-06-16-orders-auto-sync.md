@@ -44,3 +44,9 @@
 - Следствие: `daily_orders` для Ozon-товаров всегда 0 → `days_left = 999` → сортировка по `days_left ASC` + `LIMIT 15` выкидывала Ozon-строки из выдачи; `buyouts`/`roas` для Ozon-товаров всегда были 0
 
 Исправлено: в обоих запросах добавлена marketplace-aware трансляция идентификатора через `product_mapping` (`CASE WHEN marketplace='ozon' THEN COALESCE(mm.ozon_offer_id/ozon_sku, product_id) ELSE product_id END`), с сохранением раздельного агрегирования по WB и Ozon (важно: смешивать их скорость продаж в одно число — отдельная ошибка, которую поймали и откатили во время проверки). Проверено на реальных данных (`chat_id=397443854`, артикул КБ50): обе строки (WB и Ozon) теперь видны с собственными `daily_orders`/`days_left`, ROAS по Ozon товарам — реальные ненулевые значения вместо 0.
+
+## Доп. находка (16.06, продолжение): тот же баг ещё в одном месте
+
+Аудит всего репо на этот паттерн нашёл такой же баг в `agents/max.py::_check_stock_alerts` (фоновая проверка низких остатков, шлёт алерт в Telegram) — джойн `marketplace_orders.product_id = marketplace_stocks.product_id` напрямую, для Ozon `daily_velocity` всегда была 0, алерты по низким остаткам для Ozon-товаров не срабатывали (кроме случая stock=0). Исправлено той же marketplace-aware трансляцией через `product_mapping.ozon_sku`. Проверено на реальных данных — `daily_velocity` для Ozon стала ненулевой.
+
+Остальные места (margin/funnel/returns/kw_top/mom_trends в `agents/peter.py`, `agents/max.py::_check_drr_alerts`, `tools/marketplace.py`, `db.py`) проверены аудитом — джойнов с этим несовпадением не найдено. Соответствие offer_id/sku по таблицам задокументировано в `.claude/skills/db-schema/SKILL.md`.
