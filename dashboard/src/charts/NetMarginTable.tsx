@@ -13,7 +13,7 @@ function marginColor(pct: number | null) {
 const fmt = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}к` : v.toLocaleString()
 
 function MarginCell({ pct, atTarget, recPrice }: {
-  pct: number | null; atTarget: boolean; recPrice: number | null
+  pct: number | null; atTarget?: boolean; recPrice?: number | null
 }) {
   if (pct === null) return <td className="text-right py-1.5 text-gray-400 dark:text-gray-500">—</td>
   if (atTarget) {
@@ -21,7 +21,7 @@ function MarginCell({ pct, atTarget, recPrice }: {
       <td className="text-right py-1.5 text-green-600 font-medium">✓ {pct}%</td>
     )
   }
-  if (recPrice !== null) {
+  if (recPrice != null) {
     return (
       <td className="text-right py-1.5">
         <span className={marginColor(pct)}>{pct}%</span>
