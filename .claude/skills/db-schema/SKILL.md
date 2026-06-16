@@ -118,6 +118,6 @@ adv_stats_summary   -- агрегат: total_views, total_clicks, avg_ctr, total
 - `marketplace_financial_report.report_date` — всегда понедельник недели (агрегат за неделю)
 - Ozon возвраты уже агрегированы в `marketplace_financial_report` (tx_type="returns"), в `marketplace_sales.is_return` они не дублируются
 - **КРИТИЧНО для джойнов по Ozon `product_id`**: для WB везде один и тот же `wb_article`, но для Ozon в БД ходят ДВА разных идентификатора под одним именем колонки `product_id`:
-  - `offer_id` (строка, как у WB) — в `marketplace_sales`, `marketplace_stocks`, `marketplace_financial_report`
-  - `sku` (число) — в `marketplace_orders`, `product_adv_stats`, `product_funnel_stats`
+  - `offer_id` (строка, как у WB) — в `marketplace_sales`, `marketplace_stocks`
+  - `sku` (число) — в `marketplace_orders`, `product_adv_stats`, `product_funnel_stats`, **и в `marketplace_financial_report` для Ozon** (`/v3/finance/transaction/list` отдаёт `items[].sku`, `offer_id` там вообще нет — джойн на `m.ozon_offer_id` всегда давал 0 строк, финотчёт Ozon был тихо пустой; чинить через `m.ozon_sku`, см. `agents/peter.py` net_margin)
   - Прямой джойн `a.product_id = b.product_id` между таблицами из разных списков для Ozon никогда не совпадёт. Мостить через `product_mapping.ozon_offer_id`/`ozon_sku`, причём per-marketplace (не объединять скорость продаж/метрики WB и Ozon в одно число при трансляции). Баг такого типа уже находили и чинили дважды (`agents/peter.py::_collect_advanced_data`, `agents/max.py::_check_stock_alerts`) — см. `retrospectives/2026-06-16_dashboard-sync-roas-ozon-id-mismatch.md`.

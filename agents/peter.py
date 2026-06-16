@@ -302,8 +302,9 @@ class PeterAgent(BaseAgent):
                 FROM marketplace_financial_report f
                 LEFT JOIN product_mapping m
                        -- WB: sa_name из финотчёта приходит в нижнем регистре, wb_article — как ввёл селлер
-                       ON (f.marketplace = 'wb'   AND LOWER(m.wb_article)    = LOWER(f.product_id))
-                       OR (f.marketplace = 'ozon' AND m.ozon_offer_id = f.product_id)
+                       ON (f.marketplace = 'wb'   AND LOWER(m.wb_article) = LOWER(f.product_id))
+                       -- Ozon: /v3/finance/transaction/list отдаёт items[].sku, не offer_id
+                       OR (f.marketplace = 'ozon' AND m.ozon_sku = f.product_id)
                 LEFT JOIN product_costs c ON c.mapping_id = m.id AND c.marketplace = f.marketplace
                 WHERE f.chat_id = $1 AND f.report_date >= $2
                 GROUP BY f.marketplace, f.product_id, m.display_name

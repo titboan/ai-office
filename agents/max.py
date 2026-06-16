@@ -1219,6 +1219,21 @@ class MaxAgent(BaseAgent):
                         )
                     counts["ozon"] = len(rows)
                     logger.info(f"[Макс/fin] Ozon: {len(rows)} записей финотчёта")
+
+                    # /v3/finance/transaction/list не отдаёт quantity — добираем его
+                    # и точную выручку через realization-отчёт (report_date = 1 число
+                    # месяца, отдельная строка от недельных payout/commission/logistics
+                    # выше — суммируются вместе в NET-марже у Питера).
+                    real_rows = await client.get_realization_quantity_revenue(date_from=date_from, date_to=date_to)
+                    for r in real_rows:
+                        await upsert_financial_report(
+                            chat_id=chat_id, marketplace="ozon",
+                            product_id=r["product_id"],
+                            report_date=r["report_date"],
+                            quantity=r["quantity"],
+                            revenue=r["revenue"],
+                        )
+                    logger.info(f"[Макс/fin] Ozon: {len(real_rows)} записей quantity/revenue из realization")
                 except Exception as e:
                     logger.error(f"[Макс/fin] Ozon: {e}", exc_info=True)
 

@@ -538,9 +538,14 @@ class WBClient:
                     }
                 a = agg[key]
                 qty = int(row.get("quantity", 0) or 0)
-                # Возвраты имеют отрицательный qty и отрицательный ppvz_for_pay
-                a["quantity"]   += qty
-                a["revenue"]    += float(row.get("retail_price_withdisc_rub", 0) or 0) * (qty if qty > 0 else 0)
+                # Только doc_type_name == "Продажа" — это реальные продажи/возвраты товара.
+                # Остальные строки (doc_type_name == "") — логистика, компенсации складских
+                # операций и т.п.: тоже несут quantity, но не относятся к проданным штукам,
+                # и раздувают знаменатель в NET-марже (нашли расхождение цены ~5x на КБ50).
+                if doc_type == "Продажа":
+                    # Возвраты имеют отрицательный qty и отрицательный ppvz_for_pay
+                    a["quantity"] += qty
+                    a["revenue"]  += float(row.get("retail_price_withdisc_rub", 0) or 0) * (qty if qty > 0 else 0)
                 a["payout"]     += float(row.get("ppvz_for_pay", 0) or 0)
                 a["commission"] += float(row.get("ppvz_vw", 0) or 0)
                 a["logistics"]  += float(row.get("delivery_rub", 0) or 0)
@@ -1346,84 +1351,173 @@ class OzonClient:
         url = f"{self._BASE}/v3/finance/transaction/list"
         agg: dict[tuple, dict] = {}
 
-        for tx_type in ("orders", "returns"):
-            page = 1
-            while True:
-                body = {
-                    "filter": {
-                        "date": {"from": f"{date_from}T00:00:00.000Z", "to": f"{date_to}T23:59:59.000Z"},
-                        "transaction_type": tx_type,
-                    },
-                    "page":      page,
-                    "page_size": 1000,
-                }
-                data = None
-                for attempt in range(3):
-                    try:
-                        async with aiohttp.ClientSession() as session:
-                            async with session.post(url, headers=self._headers(), json=body, timeout=_TIMEOUT) as resp:
-                                raw = await resp.text()
-                                if resp.status == 429:
-                                    await asyncio.sleep(60)
-                                    continue
-                                if resp.status != 200:
-                                    logger.error(f"[Ozon.get_financial_report] HTTP {resp.status}: {raw[:200]}")
+        # Ozon отвергает запрос с периодом дольше месяца ("too long period, only
+        # one month allowed") — без чанкинга весь финотчёт молча возвращает 0 строк
+        # (ошибка только логируется, не выбрасывается), и /sync_fin выглядит успешным.
+        d_from = _dt_mod.date.fromisoformat(date_from)
+        d_to   = _dt_mod.date.fromisoformat(date_to)
+        chunks: list[tuple[_dt_mod.date, _dt_mod.date]] = []
+        chunk_start = d_from
+        while chunk_start <= d_to:
+            chunk_end = min(chunk_start + _dt_mod.timedelta(days=27), d_to)
+            chunks.append((chunk_start, chunk_end))
+            chunk_start = chunk_end + _dt_mod.timedelta(days=1)
+
+        for chunk_from, chunk_to in chunks:
+            for tx_type in ("orders", "returns"):
+                page = 1
+                while True:
+                    body = {
+                        "filter": {
+                            "date": {
+                                "from": f"{chunk_from.isoformat()}T00:00:00.000Z",
+                                "to":   f"{chunk_to.isoformat()}T23:59:59.000Z",
+                            },
+                            "transaction_type": tx_type,
+                        },
+                        "page":      page,
+                        "page_size": 1000,
+                    }
+                    data = None
+                    for attempt in range(3):
+                        try:
+                            async with aiohttp.ClientSession() as session:
+                                async with session.post(url, headers=self._headers(), json=body, timeout=_TIMEOUT) as resp:
+                                    raw = await resp.text()
+                                    if resp.status == 429:
+                                        await asyncio.sleep(60)
+                                        continue
+                                    if resp.status != 200:
+                                        logger.error(f"[Ozon.get_financial_report] HTTP {resp.status}: {raw[:200]}")
+                                        break
+                                    data = _json.loads(raw)
                                     break
-                                data = _json.loads(raw)
-                                break
-                    except Exception as e:
-                        logger.error(f"[Ozon.get_financial_report] {e}")
+                        except Exception as e:
+                            logger.error(f"[Ozon.get_financial_report] {e}")
+                            break
+                    if data is None:
                         break
-                if data is None:
-                    break
 
-                operations = (data.get("result") or {}).get("operations") or []
-                for op in operations:
-                    op_items = op.get("items") or []
-                    offer_id = str(op_items[0].get("offer_id", "") or "") if op_items else ""
-                    if not offer_id:
-                        continue
-                    # Дата начала недели
-                    op_date_str = (op.get("operation_date") or date_from)[:10]
-                    try:
-                        op_date = _dt_mod.date.fromisoformat(op_date_str)
-                        week_start = op_date - _dt_mod.timedelta(days=op_date.weekday())
-                    except Exception:
-                        week_start = op_date_str
+                    operations = (data.get("result") or {}).get("operations") or []
+                    for op in operations:
+                        op_items = op.get("items") or []
+                        # /v3/finance/transaction/list отдаёт items[].sku (число), а не
+                        # offer_id — раньше код искал offer_id, которого тут нет, и все
+                        # строки тихо отфильтровывались (financial_report для Ozon был
+                        # всегда пуст). product_id здесь = sku, джойн на product_mapping
+                        # должен идти через ozon_sku, не ozon_offer_id (см. agents/peter.py).
+                        offer_id = str(op_items[0].get("sku", "") or "") if op_items else ""
+                        if not offer_id:
+                            continue
+                        # Дата начала недели
+                        op_date_str = (op.get("operation_date") or date_from)[:10]
+                        try:
+                            op_date = _dt_mod.date.fromisoformat(op_date_str)
+                            week_start = op_date - _dt_mod.timedelta(days=op_date.weekday())
+                        except Exception:
+                            week_start = op_date_str
 
-                    key = (offer_id, week_start)
-                    if key not in agg:
-                        agg[key] = {
-                            "product_id":  offer_id,
-                            "report_date": week_start,
-                            "quantity":    0,
-                            "revenue":     0.0,
-                            "payout":      0.0,
-                            "commission":  0.0,
-                            "logistics":   0.0,
-                            "storage":     0.0,
-                            "penalty":     0.0,
-                        }
-                    a = agg[key]
-                    sign = 1 if tx_type == "orders" else -1
-                    a["quantity"]   += sign * int(op.get("quantity", 0) or 0)
-                    a["payout"]     += float(op.get("accruals_for_sale", 0) or 0)
-                    a["commission"] += abs(float(op.get("sale_commission", 0) or 0))
-                    a["logistics"]  += abs(float(op.get("delivery_charge", 0) or 0))
-                    a["logistics"]  += abs(float(op.get("return_delivery_charge", 0) or 0))
-                    # Точная выручка из items[].price — цена товара по каждой позиции
-                    item_revenue = sum(
-                        float(it.get("price", 0) or 0) * int(it.get("quantity", 0) or 0)
-                        for it in op_items
-                    )
-                    a["revenue"] += sign * item_revenue
+                        key = (offer_id, week_start)
+                        if key not in agg:
+                            agg[key] = {
+                                "product_id":  offer_id,
+                                "report_date": week_start,
+                                "quantity":    0,
+                                "revenue":     0.0,
+                                "payout":      0.0,
+                                "commission":  0.0,
+                                "logistics":   0.0,
+                                "storage":     0.0,
+                                "penalty":     0.0,
+                            }
+                        a = agg[key]
+                        sign = 1 if tx_type == "orders" else -1
+                        # /v3/finance/transaction/list НЕ отдаёт quantity (ни на уровне
+                        # операции, ни в items[] — там только name/sku). quantity/revenue
+                        # для Ozon считаются отдельно через get_realization_quantity_revenue()
+                        # (/v2/finance/realization, единственный эндпоинт с ценой за штуку).
+                        a["payout"]     += float(op.get("accruals_for_sale", 0) or 0)
+                        a["commission"] += abs(float(op.get("sale_commission", 0) or 0))
+                        a["logistics"]  += abs(float(op.get("delivery_charge", 0) or 0))
+                        a["logistics"]  += abs(float(op.get("return_delivery_charge", 0) or 0))
 
-                if len(operations) < 1000:
-                    break
-                page += 1
+                    if len(operations) < 1000:
+                        break
+                    page += 1
 
         results = list(agg.values())
         logger.info(f"[Ozon.get_financial_report] {date_from}–{date_to}: {len(results)} агрегатов")
+        return results
+
+    async def get_realization_quantity_revenue(self, date_from: str, date_to: str) -> list[dict]:
+        """Количество и выручка по факту реализации через /v2/finance/realization.
+
+        Единственный эндпоинт Ozon, где есть цена за штуку (seller_price_per_instance)
+        и реальное количество (delivery_commission.quantity — строка отчёта может
+        объединять несколько единиц одного товара, quantity != 1 для части строк).
+        Отчёт месячный (year/month), report_date = первое число месяца.
+        product_id = sku (строкой) — для единообразия с get_financial_report, где
+        offer_id физически отсутствует в ответе API.
+        """
+        import json as _json
+        import datetime as _dt_mod
+
+        d_from = _dt_mod.date.fromisoformat(date_from)
+        d_to   = _dt_mod.date.fromisoformat(date_to)
+        months: set[tuple[int, int]] = set()
+        cur = d_from.replace(day=1)
+        while cur <= d_to:
+            months.add((cur.year, cur.month))
+            cur = (cur.replace(day=28) + _dt_mod.timedelta(days=4)).replace(day=1)
+
+        agg: dict[tuple, dict] = {}
+        url = f"{self._BASE}/v2/finance/realization"
+
+        for year, month in sorted(months):
+            data = None
+            for attempt in range(3):
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(
+                            url, headers=self._headers(),
+                            json={"year": year, "month": month}, timeout=_TIMEOUT,
+                        ) as resp:
+                            raw = await resp.text()
+                            if resp.status == 429:
+                                await asyncio.sleep(60)
+                                continue
+                            if resp.status != 200:
+                                logger.error(f"[Ozon.get_realization_quantity_revenue] HTTP {resp.status}: {raw[:200]}")
+                                break
+                            data = _json.loads(raw)
+                            break
+                except Exception as e:
+                    logger.error(f"[Ozon.get_realization_quantity_revenue] {e}")
+                    break
+            if data is None:
+                continue
+
+            rows = (data.get("result") or {}).get("rows") or []
+            # Дата = последний день месяца, не первое число: запросы на "последние N
+            # дней" иначе не захватывают помесячные строки (см. report_date вместо
+            # недельных WB-бакетов) — отчёт физически закрывается в конце месяца.
+            next_month = (_dt_mod.date(year, month, 28) + _dt_mod.timedelta(days=4)).replace(day=1)
+            report_date = next_month - _dt_mod.timedelta(days=1)
+            for row in rows:
+                sku = str(row.get("item", {}).get("sku", "") or "")
+                if not sku:
+                    continue
+                qty   = int((row.get("delivery_commission") or {}).get("quantity", 0) or 0)
+                price = float(row.get("seller_price_per_instance", 0) or 0)
+
+                key = (sku, report_date)
+                if key not in agg:
+                    agg[key] = {"product_id": sku, "report_date": report_date, "quantity": 0, "revenue": 0.0}
+                agg[key]["quantity"] += qty
+                agg[key]["revenue"]  += price * qty
+
+        results = list(agg.values())
+        logger.info(f"[Ozon.get_realization_quantity_revenue] {date_from}–{date_to}: {len(results)} агрегатов")
         return results
 
     async def get_fin_adv_spend(self, date_from: str, date_to: str) -> list[dict]:
