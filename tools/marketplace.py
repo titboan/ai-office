@@ -1432,6 +1432,20 @@ class OzonClient:
         "ClientServiceFinancial",
     }
 
+    # Логистика, эквайринг и комиссии — НЕ реклама, не входят в ДРР.
+    # Уже учитываются в get_fin_finreport (logistics/commission → payout → NET-маржа).
+    # Перечислены здесь только чтобы не дублировать ntfy-алерт об "неизвестном сервисе".
+    _NON_MARKETING_SERVICES = {
+        "MarketplaceServiceItemDirectFlowLogistic",
+        "ItemAgentServiceStarsMembership",
+        "MarketplaceRedistributionOfAcquiringOperation",
+        "MarketplaceServiceItemRedistributionLastMileCourier",
+        "MarketplaceServiceProductMovementFromWarehouse",
+        "MarketplaceServiceBrandCommission",
+        "MarketplaceServiceItemReturnFlowLogistic",
+        "MarketplaceServiceItemDeliveryToHandoverPlaceOzon",
+    }
+
     async def get_fin_adv_spend(self, date_from: str, date_to: str) -> list[dict]:
         """Рекламные расходы из финансовых транзакций Ozon (все типы: Premium, бренд, оплата за заказ, клики).
 
@@ -1504,7 +1518,12 @@ class OzonClient:
         )
 
         # Алерт если нашли неизвестный сервис с крупной суммой
-        unknown = {n: v for n, v in all_services.items() if n not in self._MARKETING_SERVICES and v > 1000}
+        unknown = {
+            n: v for n, v in all_services.items()
+            if n not in self._MARKETING_SERVICES
+            and n not in self._NON_MARKETING_SERVICES
+            and v > 1000
+        }
         if unknown:
             try:
                 from config import config as _cfg
