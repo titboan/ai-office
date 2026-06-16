@@ -121,8 +121,8 @@ export default function App() {
           {/* ДРР по площадкам */}
           <DrrGauge revenue={data.revenue} adv={data.adv} />
 
-          {/* Рентабельность (gross margin) */}
-          <MarginChart wb={data.margin_wb ?? []} ozon={data.margin_ozon ?? []} />
+          {/* Рентабельность (NET-маржа) */}
+          <MarginChart data={data.net_margin ?? []} />
 
           {/* NET маржа из реальных выплат */}
           <NetMarginTable data={data.net_margin ?? []} />

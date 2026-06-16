@@ -1,5 +1,5 @@
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, ReferenceLine } from 'recharts'
-import { MarginRow } from '../api'
+import { NetMarginRow } from '../api'
 
 function barColor(pct: number) {
   if (pct < 10) return '#dc2626'
@@ -9,9 +9,9 @@ function barColor(pct: number) {
 
 const tooltipStyle = { backgroundColor: 'var(--tooltip-bg)', color: 'var(--tooltip-text)', border: '1px solid var(--tooltip-border)' }
 
-export default function MarginChart({ wb, ozon }: { wb: MarginRow[]; ozon: MarginRow[] }) {
-  const combined = [...wb.map(r => ({ ...r, mp: 'WB' })), ...ozon.map(r => ({ ...r, mp: 'Ozon' }))]
-    .sort((a, b) => b.profitability - a.profitability)
+export default function MarginChart({ data }: { data: NetMarginRow[] }) {
+  const combined = [...data]
+    .sort((a, b) => b.net_margin_pct - a.net_margin_pct)
     .slice(0, 12)
 
   if (!combined.length) return null
@@ -20,7 +20,8 @@ export default function MarginChart({ wb, ozon }: { wb: MarginRow[]; ozon: Margi
 
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
-      <h2 className="text-sm font-semibold mb-3">Рентабельность по товарам (%)</h2>
+      <h2 className="text-sm font-semibold mb-1">Рентабельность по товарам (%)</h2>
+      <p className="text-xs text-gray-400 dark:text-gray-500 mb-3">NET-маржа: выплата МП − себестоимость − налог</p>
       <ResponsiveContainer width="100%" height={200}>
         <BarChart data={combined} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
           <XAxis dataKey="product_name" tick={{ fontSize: 9, fill: 'currentColor' }}
@@ -28,14 +29,14 @@ export default function MarginChart({ wb, ozon }: { wb: MarginRow[]; ozon: Margi
           <YAxis tick={{ fontSize: 10, fill: 'currentColor' }} unit="%" width={32} />
           <Tooltip
             formatter={(v: number, _: string, props: any) => [
-              `${v}% | прибыль ${fmt(props.payload.op_profit)} ₽`
+              `${v}% | прибыль ${fmt(props.payload.net_profit)} ₽`
             ]}
             labelFormatter={(label: string) => label}
             contentStyle={tooltipStyle}
           />
           <ReferenceLine y={20} stroke="#d97706" strokeDasharray="3 3" label={{ value: '20%', fontSize: 9, fill: '#d97706' }} />
-          <Bar dataKey="profitability" name="Маржа">
-            {combined.map((d, i) => <Cell key={i} fill={barColor(d.profitability)} />)}
+          <Bar dataKey="net_margin_pct" name="Маржа">
+            {combined.map((d, i) => <Cell key={i} fill={barColor(d.net_margin_pct)} />)}
           </Bar>
         </BarChart>
       </ResponsiveContainer>

@@ -14,11 +14,6 @@ export interface StockVelocity {
 }
 export interface DayRevenue { date: string; wb: number; ozon: number }
 
-export interface MarginRow {
-  product_id: string; product_name: string
-  revenue: number; qty: number; cost: number
-  op_profit: number; profitability: number
-}
 export interface NetMarginRow {
   marketplace: string; product_id: string; product_name: string
   qty: number; revenue: number; payout: number
@@ -50,8 +45,6 @@ export interface DashboardData {
   revenue_by_day: DayRevenue[]
   orders_by_day: DayRevenue[]
   sales_by_day: DayRevenue[]
-  margin_wb: MarginRow[]
-  margin_ozon: MarginRow[]
   net_margin: NetMarginRow[]
   mom_trends: MomRow[]
   returns_top: ReturnRow[]

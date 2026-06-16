@@ -277,8 +277,9 @@ class PeterAgent(BaseAgent):
                 ORDER BY op_profit DESC
             """, chat_id, date_from)
 
-            # 5. NET-маржа из финансовых отчётов (реальные выплаты минус себестоимость)
-            net_margin = await conn.fetch("""
+            # 5. NET-маржа из финансовых отчётов (выплата минус себестоимость минус налог от выплаты)
+            TAX_RATE = config.NET_MARGIN_TAX_RATE
+            net_margin = await conn.fetch(f"""
                 SELECT
                     f.marketplace,
                     f.product_id,
@@ -291,9 +292,11 @@ class PeterAgent(BaseAgent):
                     SUM(f.storage)::numeric(12,2)           AS storage,
                     SUM(f.penalty)::numeric(12,2)           AS penalty,
                     COALESCE(MAX(c.cost), 0)::numeric(12,2) AS cost_per_unit,
-                    (SUM(f.payout) - SUM(f.quantity) * COALESCE(MAX(c.cost), 0))::numeric(12,2) AS net_profit,
+                    (SUM(f.payout) * (1 - {TAX_RATE})
+                     - SUM(f.quantity) * COALESCE(MAX(c.cost), 0))::numeric(12,2) AS net_profit,
                     CASE WHEN SUM(f.payout) > 0
-                         THEN ROUND((SUM(f.payout) - SUM(f.quantity) * COALESCE(MAX(c.cost), 0))
+                         THEN ROUND((SUM(f.payout) * (1 - {TAX_RATE})
+                                     - SUM(f.quantity) * COALESCE(MAX(c.cost), 0))
                                     / SUM(f.payout) * 100, 1)
                          ELSE 0 END                         AS net_margin_pct
                 FROM marketplace_financial_report f
@@ -716,10 +719,9 @@ class PeterAgent(BaseAgent):
 
 ВАЖНО:
 - Данные по заказам, не по выкупам. Реальная выручка ниже на % возвратов.
-- margin_wb / margin_ozon — GROSS-маржа (выручка − себестоимость, БЕЗ комиссий МП).
-- net_margin — РЕАЛЬНАЯ маржа из финансовых отчётов МП (payout − себестоимость). Если пустой — запусти /sync_fin у Макса.
-- net_margin_pct = (payout − cost) / payout × 100 — то, что реально остаётся после МП.
-- Если net_margin НЕ пустой — используй его как основной показатель прибыльности, не GROSS.
+- net_margin — ОСНОВНОЙ показатель рентабельности: payout − себестоимость − налог {int(config.NET_MARGIN_TAX_RATE*100)}% от payout. Используй его, не margin_wb/margin_ozon.
+- net_margin_pct = (payout × (1 − {config.NET_MARGIN_TAX_RATE}) − qty × cost) / payout × 100.
+- Если net_margin пустой — запусти /sync_fin у Макса. Только тогда временно используй margin_wb/margin_ozon (GROSS, без комиссий МП и без налога — переоценивает прибыль) и явно предупреди, что это грубая оценка.
 - Комиссия WB ~15-25%, логистика ~50-150₽/заказ; Ozon ~5-15%.
 - product_metrics.avg_ctr — CTR из рекламы (если 0 — данные ещё не накоплены после /sync_adv).
 - product_metrics.roas — ROAS = выкупы (продажи без возвратов)/расход на рекламу. Если 0 — данные не синхронизированы.
@@ -795,7 +797,7 @@ class PeterAgent(BaseAgent):
 - ROAS в product_metrics.roas (0 = нет данных)
 - days_left в stock_velocity (999 = нет продаж по этому товару)
 - trend показывает неделя к неделе по каждой площадке
-- Маржа (op_profit) — без комиссий МП и логистики. Реальная прибыль ниже ~20-30%
+- Используй net_margin (выплата − себестоимость − налог {int(config.NET_MARGIN_TAX_RATE*100)}%) как маржу. margin_wb/margin_ozon — только запасной грубый ориентир, если net_margin пуст (без комиссий МП и налога, переоценивает прибыль)
 
 Используй формат PETER_AUDIT_PROMPT."""
 

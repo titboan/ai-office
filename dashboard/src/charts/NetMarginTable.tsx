@@ -14,7 +14,7 @@ export default function NetMarginTable({ data }: { data: NetMarginRow[] }) {
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
       <h2 className="text-sm font-semibold mb-1">NET маржа (реальные выплаты)</h2>
-      <p className="text-xs text-gray-400 dark:text-gray-500 mb-3">Выплата − себестоимость после всех вычетов маркетплейса</p>
+      <p className="text-xs text-gray-400 dark:text-gray-500 mb-3">Выплата − себестоимость − налог, после всех вычетов маркетплейса</p>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
