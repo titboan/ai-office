@@ -1135,7 +1135,9 @@ class MaxAgent(BaseAgent):
                 except Exception as e:
                     logger.error(f"[Макс/adv] Ozon реклама: {e}")
 
-                # Рекламные расходы из финотчёта (Premium, бренд, оплата за заказ — то, чего нет в Performance API)
+                # ВРЕМЕННО диагностика: ищем Premium/бренд/CPO в финтранзакциях Ozon —
+                # пока не находим (это не в services[] заказов), возвращает [] и логирует
+                # operation_type верхнего уровня для дальнейшего разбора. См. get_fin_adv_spend.
                 try:
                     fin_client = OzonClient(shop["api_token"], shop.get("client_id", ""))
                     date_from_fin = (datetime.now(_UTC) - timedelta(days=30)).strftime("%Y-%m-%d")
