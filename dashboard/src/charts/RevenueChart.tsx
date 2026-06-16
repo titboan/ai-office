@@ -34,15 +34,15 @@ export default function RevenueChart({ data, sales }: Props) {
           <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'currentColor' }} tickFormatter={fmtDate} />
           <YAxis tick={{ fontSize: 10, fill: 'currentColor' }} tickFormatter={fmt} width={36} />
           <Tooltip
-            formatter={(v: number) => [`${v.toLocaleString()} ₽`]}
+            formatter={(v: number) => `${v.toLocaleString()} ₽`}
             labelFormatter={fmtDate}
             contentStyle={tooltipStyle}
           />
           <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
+          <Line type="monotone" dataKey="wb" name="WB заказы" stroke="#7c3aed" dot={false} strokeWidth={2} />
           <Area type="monotone" dataKey="wb_s" name="WB выкупы" fill="#7c3aed" stroke="none" fillOpacity={0.18} legendType="none" />
+          <Line type="monotone" dataKey="ozon" name="Ozon заказы" stroke="#2563eb" dot={false} strokeWidth={2} />
           <Area type="monotone" dataKey="ozon_s" name="Ozon выкупы" fill="#2563eb" stroke="none" fillOpacity={0.18} legendType="none" />
-          <Line type="monotone" dataKey="wb" name="WB" stroke="#7c3aed" dot={false} strokeWidth={2} />
-          <Line type="monotone" dataKey="ozon" name="Ozon" stroke="#2563eb" dot={false} strokeWidth={2} />
         </ComposedChart>
       </ResponsiveContainer>
     </div>
