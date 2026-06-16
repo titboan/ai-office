@@ -50,6 +50,8 @@ product_mapping          -- реестр товаров
 product_costs            -- себестоимость
   mapping_id → cost (₽), updated_at, marketplace ('wb'/'ozon')
   ключ на product_mapping.id, НЕ на артикул МП
+  ПО ДВЕ строки на товар (wb + ozon, разная себестоимость) —
+  джойн ОБЯЗАН фильтровать c.marketplace, иначе fan-out задваивает строки
 
 product_adv_stats        -- реклама на уровне товара (product_id/день)
   chat_id, marketplace, product_id, campaign_id, stat_date
@@ -66,6 +68,8 @@ marketplace_financial_report   -- финотчёты МП: реальные вы
   quantity, revenue, payout, commission, logistics, storage, penalty
   UNIQUE(chat_id, marketplace, product_id, report_date)
   -- WB: из /api/v5/supplier/reportDetailByPeriod (statistics_token)
+  --   product_id = sa_name (supplierArticle, НИЖНИЙ РЕГИСТР!) — НЕ nm_id.
+  --   Джойн с product_mapping.wb_article — через LOWER() с обеих сторон.
   -- Ozon: из /v3/finance/transaction/list (orders + returns tx_type)
   -- upsert = EXCLUDED-семантика (замена, не накопление)
 

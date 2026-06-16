@@ -50,3 +50,15 @@
 Аудит всего репо на этот паттерн нашёл такой же баг в `agents/max.py::_check_stock_alerts` (фоновая проверка низких остатков, шлёт алерт в Telegram) — джойн `marketplace_orders.product_id = marketplace_stocks.product_id` напрямую, для Ozon `daily_velocity` всегда была 0, алерты по низким остаткам для Ozon-товаров не срабатывали (кроме случая stock=0). Исправлено той же marketplace-aware трансляцией через `product_mapping.ozon_sku`. Проверено на реальных данных — `daily_velocity` для Ozon стала ненулевой.
 
 Остальные места (margin/funnel/returns/kw_top/mom_trends в `agents/peter.py`, `agents/max.py::_check_drr_alerts`, `tools/marketplace.py`, `db.py`) проверены аудитом — джойнов с этим несовпадением не найдено. Соответствие offer_id/sku по таблицам задокументировано в `.claude/skills/db-schema/SKILL.md`.
+
+## Доп. находка (16.06, ещё позже): NET-маржа в дашборде — три бага сразу
+
+Пользователь сообщил, что таблица NET-маржи показывает "непонятные значения". Разобрал `agents/peter.py::_collect_advanced_data`:
+
+1. **`product_costs` — fan-out**: таблица хранит ПО ДВЕ строки на товар (`marketplace='wb'` и `marketplace='ozon'`, разная себестоимость). Джойн `JOIN product_costs c ON c.mapping_id = m.id` без фильтра по marketplace в `margin_wb`/`margin_ozon` задваивал каждую строку заказа (по строке на каждую запись себестоимости) → revenue/qty/op_profit были **в 2 раза больше реальных**. Проверено: честный `SUM(quantity)` по `marketplace_orders` = 696, баг показывал 1392.
+2. **WB финотчёт ключуется по `nm_id`, а не `wb_article`**: `WBClient.get_financial_report` (`tools/marketplace.py`) брал `nm_id` (внутренний числовой ID карточки WB) как `product_id`, а `product_mapping.wb_article` — это `supplierArticle`. Джойн никогда не совпадал → для всех WB-товаров в NET-марже `cost_per_unit=0`, `net_margin_pct=100%` (выглядело как "идеальная" маржа). Исправлено: используем `sa_name` (= supplierArticle, но в нижнем регистре) из того же отчёта; джойн в SQL — `LOWER(m.wb_article) = LOWER(f.product_id)`.
+3. Тот же безусловный `OR`-джойн `product_mapping` по `wb_article`/`ozon_offer_id` без привязки к marketplace (паттерн уже чинили в `stock_velocity`).
+
+Дополнительно вычищены 200 старых строк `marketplace_financial_report` (WB, ключ `nm_id`) и финотчёт пересинхронизирован с новым ключом. Найдена и исправлена опечатка в `product_mapping` (id=10): `wb_article='ЛГ1450'` не существовал ни в одной реальной таблице WB (заказы/остатки/финотчёт), реальный артикул — `ЛГ450`. Из-за этого товар не матчился с mapping вообще ни в одном запросе, не только в NET-марже.
+
+Минорная находка не в скоупе фикса: в WB-данных существует артикул `ГБ2.5` (точка) отдельно от `ГБ2,5` (запятая) — похоже на дубль карточки на стороне продавца, не трогали.
