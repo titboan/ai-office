@@ -446,12 +446,22 @@ class PeterAgent(BaseAgent):
                        ON m.wb_article = p.product_id
                        OR m.ozon_sku   = p.product_id
                 LEFT JOIN (
-                    SELECT product_id,
-                           SUM(price * quantity)::numeric(12,2) AS buyouts
-                    FROM marketplace_sales
-                    WHERE chat_id = $1 AND sale_date >= $2 AND is_return = FALSE
-                    GROUP BY product_id
-                ) s ON s.product_id = p.product_id
+                    SELECT
+                        sl.marketplace,
+                        -- marketplace_sales хранит ozon_offer_id, а не ozon_sku — транслируем
+                        CASE WHEN sl.marketplace = 'ozon'
+                             THEN COALESCE(mm.ozon_sku, sl.product_id)
+                             ELSE sl.product_id END AS key,
+                        SUM(sl.price * sl.quantity)::numeric(12,2) AS buyouts
+                    FROM marketplace_sales sl
+                    LEFT JOIN product_mapping mm
+                           ON mm.ozon_offer_id = sl.product_id
+                    WHERE sl.chat_id = $1 AND sl.sale_date >= $2 AND sl.is_return = FALSE
+                    GROUP BY sl.marketplace,
+                             CASE WHEN sl.marketplace = 'ozon'
+                                  THEN COALESCE(mm.ozon_sku, sl.product_id)
+                                  ELSE sl.product_id END
+                ) s ON s.marketplace = p.marketplace AND s.key = p.product_id
                 WHERE p.chat_id = $1 AND p.stat_date >= $2
                 GROUP BY p.product_id, m.display_name, p.marketplace, s.buyouts
                 ORDER BY adv_spend DESC
@@ -474,12 +484,22 @@ class PeterAgent(BaseAgent):
                        ON m.wb_article = s.product_id
                        OR m.ozon_offer_id = s.product_id
                 LEFT JOIN (
-                    SELECT product_id,
-                           ROUND(SUM(quantity)::numeric / $3, 2) AS daily_orders
-                    FROM marketplace_orders
-                    WHERE chat_id = $1 AND order_date >= $2
-                    GROUP BY product_id
-                ) v ON v.product_id = s.product_id
+                    SELECT
+                        o.marketplace,
+                        -- marketplace_orders хранит ozon_sku, а не ozon_offer_id — транслируем
+                        CASE WHEN o.marketplace = 'ozon'
+                             THEN COALESCE(mm.ozon_offer_id, o.product_id)
+                             ELSE o.product_id END AS key,
+                        ROUND(SUM(o.quantity)::numeric / $3, 2) AS daily_orders
+                    FROM marketplace_orders o
+                    LEFT JOIN product_mapping mm
+                           ON mm.ozon_sku = o.product_id
+                    WHERE o.chat_id = $1 AND o.order_date >= $2
+                    GROUP BY o.marketplace,
+                             CASE WHEN o.marketplace = 'ozon'
+                                  THEN COALESCE(mm.ozon_offer_id, o.product_id)
+                                  ELSE o.product_id END
+                ) v ON v.marketplace = s.marketplace AND v.key = s.product_id
                 WHERE s.chat_id = $1
                 GROUP BY s.marketplace, s.product_id, m.display_name, v.daily_orders
                 ORDER BY days_left ASC

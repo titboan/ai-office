@@ -33,3 +33,14 @@
 ## Итог
 
 Добавлен фоновый цикл `_scheduled_orders_sync_loop()` (`main.py`, после `_scheduled_questions_loop`), вызывающий `Max.sync_marketplace_data(chat_id)` для всех активных магазинов каждый час. Ручная синхронизация по кнопке осталась без изменений. Деплой на Railway — по отдельному подтверждению.
+
+## Доп. находка (16.06): рассинхрон Ozon offer_id / sku в дашборде
+
+При проверке остатков (артикул КБ50 — есть на Ozon, но дашборд показывал только WB) обнаружился отдельный баг в `agents/peter.py` (`_collect_advanced_data`):
+
+- `marketplace_stocks` и `marketplace_sales` хранят для Ozon **offer_id** (`КБ50`)
+- `marketplace_orders` и `product_adv_stats` хранят для Ozon **sku** (`1033466212`)
+- Запросы `stock_velocity` и `product_metrics` (ROAS) джойнили эти таблицы по `product_id = product_id` напрямую → для Ozon сравнение `offer_id = sku` никогда не совпадало
+- Следствие: `daily_orders` для Ozon-товаров всегда 0 → `days_left = 999` → сортировка по `days_left ASC` + `LIMIT 15` выкидывала Ozon-строки из выдачи; `buyouts`/`roas` для Ozon-товаров всегда были 0
+
+Исправлено: в обоих запросах добавлена marketplace-aware трансляция идентификатора через `product_mapping` (`CASE WHEN marketplace='ozon' THEN COALESCE(mm.ozon_offer_id/ozon_sku, product_id) ELSE product_id END`), с сохранением раздельного агрегирования по WB и Ozon (важно: смешивать их скорость продаж в одно число — отдельная ошибка, которую поймали и откатили во время проверки). Проверено на реальных данных (`chat_id=397443854`, артикул КБ50): обе строки (WB и Ozon) теперь видны с собственными `daily_orders`/`days_left`, ROAS по Ozon товарам — реальные ненулевые значения вместо 0.
