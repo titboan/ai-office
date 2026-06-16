@@ -505,9 +505,13 @@ class WBClient:
                 break
 
             for row in rows:
+                # sa_name = supplierArticle — тот же артикул, что в product_mapping.wb_article
+                # (nm_id — внутренний числовой ID карточки WB, с ним product_mapping не сматчится)
+                sa_name  = str(row.get("sa_name", "") or "").strip()
                 nm_id    = str(row.get("nm_id", "") or "")
                 doc_type = row.get("doc_type_name", "")
-                if not nm_id:
+                product_id = sa_name or nm_id
+                if not product_id:
                     continue
                 # Дата начала недели отчёта
                 rp_str = (row.get("rr_dt") or row.get("create_dt") or date_from)[:10]
@@ -519,10 +523,10 @@ class WBClient:
                 except Exception:
                     rp_date = rp_str
 
-                key = (nm_id, rp_date)
+                key = (product_id, rp_date)
                 if key not in agg:
                     agg[key] = {
-                        "product_id":  nm_id,
+                        "product_id":  product_id,
                         "report_date": rp_date,
                         "quantity":    0,
                         "revenue":     0.0,

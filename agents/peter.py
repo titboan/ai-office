@@ -247,7 +247,7 @@ class PeterAgent(BaseAgent):
                     ELSE 0 END                                    AS profitability
                 FROM marketplace_orders o
                 JOIN product_mapping m ON m.wb_article = o.product_id
-                JOIN product_costs c   ON c.mapping_id = m.id
+                JOIN product_costs c   ON c.mapping_id = m.id AND c.marketplace = 'wb'
                 WHERE o.chat_id = $1 AND o.marketplace = 'wb' AND o.order_date >= $2
                 GROUP BY o.product_id, m.display_name
                 ORDER BY op_profit DESC
@@ -271,7 +271,7 @@ class PeterAgent(BaseAgent):
                     ELSE 0 END                                    AS profitability
                 FROM marketplace_orders o
                 JOIN product_mapping m ON m.ozon_sku = o.product_id
-                JOIN product_costs c   ON c.mapping_id = m.id
+                JOIN product_costs c   ON c.mapping_id = m.id AND c.marketplace = 'ozon'
                 WHERE o.chat_id = $1 AND o.marketplace = 'ozon' AND o.order_date >= $2
                 GROUP BY o.product_id, m.display_name
                 ORDER BY op_profit DESC
@@ -298,9 +298,10 @@ class PeterAgent(BaseAgent):
                          ELSE 0 END                         AS net_margin_pct
                 FROM marketplace_financial_report f
                 LEFT JOIN product_mapping m
-                       ON m.wb_article = f.product_id
-                       OR m.ozon_offer_id = f.product_id
-                LEFT JOIN product_costs c ON c.mapping_id = m.id
+                       -- WB: sa_name из финотчёта приходит в нижнем регистре, wb_article — как ввёл селлер
+                       ON (f.marketplace = 'wb'   AND LOWER(m.wb_article)    = LOWER(f.product_id))
+                       OR (f.marketplace = 'ozon' AND m.ozon_offer_id = f.product_id)
+                LEFT JOIN product_costs c ON c.mapping_id = m.id AND c.marketplace = f.marketplace
                 WHERE f.chat_id = $1 AND f.report_date >= $2
                 GROUP BY f.marketplace, f.product_id, m.display_name
                 ORDER BY net_profit DESC
