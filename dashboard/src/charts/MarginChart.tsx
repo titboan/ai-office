@@ -11,7 +11,8 @@ const tooltipStyle = { backgroundColor: 'var(--tooltip-bg)', color: 'var(--toolt
 
 export default function MarginChart({ data }: { data: NetMarginRow[] }) {
   const combined = [...data]
-    .sort((a, b) => b.net_margin_pct - a.net_margin_pct)
+    .filter(d => d.net_margin_pct_total !== null)
+    .sort((a, b) => (b.net_margin_pct_total ?? 0) - (a.net_margin_pct_total ?? 0))
     .slice(0, 12)
 
   if (!combined.length) return null
@@ -21,7 +22,7 @@ export default function MarginChart({ data }: { data: NetMarginRow[] }) {
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
       <h2 className="text-sm font-semibold mb-1">Рентабельность по товарам (%)</h2>
-      <p className="text-xs text-gray-400 dark:text-gray-500 mb-3">NET-маржа: выплата МП − себестоимость − налог</p>
+      <p className="text-xs text-gray-400 dark:text-gray-500 mb-3">NET-маржа: выплата МП − себестоимость − налог, по обеим площадкам</p>
       <ResponsiveContainer width="100%" height={200}>
         <BarChart data={combined} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
           <XAxis dataKey="product_name" tick={{ fontSize: 9, fill: 'currentColor' }}
@@ -29,14 +30,14 @@ export default function MarginChart({ data }: { data: NetMarginRow[] }) {
           <YAxis tick={{ fontSize: 10, fill: 'currentColor' }} unit="%" width={32} />
           <Tooltip
             formatter={(v: number, _: string, props: any) => [
-              `${v}% | прибыль ${fmt(props.payload.net_profit)} ₽`
+              `${v}% | прибыль ${fmt(props.payload.net_profit_total)} ₽`
             ]}
             labelFormatter={(label: string) => label}
             contentStyle={tooltipStyle}
           />
           <ReferenceLine y={20} stroke="#d97706" strokeDasharray="3 3" label={{ value: '20%', fontSize: 9, fill: '#d97706' }} />
-          <Bar dataKey="net_margin_pct" name="Маржа">
-            {combined.map((d, i) => <Cell key={i} fill={barColor(d.net_margin_pct)} />)}
+          <Bar dataKey="net_margin_pct_total" name="Маржа">
+            {combined.map((d, i) => <Cell key={i} fill={barColor(d.net_margin_pct_total ?? 0)} />)}
           </Bar>
         </BarChart>
       </ResponsiveContainer>

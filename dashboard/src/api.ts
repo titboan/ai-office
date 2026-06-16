@@ -15,10 +15,10 @@ export interface StockVelocity {
 export interface DayRevenue { date: string; wb: number; ozon: number }
 
 export interface NetMarginRow {
-  marketplace: string; product_id: string; product_name: string
-  qty: number; revenue: number; payout: number
-  commission: number; logistics: number; storage: number; penalty: number
-  cost_per_unit: number; net_profit: number; net_margin_pct: number
+  product_name: string
+  qty_wb: number; payout_wb: number; net_profit_wb: number; net_margin_pct_wb: number | null
+  qty_ozon: number; payout_ozon: number; net_profit_ozon: number; net_margin_pct_ozon: number | null
+  net_profit_total: number; net_margin_pct_total: number | null
 }
 export interface MomRow { month: string; revenue: number; orders: number }
 export interface ReturnRow {
