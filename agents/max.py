@@ -2524,35 +2524,77 @@ class MaxAgent(BaseAgent):
             logger.error(f"[Макс/sync_sku] ошибка: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
 
+    async def _catalog_text(self, chat_id: int) -> str:
+        """Каталог товаров: с/с и текущие цены в виде <pre>-таблицы."""
+        from db import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT m.display_name,
+                       m.wb_price, m.ozon_price, m.prices_updated_at,
+                       MAX(c.cost) FILTER (WHERE c.marketplace = 'wb')   AS cost_wb,
+                       MAX(c.cost) FILTER (WHERE c.marketplace = 'ozon') AS cost_ozon
+                FROM product_mapping m
+                LEFT JOIN product_costs c ON c.mapping_id = m.id
+                GROUP BY m.id, m.display_name, m.wb_price, m.ozon_price, m.prices_updated_at
+                ORDER BY m.display_name
+            """)
+        if not rows:
+            return "📦 Реестр пуст.\nДобавь товар: <code>/map name=КБ50 wb=БК50гр ozon=КБ50</code>"
+
+        def _fmt(price, cost):
+            p = f"{price:.0f}₽" if price else "н/д"
+            c = f"{cost:.0f}₽"  if cost  else "н/д"
+            return p, c
+
+        w = max(len(r["display_name"]) for r in rows)
+        hdr = f"{'Товар':<{w}}  {'Цена':>5}  {'С/С':>5}  {'Цена':>5}  {'С/С':>5}"
+        sub = f"{'':>{w}}  {'WB':>5}  {'WB':>5}  {'OZ':>5}  {'OZ':>5}"
+        sep = "─" * len(hdr)
+        table_lines = [hdr, sub, sep]
+        no_cost = 0
+        for r in rows:
+            name = r["display_name"]
+            wb_p, wb_c = _fmt(r["wb_price"],   r["cost_wb"])
+            oz_p, oz_c = _fmt(r["ozon_price"], r["cost_ozon"])
+            if not r["cost_wb"] and not r["cost_ozon"]:
+                no_cost += 1
+            table_lines.append(f"{name:<{w}}  {wb_p:>5}  {wb_c:>5}  {oz_p:>5}  {oz_c:>5}")
+
+        # Метка обновления цен
+        upd = None
+        for r in rows:
+            if r["prices_updated_at"]:
+                upd = r["prices_updated_at"]
+                break
+
+        lines = [
+            f"📦 <b>Каталог товаров</b>  ·  {len(rows)} позиций",
+            "",
+            "<pre>" + "\n".join(table_lines) + "</pre>",
+        ]
+        if upd:
+            from datetime import timezone
+            msk = upd.astimezone(timezone.utc).strftime("%d.%m %H:%M") + " UTC"
+            lines.append(f"<i>Цены обновлены: {msk}</i>")
+        else:
+            lines.append("<i>Цены не загружены — запусти /sync</i>")
+        if no_cost:
+            lines.append(f"⚠️ Нет с/с у {no_cost} товаров → /cost")
+        return "\n".join(lines)
+
     async def cmd_products(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/products — список товаров реестра с себестоимостью."""
+        """/products — каталог товаров: цены и себестоимость."""
+        chat_id = update.effective_chat.id
         try:
-            from db import get_pool
-            pool = await get_pool()
-            async with pool.acquire() as conn:
-                rows = await conn.fetch("""
-                    SELECT m.display_name, m.wb_article, m.ozon_offer_id, m.ozon_sku,
-                           MAX(CASE WHEN c.marketplace = 'wb'   THEN c.cost END) AS cost_wb,
-                           MAX(CASE WHEN c.marketplace = 'ozon' THEN c.cost END) AS cost_ozon
-                    FROM product_mapping m
-                    LEFT JOIN product_costs c ON c.mapping_id = m.id
-                    GROUP BY m.id, m.display_name, m.wb_article, m.ozon_offer_id, m.ozon_sku
-                    ORDER BY m.display_name
-                """)
-            if not rows:
-                await update.message.reply_text("Реестр пуст. Добавь товар: /map name=КБ50 wb=БК50гр ozon=КБ50")
-                return
-            lines = ["📦 Каталог товаров:\n"]
-            for r in rows:
-                wb = r["wb_article"] or "—"
-                oz = r["ozon_offer_id"] or "—"
-                sku = "✓" if r["ozon_sku"] else "✗"
-                cost_wb   = f"{r['cost_wb']}₽"   if r["cost_wb"]   is not None else "—"
-                cost_ozon = f"{r['cost_ozon']}₽" if r["cost_ozon"] is not None else "—"
-                lines.append(f"• {r['display_name']}: WB={wb}({cost_wb}) OZ={oz}({cost_ozon}) SKU={sku}")
-            with_cost = sum(1 for r in rows if r["cost_wb"] is not None or r["cost_ozon"] is not None)
-            lines.append(f"\nВсего: {len(rows)} | с себестоимостью: {with_cost}")
-            await update.message.reply_text("\n".join(lines))
+            text = await self._catalog_text(chat_id)
+            await update.message.reply_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📊 Маржа и рекомендации", callback_data="menu_cmd:cost"),
+                ]]),
+            )
         except Exception as e:
             logger.error(f"[Макс/products] ошибка: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
@@ -3476,10 +3518,8 @@ class MaxAgent(BaseAgent):
             [InlineKeyboardButton("◀️ Назад",                    callback_data="menu_back")],
         ]),
         "products": ("📦 Товары", [
-            [
-                InlineKeyboardButton("📋 Список товаров", callback_data="menu_cmd:products"),
-                InlineKeyboardButton("💲 Себестоимость",  callback_data="menu_cmd:cost"),
-            ],
+            [InlineKeyboardButton("📦 Каталог  (цены · с/с)", callback_data="menu_cmd:products")],
+            [InlineKeyboardButton("💲 Маржа и рекомендации",  callback_data="menu_cmd:cost")],
             [
                 InlineKeyboardButton("🗺️ Маппинг артикулов", callback_data="menu_cmd:map"),
                 InlineKeyboardButton("🔄 Синк SKU",          callback_data="menu_cmd:sync_sku"),
@@ -3751,11 +3791,25 @@ class MaxAgent(BaseAgent):
                     logger.error(f"[Макс/menu_cost] ошибка: {e}", exc_info=True)
                     await msg.reply_text(f"❌ Ошибка: {e}")
 
-            elif cmd in ("reviews", "pending", "products", "map", "sync_sku"):
+            elif cmd == "products":
+                try:
+                    text = await self._catalog_text(chat_id)
+                    await msg.reply_text(
+                        text,
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📊 Маржа и рекомендации", callback_data="menu_cmd:cost")],
+                            [InlineKeyboardButton("◀️ В меню", callback_data="menu_back")],
+                        ]),
+                    )
+                except Exception as e:
+                    logger.error(f"[Макс/menu_products] ошибка: {e}", exc_info=True)
+                    await msg.reply_text(f"❌ Ошибка: {e}")
+
+            elif cmd in ("reviews", "pending", "map", "sync_sku"):
                 hints = {
                     "reviews":  "⭐ Используй команду /reviews",
                     "pending":  "🔔 Используй команду /pending",
-                    "products": "📦 Используй команду /products",
                     "map":      "🗺️ Используй команду /map name=X wb=Y ozon=Z",
                     "sync_sku": "🔄 Используй команду /sync_sku",
                 }
