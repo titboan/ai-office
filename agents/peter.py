@@ -284,6 +284,11 @@ class PeterAgent(BaseAgent):
             # REPLACE(...,',','.') в условии join — WB иногда отдаёт десятичный артикул через точку,
             # а в product_mapping он записан через запятую (опечатка на стороне WB, не у нас).
             TAX_RATE = config.NET_MARGIN_TAX_RATE
+            # Ozon: последний полный месяц (текущий месяц даёт qty=0 — нет строк реализации)
+            from datetime import date as _date
+            _today = _date.today()
+            _oz_month_end   = _today.replace(day=1) - timedelta(days=1)
+            _oz_month_start = _oz_month_end.replace(day=1)
             net_margin_raw = await conn.fetch("""
                 SELECT
                     COALESCE(m.display_name, f.product_id) AS product_name,
@@ -300,10 +305,14 @@ class PeterAgent(BaseAgent):
                        -- Ozon: /v3/finance/transaction/list отдаёт items[].sku, не offer_id
                        OR (f.marketplace = 'ozon' AND m.ozon_sku = f.product_id)
                 LEFT JOIN product_costs c ON c.mapping_id = m.id AND c.marketplace = f.marketplace
-                WHERE f.chat_id = $1 AND f.report_date >= $2
+                WHERE f.chat_id = $1 AND (
+                    (f.marketplace = 'wb'   AND f.report_date >= $2)
+                    OR
+                    (f.marketplace = 'ozon' AND f.report_date >= $3 AND f.report_date <= $4)
+                )
                 GROUP BY COALESCE(m.display_name, f.product_id)
                 HAVING COALESCE(SUM(f.payout), 0) != 0
-            """, chat_id, date_from)
+            """, chat_id, date_from, _oz_month_start, _oz_month_end)
 
             # Средняя цена продажи (с учётом скидки селлера) за тот же период — нужна, чтобы
             # перевести "требуемый payout на штуку" в рекомендованную розничную цену. payout уже
