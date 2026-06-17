@@ -2559,8 +2559,8 @@ class MaxAgent(BaseAgent):
                 WHERE f.chat_id = $1 AND f.report_date >= $2 AND f.report_date <= $3
                 GROUP BY COALESCE(m.display_name, f.product_id)
             """, chat_id, month_start, month_end)
-            # avg_price нужен только для расчёта take_home_ratio — не привязываем
-            # к периоду маржи, берём 90 дней чтобы данные точно были в БД.
+            # Берём 30 дней — актуальная цена важнее полноты выборки.
+            # priceWithDisc (WB) = цена после скидки покупателя, avg за месяц ≈ текущая.
             price_rows = await conn.fetch("""
                 SELECT COALESCE(m.display_name, o.product_id) AS name, o.marketplace,
                        (SUM(o.seller_price * o.quantity) / SUM(o.quantity))::numeric(12,2) AS avg_price
@@ -2568,7 +2568,7 @@ class MaxAgent(BaseAgent):
                 LEFT JOIN product_mapping m
                     ON (o.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.')) = LOWER(REPLACE(o.product_id, ',', '.')))
                     OR (o.marketplace = 'ozon' AND m.ozon_sku = o.product_id)
-                WHERE o.chat_id = $1 AND o.order_date >= CURRENT_DATE - INTERVAL '90 days'
+                WHERE o.chat_id = $1 AND o.order_date >= CURRENT_DATE - INTERVAL '30 days'
                   AND o.seller_price IS NOT NULL AND o.seller_price > 0
                 GROUP BY o.marketplace, COALESCE(m.display_name, o.product_id)
                 HAVING SUM(o.quantity) > 0
