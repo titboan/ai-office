@@ -3216,15 +3216,16 @@ class MaxAgent(BaseAgent):
             logger.error(f"[Макс/drr_alerts] ошибка: {e}", exc_info=True)
 
     _MENU_MAIN_KEYBOARD = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Дашборд аналитики",  callback_data="menu_cmd:dashboard")],
         [
-            InlineKeyboardButton("🔔 Отзывы",        callback_data="menu_cat:reviews"),
-            InlineKeyboardButton("🔄 Синхронизация", callback_data="menu_cat:sync"),
+            InlineKeyboardButton("🔔 Отзывы",          callback_data="menu_cat:reviews"),
+            InlineKeyboardButton("🔄 Синхронизация",   callback_data="menu_cat:sync"),
         ],
         [
-            InlineKeyboardButton("📊 Аналитика",     callback_data="menu_cat:analytics"),
-            InlineKeyboardButton("📦 Товары",         callback_data="menu_cat:products"),
+            InlineKeyboardButton("📈 Аналитика",       callback_data="menu_cat:analytics"),
+            InlineKeyboardButton("📦 Товары",           callback_data="menu_cat:products"),
         ],
-        [InlineKeyboardButton("❓ Справка",           callback_data="menu_help")],
+        [InlineKeyboardButton("❓ Справка по командам", callback_data="menu_help")],
     ])
 
     _MENU_SUBMENUS: dict[str, tuple[str, list]] = {
@@ -3353,7 +3354,13 @@ class MaxAgent(BaseAgent):
             return
 
         if data == "menu_help":
-            await msg.reply_text(_HELP_TEXT, parse_mode="HTML")
+            await query.edit_message_text(
+                _HELP_TEXT,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("◀️ В меню", callback_data="menu_back")
+                ]]),
+            )
             return
 
         if data.startswith("menu_cat:"):
@@ -3382,7 +3389,20 @@ class MaxAgent(BaseAgent):
         if data.startswith("menu_cmd:"):
             cmd = data.split(":", 1)[1]
 
-            if cmd == "data_status":
+            if cmd == "dashboard":
+                from config import config as cfg
+                url = (
+                    f"{cfg.DASHBOARD_URL}?token={cfg.DASHBOARD_TOKEN}"
+                    if cfg.DASHBOARD_TOKEN else cfg.DASHBOARD_URL
+                )
+                await msg.reply_text(
+                    "📊 Аналитика продаж WB + Ozon:",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("📊 Открыть дашборд", url=url),
+                    ]]),
+                )
+
+            elif cmd == "data_status":
                 await self._send_data_status(chat_id, msg)
 
             elif cmd == "sync":
@@ -3423,10 +3443,13 @@ class MaxAgent(BaseAgent):
 
             elif cmd == "shop_kpi":
                 await msg.reply_text("⏳ Получаю KPI магазина…")
+                _back_kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("◀️ В меню", callback_data="menu_back"),
+                ]])
                 try:
                     results = await self.sync_shop_kpi(chat_id)
                     if not results:
-                        await msg.reply_text("⚠️ Данные KPI недоступны.")
+                        await msg.reply_text("⚠️ Данные KPI недоступны.", reply_markup=_back_kb)
                         return
                     lines = ["<b>Рейтинг продавца</b>"]
                     for mp, kpi in results.items():
@@ -3435,9 +3458,9 @@ class MaxAgent(BaseAgent):
                         ret    = kpi.get("return_pct") or 0
                         cancel = kpi.get("cancellation_pct") or 0
                         lines.append(f"{label}: ⭐ {rating:.2f} | Возврат: {ret:.1f}% | Отмена: {cancel:.1f}%")
-                    await msg.reply_text("\n".join(lines), parse_mode="HTML")
+                    await msg.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=_back_kb)
                 except Exception as e:
-                    await msg.reply_text(f"❌ Ошибка: {e}")
+                    await msg.reply_text(f"❌ Ошибка: {e}", reply_markup=_back_kb)
 
             elif cmd == "sync_returns":
                 await msg.reply_text("⏳ Загружаю аналитику возвратов…")
@@ -3508,7 +3531,12 @@ class MaxAgent(BaseAgent):
                     "map":      "🗺️ Используй команду /map name=X wb=Y ozon=Z",
                     "sync_sku": "🔄 Используй команду /sync_sku",
                 }
-                await msg.reply_text(hints[cmd])
+                await msg.reply_text(
+                    hints[cmd],
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("◀️ В меню", callback_data="menu_back"),
+                    ]]),
+                )
 
     async def cmd_dashboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/dashboard — открыть дашборд аналитики."""
