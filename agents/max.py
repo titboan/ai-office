@@ -2504,6 +2504,126 @@ class MaxAgent(BaseAgent):
             logger.error(f"[Макс/products] ошибка: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
 
+    async def _margin_check_text(self, chat_id: int) -> str:
+        """Маржинальность всех товаров с с/с — текст для /margin и menu_cmd:cost."""
+        from db import get_pool
+        from config import config as cfg
+        from datetime import date, timedelta
+
+        TAX_RATE = cfg.NET_MARGIN_TAX_RATE
+        TARGET   = cfg.TARGET_NET_MARGIN_PCT / 100.0
+        denom    = (1 - TAX_RATE) - TARGET  # required_payout_per_unit = cost / denom
+
+        pool = await get_pool()
+        date_from = date.today() - timedelta(days=28)
+        async with pool.acquire() as conn:
+            cost_rows = await conn.fetch("""
+                SELECT m.id, m.display_name, m.wb_article, m.ozon_sku,
+                       MAX(c.cost) FILTER (WHERE c.marketplace = 'wb')   AS cost_wb,
+                       MAX(c.cost) FILTER (WHERE c.marketplace = 'ozon') AS cost_ozon
+                FROM product_mapping m
+                JOIN product_costs c ON c.mapping_id = m.id
+                GROUP BY m.id, m.display_name, m.wb_article, m.ozon_sku
+                ORDER BY m.display_name
+            """)
+            if not cost_rows:
+                return (
+                    "💲 Себестоимость не задана ни для одного товара.\n"
+                    "Добавь: <code>/cost КБ50 wb 541</code>"
+                )
+            fin_rows = await conn.fetch("""
+                SELECT
+                    COALESCE(m.display_name, f.product_id) AS name,
+                    SUM(f.quantity) FILTER (WHERE f.marketplace = 'wb')::int             AS qty_wb,
+                    SUM(f.payout)   FILTER (WHERE f.marketplace = 'wb')::numeric(12,2)   AS payout_wb,
+                    SUM(f.quantity) FILTER (WHERE f.marketplace = 'ozon')::int           AS qty_ozon,
+                    SUM(f.payout)   FILTER (WHERE f.marketplace = 'ozon')::numeric(12,2) AS payout_ozon
+                FROM marketplace_financial_report f
+                LEFT JOIN product_mapping m
+                    ON (f.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.')) = LOWER(REPLACE(f.product_id, ',', '.')))
+                    OR (f.marketplace = 'ozon' AND m.ozon_sku = f.product_id)
+                WHERE f.chat_id = $1 AND f.report_date >= $2
+                GROUP BY COALESCE(m.display_name, f.product_id)
+            """, chat_id, date_from)
+            price_rows = await conn.fetch("""
+                SELECT COALESCE(m.display_name, o.product_id) AS name, o.marketplace,
+                       (SUM(o.seller_price * o.quantity) / SUM(o.quantity))::numeric(12,2) AS avg_price
+                FROM marketplace_orders o
+                LEFT JOIN product_mapping m
+                    ON (o.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.')) = LOWER(REPLACE(o.product_id, ',', '.')))
+                    OR (o.marketplace = 'ozon' AND m.ozon_sku = o.product_id)
+                WHERE o.chat_id = $1 AND o.order_date >= $2
+                  AND o.seller_price IS NOT NULL AND o.seller_price > 0
+                GROUP BY o.marketplace, COALESCE(m.display_name, o.product_id)
+                HAVING SUM(o.quantity) > 0
+            """, chat_id, date_from)
+
+        fin_by_name = {r["name"]: r for r in fin_rows}
+        price_by    = {(r["name"], r["marketplace"]): float(r["avg_price"]) for r in price_rows}
+
+        def _rec(name, mp, qty, payout, cost):
+            if qty <= 0 or payout <= 0 or cost <= 0 or denom <= 0:
+                return None
+            avg_p = price_by.get((name, mp))
+            if not avg_p:
+                return None
+            ppu = payout / qty
+            if ppu <= 0:
+                return None
+            take_home = ppu / avg_p
+            if take_home <= 0:
+                return None
+            return round((cost / denom) / take_home)
+
+        target_pct = cfg.TARGET_NET_MARGIN_PCT
+        lines = [f"💲 <b>Себестоимость и маржа</b> (28 дн.)\n"]
+        missing_fin = False
+
+        for r in cost_rows:
+            name      = r["display_name"]
+            cost_wb   = float(r["cost_wb"])   if r["cost_wb"]   is not None else None
+            cost_ozon = float(r["cost_ozon"]) if r["cost_ozon"] is not None else None
+            fin       = fin_by_name.get(name)
+            lines.append(f"<b>{name}</b>")
+
+            for mp, cost in (("wb", cost_wb), ("ozon", cost_ozon)):
+                if cost is None:
+                    continue
+                label = "WB" if mp == "wb" else "Ozon"
+                if fin is None:
+                    lines.append(f"  {label}: с/с {cost:.0f}₽ — нет данных выплат*")
+                    missing_fin = True
+                    continue
+                qty    = int(fin[f"qty_{mp}"] or 0)
+                payout = float(fin[f"payout_{mp}"] or 0)
+                if qty <= 0 or payout <= 0:
+                    lines.append(f"  {label}: с/с {cost:.0f}₽ — нет продаж за 28 дн.")
+                    continue
+                profit     = payout * (1 - TAX_RATE) - qty * cost
+                margin_pct = round(profit / payout * 100, 1)
+                icon = "🟢" if margin_pct >= target_pct else ("🟡" if margin_pct >= 30 else "🔴")
+                rec  = _rec(name, mp, qty, payout, cost)
+                line = f"  {label}: с/с {cost:.0f}₽ | {margin_pct}% {icon}"
+                if rec and margin_pct < target_pct:
+                    line += f" → цена ≥ {rec:,}₽".replace(",", " ")
+                lines.append(line)
+            lines.append("")
+
+        lines.append(f"Цель: NET-маржа ≥ {int(target_pct)}%")
+        if missing_fin:
+            lines.append("* нет данных → запусти /sync_fin")
+        return "\n".join(lines)
+
+    async def cmd_margin_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/margin — маржинальность по всем товарам с рекомендованными ценами."""
+        chat_id = update.effective_chat.id
+        try:
+            text = await self._margin_check_text(chat_id)
+            await update.message.reply_text(text, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"[Макс/margin] ошибка: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+
     async def cmd_map(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/map name=X wb=Y ozon=Z — добавить/обновить товар в реестре.
         name обязателен. wb и ozon — опционально (товар может быть на одной площадке).
@@ -3511,12 +3631,25 @@ class MaxAgent(BaseAgent):
                 except Exception as e:
                     await msg.reply_text(f"❌ Ошибка: {e}")
 
-            elif cmd in ("reviews", "pending", "products", "cost", "map", "sync_sku"):
+            elif cmd == "cost":
+                try:
+                    text = await self._margin_check_text(chat_id)
+                    await msg.reply_text(
+                        text,
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("◀️ В меню", callback_data="menu_back"),
+                        ]]),
+                    )
+                except Exception as e:
+                    logger.error(f"[Макс/menu_cost] ошибка: {e}", exc_info=True)
+                    await msg.reply_text(f"❌ Ошибка: {e}")
+
+            elif cmd in ("reviews", "pending", "products", "map", "sync_sku"):
                 hints = {
                     "reviews":  "⭐ Используй команду /reviews",
                     "pending":  "🔔 Используй команду /pending",
                     "products": "📦 Используй команду /products",
-                    "cost":     "💲 Используй команду /cost <артикул> <сумма>",
                     "map":      "🗺️ Используй команду /map name=X wb=Y ozon=Z",
                     "sync_sku": "🔄 Используй команду /sync_sku",
                 }
@@ -3556,6 +3689,7 @@ class MaxAgent(BaseAgent):
             # Каталог
             BotCommand("products",         "📦 Каталог товаров и себестоимость"),
             BotCommand("cost",             "💲 Задать себестоимость товара"),
+            BotCommand("margin",           "📊 Маржинальность и рекомендованные цены"),
             BotCommand("map",              "🗺️ Добавить товар в реестр"),
             # Утилиты
             BotCommand("help",             "❓ Справочник команд"),
@@ -3586,6 +3720,7 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("products",      self.cmd_products))
         self.app.add_handler(CommandHandler("map",           self.cmd_map))
         self.app.add_handler(CommandHandler("cost",          self.cmd_cost_wizard))
+        self.app.add_handler(CommandHandler("margin",        self.cmd_margin_check))
         self.app.add_handler(CommandHandler("add",           self.cmd_add))
         self.app.add_handler(CommandHandler("cancel",        self.cmd_cancel))
         self.app.add_handler(
