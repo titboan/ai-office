@@ -1721,44 +1721,30 @@ class MaxAgent(BaseAgent):
 
     @staticmethod
     def _group_by_sku(rows: list[dict], cluster_fn) -> dict:
+        """Группировка по display_name → {регион: шт}."""
         grouped: dict = {}
         for s in rows:
-            pid  = s["product_id"]
-            name = s.get("product_name") or pid
+            name   = s.get("display_name") or s.get("product_name") or s["product_id"]
             region = cluster_fn(s.get("warehouse_name", ""))
-            entry = grouped.setdefault(pid, {"name": name, "regions": {}})
+            entry  = grouped.setdefault(name, {"regions": {}})
             entry["regions"][region] = entry["regions"].get(region, 0) + s["stock"]
-        name_counts: dict[str, int] = {}
-        for info in grouped.values():
-            name_counts[info["name"]] = name_counts.get(info["name"], 0) + 1
-        for pid, info in grouped.items():
-            if name_counts[info["name"]] > 1 and pid:
-                info["name"] = f"{info['name']} ({pid})"
         return grouped
 
     @staticmethod
-    def _article(name: str) -> str:
-        import re
-        m = re.search(r'\((.+)\)$', name.strip())
-        return m.group(1) if m else name
-
-    @staticmethod
     def _render_low(grouped: dict) -> list[str]:
-        rows = ["| Артикул | Регион | Шт |", "|---|---|---|"]
-        for info in grouped.values():
-            art = MaxAgent._article(info["name"])
-            for region, qty in info["regions"].items():
-                rows.append(f"| {art} | {region} | {qty} |")
+        """Таблица: Товар | Регион | Шт — несколько строк на товар если несколько регионов."""
+        rows = ["| Товар | Регион | Шт |", "|---|---|---|"]
+        for name, info in grouped.items():
+            first = True
+            for region, qty in sorted(info["regions"].items()):
+                rows.append(f"| {'**' + name + '**' if first else ''} | {region} | {qty} |")
+                first = False
         return rows
 
     @staticmethod
     def _render_zero(grouped: dict) -> list[str]:
-        rows = ["| Артикул | Регионы |", "|---|---|"]
-        for info in grouped.values():
-            art = MaxAgent._article(info["name"])
-            regions = ", ".join(info["regions"].keys())
-            rows.append(f"| {art} | {regions} |")
-        return rows
+        """Список товаров с нулевыми остатками."""
+        return ["- " + name for name in sorted(grouped.keys())]
 
     @staticmethod
     def _split_message(text: str, max_len: int = 4000) -> list[str]:

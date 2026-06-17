@@ -791,10 +791,15 @@ async def get_low_stocks(chat_id: int, threshold: int = 20) -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT marketplace, product_id, product_name, warehouse_name, stock, reserved
-            FROM marketplace_stocks
-            WHERE chat_id = $1 AND stock <= $2
-            ORDER BY marketplace, product_id, stock ASC
+            SELECT s.marketplace, s.product_id, s.warehouse_name, s.stock, s.reserved,
+                   COALESCE(m.display_name, s.product_name, s.product_id) AS display_name
+            FROM marketplace_stocks s
+            LEFT JOIN product_mapping m
+                   ON (s.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.'))
+                                               = LOWER(REPLACE(s.product_id,  ',', '.')))
+                   OR (s.marketplace = 'ozon' AND m.ozon_sku = s.product_id)
+            WHERE s.chat_id = $1 AND s.stock <= $2
+            ORDER BY s.marketplace, display_name, s.stock ASC
             """,
             chat_id, threshold,
         )
