@@ -1104,12 +1104,12 @@ class MaxAgent(BaseAgent):
                 elif mp == "ozon":
                     async with pool.acquire() as conn:
                         rows = await conn.fetch(
-                            "SELECT ozon_offer_id FROM product_mapping WHERE ozon_offer_id IS NOT NULL"
+                            "SELECT ozon_sku FROM product_mapping WHERE ozon_sku IS NOT NULL"
                         )
-                    offer_ids = [r["ozon_offer_id"] for r in rows]
-                    if offer_ids:
+                    skus = [int(r["ozon_sku"]) for r in rows if r["ozon_sku"]]
+                    if skus:
                         client = OzonClient(shop["api_token"], shop["client_id"])
-                        prices = await client.get_current_prices(offer_ids)
+                        prices = await client.get_current_prices(skus)
                         updated = 0
                         async with pool.acquire() as conn:
                             for p in prices:

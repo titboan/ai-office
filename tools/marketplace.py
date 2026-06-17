@@ -1765,31 +1765,30 @@ class OzonClient:
             return {}
 
 
-    async def get_current_prices(self, offer_ids: list[str]) -> list[dict]:
-        """Текущие цены товаров Ozon: /v4/product/info/prices.
+    async def get_current_prices(self, skus: list[int]) -> list[dict]:
+        """Текущие цены товаров Ozon через /v3/product/info/list (по SKU).
         Возвращает [{"product_id": offer_id, "price": float}].
         """
-        if not offer_ids:
+        if not skus:
             return []
-        url = f"{self._BASE}/v4/product/info/prices"
+        url = f"{self._BASE}/v3/product/info/list"
         results = []
         chunk_size = 100
         async with aiohttp.ClientSession() as session:
-            for i in range(0, len(offer_ids), chunk_size):
-                chunk = offer_ids[i:i + chunk_size]
+            for i in range(0, len(skus), chunk_size):
+                chunk = skus[i:i + chunk_size]
                 data = await _request(
                     session, "POST", url,
                     headers=self._headers(),
-                    json={"offer_id": chunk, "limit": chunk_size},
+                    json={"sku": chunk},
                     label="Ozon.get_current_prices",
                 )
                 if not data:
                     continue
-                for item in (data.get("result") or {}).get("items") or []:
+                for item in (data.get("items") or []):
                     offer_id = item.get("offer_id")
-                    price_str = (item.get("price") or {}).get("price") or "0"
                     try:
-                        price = float(price_str)
+                        price = float(item.get("price") or 0)
                     except (ValueError, TypeError):
                         price = 0.0
                     if offer_id and price > 0:
