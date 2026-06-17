@@ -435,7 +435,13 @@ async def _create_schema() -> None:
                 UNIQUE(chat_id, marketplace, stat_date)
             )
         """)
-        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv)")
+        await conn.execute("""
+            ALTER TABLE product_mapping
+            ADD COLUMN IF NOT EXISTS wb_price   NUMERIC(10,2),
+            ADD COLUMN IF NOT EXISTS ozon_price NUMERIC(10,2),
+            ADD COLUMN IF NOT EXISTS prices_updated_at TIMESTAMPTZ
+        """)
+        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices)")
 
 async def save_project(
     chat_id: int,

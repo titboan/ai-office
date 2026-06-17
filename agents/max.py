@@ -1072,6 +1072,59 @@ class MaxAgent(BaseAgent):
                         logger.error(f"[Макс/sync] get_orders_analytics Ozon {df_str}: {e}")
                 logger.info(f"[Макс/sync] Ozon analytics итого: {total_new} новых записей за 14 дней")
 
+        await self.sync_prices(chat_id)
+
+    async def sync_prices(self, chat_id: int) -> None:
+        """Синхронизировать текущие цены товаров из WB и Ozon API → product_mapping."""
+        from db import get_marketplace_shops, get_pool
+        from tools.marketplace import WBClient, OzonClient
+
+        pool = await get_pool()
+        shops = await get_marketplace_shops(chat_id)
+
+        for shop in shops:
+            mp = shop["marketplace"]
+            try:
+                if mp == "wb":
+                    client = WBClient(shop["api_token"])
+                    prices = await client.get_current_prices()
+                    updated = 0
+                    async with pool.acquire() as conn:
+                        for p in prices:
+                            result = await conn.execute(
+                                """UPDATE product_mapping
+                                   SET wb_price = $1, prices_updated_at = NOW()
+                                   WHERE LOWER(REPLACE(wb_article, ',', '.')) = LOWER(REPLACE($2, ',', '.'))""",
+                                p["price"], p["product_id"],
+                            )
+                            if result.split()[-1] != "0":
+                                updated += 1
+                    logger.info(f"[Макс/sync_prices] WB: обновлено {updated} цен")
+
+                elif mp == "ozon":
+                    async with pool.acquire() as conn:
+                        rows = await conn.fetch(
+                            "SELECT ozon_offer_id FROM product_mapping WHERE ozon_offer_id IS NOT NULL"
+                        )
+                    offer_ids = [r["ozon_offer_id"] for r in rows]
+                    if offer_ids:
+                        client = OzonClient(shop["api_token"], shop["client_id"])
+                        prices = await client.get_current_prices(offer_ids)
+                        updated = 0
+                        async with pool.acquire() as conn:
+                            for p in prices:
+                                result = await conn.execute(
+                                    """UPDATE product_mapping
+                                       SET ozon_price = $1, prices_updated_at = NOW()
+                                       WHERE ozon_offer_id = $2""",
+                                    p["price"], p["product_id"],
+                                )
+                                if result.split()[-1] != "0":
+                                    updated += 1
+                        logger.info(f"[Макс/sync_prices] Ozon: обновлено {updated} цен")
+            except Exception as e:
+                logger.error(f"[Макс/sync_prices] {mp}: {e}", exc_info=True)
+
     async def sync_ad_stats(self, chat_id: int) -> None:
         """Синхронизация рекламной статистики WB + Ozon. Вызывается отдельно от основного sync."""
         from db import get_marketplace_shops, upsert_ad_stat, upsert_product_ad_stat, upsert_fin_adv
@@ -2533,11 +2586,13 @@ class MaxAgent(BaseAgent):
         async with pool.acquire() as conn:
             cost_rows = await conn.fetch("""
                 SELECT m.id, m.display_name, m.wb_article, m.ozon_sku,
+                       m.wb_price, m.ozon_price,
                        MAX(c.cost) FILTER (WHERE c.marketplace = 'wb')   AS cost_wb,
                        MAX(c.cost) FILTER (WHERE c.marketplace = 'ozon') AS cost_ozon
                 FROM product_mapping m
                 JOIN product_costs c ON c.mapping_id = m.id
-                GROUP BY m.id, m.display_name, m.wb_article, m.ozon_sku
+                GROUP BY m.id, m.display_name, m.wb_article, m.ozon_sku,
+                         m.wb_price, m.ozon_price
                 ORDER BY m.display_name
             """)
             if not cost_rows:
@@ -2559,23 +2614,16 @@ class MaxAgent(BaseAgent):
                 WHERE f.chat_id = $1 AND f.report_date >= $2 AND f.report_date <= $3
                 GROUP BY COALESCE(m.display_name, f.product_id)
             """, chat_id, month_start, month_end)
-            # Берём 30 дней — актуальная цена важнее полноты выборки.
-            # priceWithDisc (WB) = цена после скидки покупателя, avg за месяц ≈ текущая.
-            price_rows = await conn.fetch("""
-                SELECT COALESCE(m.display_name, o.product_id) AS name, o.marketplace,
-                       (SUM(o.seller_price * o.quantity) / SUM(o.quantity))::numeric(12,2) AS avg_price
-                FROM marketplace_orders o
-                LEFT JOIN product_mapping m
-                    ON (o.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.')) = LOWER(REPLACE(o.product_id, ',', '.')))
-                    OR (o.marketplace = 'ozon' AND m.ozon_sku = o.product_id)
-                WHERE o.chat_id = $1 AND o.order_date >= CURRENT_DATE - INTERVAL '30 days'
-                  AND o.seller_price IS NOT NULL AND o.seller_price > 0
-                GROUP BY o.marketplace, COALESCE(m.display_name, o.product_id)
-                HAVING SUM(o.quantity) > 0
-            """, chat_id)
 
         fin_by_name = {r["name"]: r for r in fin_rows}
-        price_by    = {(r["name"], r["marketplace"]): float(r["avg_price"]) for r in price_rows}
+        # Цены из product_mapping (обновляются автоматически при каждом /sync)
+        price_by: dict[tuple, float] = {}
+        for r in cost_rows:
+            name = r["display_name"]
+            if r["wb_price"]:
+                price_by[(name, "wb")] = float(r["wb_price"])
+            if r["ozon_price"]:
+                price_by[(name, "ozon")] = float(r["ozon_price"])
 
         def _rec(name, mp, qty, payout, cost):
             if qty <= 0 or payout <= 0 or cost <= 0 or denom <= 0:
