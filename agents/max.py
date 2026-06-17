@@ -2594,22 +2594,23 @@ class MaxAgent(BaseAgent):
         target_pct = cfg.TARGET_NET_MARGIN_PCT
 
         def _cell(name, mp, cost, fin):
-            """(cost_str, margin_str, icon, rec_str) для одной ячейки WB или Ozon."""
+            """(price_str, margin_str, icon, rec_str) для одной ячейки WB или Ozon."""
             if cost is None:
                 return None, None, None, None
-            cost_str = f"{cost:.0f}₽"
+            avg_p    = price_by.get((name, mp))
+            price_str = f"{avg_p:.0f}₽" if avg_p else "н/д"
             if fin is None:
-                return cost_str, "—", "", ""
+                return price_str, "—", "", ""
             qty    = int(fin[f"qty_{mp}"] or 0)
             payout = float(fin[f"payout_{mp}"] or 0)
             if qty <= 0 or payout <= 0:
-                return cost_str, "—", "", ""
+                return price_str, "—", "", ""
             profit     = payout * (1 - TAX_RATE) - qty * cost
             margin_pct = round(profit / payout * 100, 1)
             icon    = "🟢" if margin_pct >= target_pct else ("🟡" if margin_pct >= 30 else "🔴")
             rec     = _rec(name, mp, qty, payout, cost)
             rec_str = f"→{rec:,}₽".replace(",", " ") if (rec and margin_pct < target_pct) else ""
-            return cost_str, f"{margin_pct}%", icon, rec_str
+            return price_str, f"{margin_pct}%", icon, rec_str
 
         # Одна строка на товар: WB и Ozon — отдельные ячейки
         rows: list[tuple] = []
