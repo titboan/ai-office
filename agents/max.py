@@ -3661,10 +3661,11 @@ class MaxAgent(BaseAgent):
                     f"{cfg.DASHBOARD_URL}?token={cfg.DASHBOARD_TOKEN}"
                     if cfg.DASHBOARD_TOKEN else cfg.DASHBOARD_URL
                 )
+                from telegram import WebAppInfo
                 await msg.reply_text(
                     "📊 Аналитика продаж WB + Ozon:",
                     reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("📊 Открыть дашборд", url=url),
+                        InlineKeyboardButton("📊 Открыть дашборд", web_app=WebAppInfo(url=url)),
                     ]]),
                 )
 
@@ -3835,8 +3836,9 @@ class MaxAgent(BaseAgent):
         """/dashboard — открыть дашборд аналитики."""
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         from config import config as cfg
+        from telegram import WebAppInfo
         url = f"{cfg.DASHBOARD_URL}?token={cfg.DASHBOARD_TOKEN}" if cfg.DASHBOARD_TOKEN else cfg.DASHBOARD_URL
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📊 Открыть дашборд", url=url)]])
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📊 Открыть дашборд", web_app=WebAppInfo(url=url))]])
         await update.message.reply_text("Аналитика продаж WB + Ozon:", reply_markup=keyboard)
 
     def _bot_commands(self) -> list:
