@@ -60,27 +60,35 @@ _QUESTION_PROMPT = """\
 _HELP_TEXT = """\
 🤖 <b>Что я умею:</b>
 
-📊 <b>Статистика и продажи</b>
-— /sync — синхронизировать заказы, остатки, отзывы
-— /sync_adv — синхронизировать рекламную статистику
-— "Макс, сколько заказов за неделю?"
-— "Макс, какие товары продаются лучше?"
-
-📝 <b>Работа с отзывами</b>
+🔔 <b>Отзывы и вопросы</b>
+— /pending — ждут ответа (1–2★ и вопросы)
+— /reviews — статистика отзывов за сегодня
 — "Макс, покажи негативные отзывы за 7 дней"
-— "Макс, есть неотвеченные отзывы?"
 — "Макс, перепиши этот ответ более извиняющимся тоном: [текст]"
+
+📊 <b>Аналитика</b>
+— /dashboard — открыть дашборд продаж
+— /shop_kpi — рейтинг продавца, возвраты, штрафы
+— /data_status — свежесть данных в БД
+
+🔄 <b>Синхронизация</b>
+— /sync — заказы, остатки и отзывы (полный синк)
+— /sync_adv — рекламная статистика
+— /sync_fin — финансовые отчёты (комиссии, выплаты)
+— /sync_funnel — воронка конверсии карточек
+— /sync_returns — аналитика возвратов WB + Ozon
+— /sync_promotions — акции и акционные кампании
 
 📦 <b>Каталог товаров</b>
 — /products — список товаров и себестоимость
 — /add — добавить товар в реестр
 — /cost — задать себестоимость (WB и Ozon раздельно)
+— /map — добавить/обновить маппинг артикулов
 — /sync_sku — подтянуть Ozon SKU в реестр
 
 ⚙️ <b>Управление</b>
-— /start — статус магазинов и меню
-— /cancel — отменить текущее действие
-— /reset_checked — сбросить дату последней проверки\
+— /start — статус магазинов и главное меню
+— /cancel — отменить текущее действие\
 """
 
 MAX_SYSTEM = """Ты — Макс, менеджер по работе с отзывами на маркетплейсах.
@@ -327,9 +335,9 @@ class MaxAgent(BaseAgent):
         rows = [row1, row2, row2b]
         update_row = []
         if "wb" in connected:
-            update_row.append(InlineKeyboardButton("🔄 Обновить токен WB",   callback_data="onboard:update_wb"))
+            update_row.append(InlineKeyboardButton("🔑 Обновить токен WB",   callback_data="onboard:update_wb"))
         if "ozon" in connected:
-            update_row.append(InlineKeyboardButton("🔄 Обновить токен Ozon", callback_data="onboard:update_ozon"))
+            update_row.append(InlineKeyboardButton("🔑 Обновить токен Ozon", callback_data="onboard:update_ozon"))
         if update_row:
             rows.append(update_row)
         rows.append(row3)
@@ -3209,35 +3217,43 @@ class MaxAgent(BaseAgent):
 
     _MENU_MAIN_KEYBOARD = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📊 Аналитика",     callback_data="menu_cat:analytics"),
+            InlineKeyboardButton("🔔 Отзывы",        callback_data="menu_cat:reviews"),
             InlineKeyboardButton("🔄 Синхронизация", callback_data="menu_cat:sync"),
         ],
         [
-            InlineKeyboardButton("💬 Отзывы",        callback_data="menu_cat:reviews"),
+            InlineKeyboardButton("📊 Аналитика",     callback_data="menu_cat:analytics"),
             InlineKeyboardButton("📦 Товары",         callback_data="menu_cat:products"),
         ],
-        [InlineKeyboardButton("ℹ️ Справка",           callback_data="menu_help")],
+        [InlineKeyboardButton("❓ Справка",           callback_data="menu_help")],
     ])
 
     _MENU_SUBMENUS: dict[str, tuple[str, list]] = {
-        "analytics": ("📊 Аналитика", [
+        "reviews": ("🔔 Отзывы и вопросы", [
             [
-                InlineKeyboardButton("📈 /data_status",  callback_data="menu_cmd:data_status"),
-                InlineKeyboardButton("🏪 /shop_kpi",     callback_data="menu_cmd:shop_kpi"),
+                InlineKeyboardButton("⭐ /reviews — статистика", callback_data="menu_cmd:reviews"),
             ],
-            [InlineKeyboardButton("🔍 /sync_funnel — воронка", callback_data="menu_cmd:sync_funnel")],
+            [
+                InlineKeyboardButton("🔔 /pending — ждут ответа", callback_data="menu_cmd:pending"),
+            ],
             [InlineKeyboardButton("◀️ Назад", callback_data="menu_back")],
         ]),
         "sync": ("🔄 Синхронизация", [
-            [InlineKeyboardButton("📦 /sync — заказы и остатки", callback_data="menu_cmd:sync")],
-            [InlineKeyboardButton("📣 /sync_adv — реклама",      callback_data="menu_cmd:sync_adv")],
-            [InlineKeyboardButton("💰 /sync_fin — финотчёт",     callback_data="menu_cmd:sync_fin")],
+            [InlineKeyboardButton("🔄 /sync — заказы, остатки, отзывы", callback_data="menu_cmd:sync")],
+            [InlineKeyboardButton("📣 /sync_adv — реклама",             callback_data="menu_cmd:sync_adv")],
+            [InlineKeyboardButton("💰 /sync_fin — финотчёт",            callback_data="menu_cmd:sync_fin")],
+            [
+                InlineKeyboardButton("🎯 Воронка",  callback_data="menu_cmd:sync_funnel"),
+                InlineKeyboardButton("↩️ Возвраты", callback_data="menu_cmd:sync_returns"),
+                InlineKeyboardButton("🎁 Акции",    callback_data="menu_cmd:sync_promotions"),
+            ],
             [InlineKeyboardButton("◀️ Назад", callback_data="menu_back")],
         ]),
-        "reviews": ("💬 Отзывы и вопросы", [
+        "analytics": ("📊 Аналитика", [
             [
-                InlineKeyboardButton("📬 /reviews",  callback_data="menu_cmd:reviews"),
-                InlineKeyboardButton("⏳ /pending",  callback_data="menu_cmd:pending"),
+                InlineKeyboardButton("📊 /data_status — свежесть данных", callback_data="menu_cmd:data_status"),
+            ],
+            [
+                InlineKeyboardButton("🏆 /shop_kpi — рейтинг продавца", callback_data="menu_cmd:shop_kpi"),
             ],
             [InlineKeyboardButton("◀️ Назад", callback_data="menu_back")],
         ]),
@@ -3247,8 +3263,8 @@ class MaxAgent(BaseAgent):
                 InlineKeyboardButton("💲 /cost",     callback_data="menu_cmd:cost"),
             ],
             [
-                InlineKeyboardButton("🗺️ /map",       callback_data="menu_cmd:map"),
-                InlineKeyboardButton("🔄 /sync_sku",  callback_data="menu_cmd:sync_sku"),
+                InlineKeyboardButton("🗺️ /map",      callback_data="menu_cmd:map"),
+                InlineKeyboardButton("🔄 /sync_sku", callback_data="menu_cmd:sync_sku"),
             ],
             [InlineKeyboardButton("◀️ Назад", callback_data="menu_back")],
         ]),
@@ -3423,14 +3439,74 @@ class MaxAgent(BaseAgent):
                 except Exception as e:
                     await msg.reply_text(f"❌ Ошибка: {e}")
 
+            elif cmd == "sync_returns":
+                await msg.reply_text("⏳ Загружаю аналитику возвратов…")
+                try:
+                    from db import get_marketplace_shops, upsert_returns_analytics
+                    from tools.marketplace import WBClient, OzonClient
+                    from datetime import date as _dt, timedelta as _td
+                    shops = await get_marketplace_shops(chat_id)
+                    date_to   = _dt.today().strftime("%Y-%m-%d")
+                    date_from = (_dt.today() - _td(days=30)).strftime("%Y-%m-%d")
+                    totals: dict = {}
+                    for shop in shops:
+                        mp = shop["marketplace"]
+                        try:
+                            if mp == "wb":
+                                stats_token = shop.get("statistics_token") or ""
+                                if not stats_token:
+                                    continue
+                                returns = await WBClient(shop["api_token"]).get_returns_analytics(date_from, date_to, stats_token)
+                            elif mp == "ozon":
+                                returns = await OzonClient(shop["api_token"], shop.get("client_id", "")).get_returns_analytics(date_from, date_to)
+                            else:
+                                continue
+                            for r in returns:
+                                sd = r.get("stat_date") or date_to
+                                try:
+                                    if isinstance(sd, str):
+                                        sd = _dt.fromisoformat(sd[:10])
+                                except Exception:
+                                    pass
+                                await upsert_returns_analytics(
+                                    chat_id=chat_id, marketplace=mp,
+                                    product_id=r["product_id"], product_name=r.get("product_name"),
+                                    stat_date=sd, returns_count=r.get("returns_count", 0),
+                                    return_amount=r.get("return_amount", 0.0), return_rate=r.get("return_rate"),
+                                )
+                            totals[mp] = len(returns)
+                        except Exception as e:
+                            logger.error(f"[Макс/menu sync_returns] {mp}: {e}", exc_info=True)
+                    if not totals:
+                        await msg.reply_text("⚠️ Данные о возвратах не получены.")
+                    else:
+                        lines = ["✅ Возвраты синхронизированы"]
+                        for mp, cnt in totals.items():
+                            lines.append(f"{'🟣 WB' if mp == 'wb' else '🔵 Ozon'}: {cnt} записей")
+                        await msg.reply_text("\n".join(lines))
+                except Exception as e:
+                    await msg.reply_text(f"❌ Ошибка: {e}")
+
+            elif cmd == "sync_promotions":
+                await msg.reply_text("⏳ Синхронизирую акции…")
+                try:
+                    counts = await self.sync_promotions(chat_id)
+                    await msg.reply_text(
+                        f"✅ Акции синхронизированы\n"
+                        f"WB: {counts.get('wb', 0)} акций\n"
+                        f"Ozon: {counts.get('ozon', 0)} акций"
+                    )
+                except Exception as e:
+                    await msg.reply_text(f"❌ Ошибка: {e}")
+
             elif cmd in ("reviews", "pending", "products", "cost", "map", "sync_sku"):
                 hints = {
-                    "reviews":  "💬 Отзывы — используй команду /reviews",
-                    "pending":  "⏳ Отложенные — используй команду /pending",
-                    "products": "📦 Каталог — используй команду /products",
-                    "cost":     "💲 Себестоимость — используй команду /cost <артикул> <сумма>",
-                    "map":      "🗺️ Реестр — используй команду /map name=X wb=Y ozon=Z",
-                    "sync_sku": "🔄 Sync SKU — используй команду /sync_sku",
+                    "reviews":  "⭐ Используй команду /reviews",
+                    "pending":  "🔔 Используй команду /pending",
+                    "products": "📦 Используй команду /products",
+                    "cost":     "💲 Используй команду /cost <артикул> <сумма>",
+                    "map":      "🗺️ Используй команду /map name=X wb=Y ozon=Z",
+                    "sync_sku": "🔄 Используй команду /sync_sku",
                 }
                 await msg.reply_text(hints[cmd])
 
@@ -3445,26 +3521,26 @@ class MaxAgent(BaseAgent):
     def _bot_commands(self) -> list:
         from telegram import BotCommand
         return [
-            # Дашборд — первым
+            BotCommand("start",            "🏠 Главное меню магазина"),
             BotCommand("dashboard",        "📊 Открыть дашборд аналитики"),
-            # Аналитика
-            BotCommand("reviews",          "⭐ Статистика отзывов сегодня"),
-            BotCommand("pending",          "🔔 Отзывы и вопросы в очереди"),
-            BotCommand("shop_kpi",         "🏆 KPI магазина — рейтинг, штрафы"),
+            # Отзывы
+            BotCommand("pending",          "🔔 Отзывы и вопросы — ждут ответа"),
+            BotCommand("reviews",          "⭐ Статистика отзывов за сегодня"),
             # Синхронизация
-            BotCommand("sync",             "🔄 Полная синхронизация данных"),
-            BotCommand("sync_fin",         "💰 Финансовые отчёты — комиссии, выплаты"),
+            BotCommand("sync",             "🔄 Полная синхронизация — заказы, остатки"),
             BotCommand("sync_adv",         "📣 Рекламная статистика"),
+            BotCommand("sync_fin",         "💰 Финансовые отчёты — комиссии, выплаты"),
             BotCommand("sync_funnel",      "🎯 Воронка конверсии карточек"),
-            BotCommand("sync_returns",     "↩️ Аналитика возвратов WB + Ozon"),
-            BotCommand("sync_promotions",  "🎁 Акции и кампании WB + Ozon"),
+            BotCommand("sync_returns",     "↩️ Аналитика возвратов"),
+            BotCommand("sync_promotions",  "🎁 Акции и кампании"),
+            # Аналитика
+            BotCommand("shop_kpi",         "🏆 KPI магазина — рейтинг, штрафы"),
+            BotCommand("data_status",      "🗄️ Состояние данных в БД"),
             # Каталог
             BotCommand("products",         "📦 Каталог товаров и себестоимость"),
             BotCommand("cost",             "💲 Задать себестоимость товара"),
             BotCommand("map",              "🗺️ Добавить товар в реестр"),
-            # Прочее
-            BotCommand("data_status",      "🗄️ Состояние данных в БД"),
-            BotCommand("start",            "🏠 Главное меню магазина"),
+            # Утилиты
             BotCommand("help",             "❓ Справочник команд"),
             BotCommand("cancel",           "✖️ Отменить активный мастер"),
         ]
