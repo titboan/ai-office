@@ -2706,7 +2706,7 @@ class MaxAgent(BaseAgent):
             margin_pct = round(profit / payout * 100, 1)
             icon    = "🟢" if margin_pct >= target_pct else ("🟡" if margin_pct >= 30 else "🔴")
             rec     = _rec(name, mp, qty, payout, cost)
-            rec_str = f"→{rec:,}₽".replace(",", " ") if (rec and margin_pct < target_pct) else ""
+            rec_str = f"→{rec}₽" if (rec and margin_pct < target_pct) else ""
             return price_str, f"{margin_pct}%", icon, rec_str
 
         # Одна строка на товар: WB и Ozon — отдельные ячейки
@@ -2733,30 +2733,34 @@ class MaxAgent(BaseAgent):
         if not rows:
             return f"💲 Нет данных за {period_label}. Запусти /sync_fin."
 
-        def _cell_str(cost, margin, rec):
-            """Текст ячейки без emoji — для подсчёта ширины колонки."""
-            if cost is None:
-                return "—"
-            parts = [cost]
-            if margin: parts.append(margin)
-            if rec:    parts.append(rec)
-            return " ".join(parts)
-
         w_name  = max(len(r[0]) for r in rows)
-        wb_strs = [_cell_str(r[1], r[2], r[4]) for r in rows]
-        w_wb    = max(len(s) for s in wb_strs)
+        prices  = [c for r in rows for c in [r[1], r[5]] if c]
+        margins = [m for r in rows for m in [r[2], r[6]] if m and m != "—"]
+        recs    = [rc for r in rows for rc in [r[4], r[8]] if rc]
+        w_price  = max((len(p) for p in prices),  default=5)
+        w_margin = max((len(m) for m in margins), default=5)
+        w_rec    = max((len(rc) for rc in recs),  default=0)
+        blank    = " " * w_name
 
-        hdr = f"{'Товар':<{w_name}}  {'WB':<{w_wb}}  Ozon"
-        sep = "─" * (w_name + 2 + w_wb + 20)
+        def fmt_side(price, margin, icon, rec):
+            p  = f"{(price  or 'н/д'):>{w_price}}"
+            m  = f"{(margin or   '—'):>{w_margin}}"
+            rc = (f"  {rec:>{w_rec}}" if rec else ("  " + " " * w_rec)) if w_rec else ""
+            ic = f" {icon}" if icon else ""
+            return f"{p}  {m}{rc}{ic}"
+
+        hdr_fields = f"{'Цена':>{w_price}}  {'Маржа':>{w_margin}}"
+        if w_rec:
+            hdr_fields += f"  {'→Цель':>{w_rec}}"
+        hdr = f"{'Товар':<{w_name}}  Пл  {hdr_fields}"
+        sep = "─" * len(hdr)
 
         table_lines = [hdr, sep]
-        for i, r in enumerate(rows):
+        for r in rows:
             name, wb_c, wb_m, wb_i, wb_r, oz_c, oz_m, oz_i, oz_r = r
-            wb_txt = wb_strs[i]
-            oz_txt = _cell_str(oz_c, oz_m, oz_r)
-            wb_part = f"{wb_txt:<{w_wb}}{(' ' + wb_i) if wb_i else ''}"
-            oz_part = f"{oz_txt}{(' ' + oz_i) if oz_i else ''}"
-            table_lines.append(f"{name:<{w_name}}  {wb_part}  {oz_part}")
+            table_lines.append(f"{name:<{w_name}}  WB  {fmt_side(wb_c, wb_m, wb_i, wb_r)}")
+            if oz_c is not None:
+                table_lines.append(f"{blank}  OZ  {fmt_side(oz_c, oz_m, oz_i, oz_r)}")
 
         out = [
             f"💲 <b>Себестоимость и маржа</b>  ·  {period_label}",
