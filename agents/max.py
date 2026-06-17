@@ -323,9 +323,20 @@ class MaxAgent(BaseAgent):
             f"🔔 Отзывы — {count} ждут ответа" if count > 0
             else "🔔 Проверить отзывы"
         )
+        from config import config as _cfg
+        from telegram import WebAppInfo as _WAI
+        _dash_url = (
+            f"{_cfg.DASHBOARD_URL}?token={_cfg.DASHBOARD_TOKEN}"
+            if _cfg.DASHBOARD_TOKEN else _cfg.DASHBOARD_URL
+        )
+        _dash_btn = (
+            InlineKeyboardButton("📊 Дашборд аналитики", web_app=_WAI(url=_dash_url))
+            if _dash_url else
+            InlineKeyboardButton("📊 Дашборд аналитики", callback_data="menu_cmd:dashboard")
+        )
         rows = [
-            [InlineKeyboardButton(review_label,            callback_data="onboard:run_now")],
-            [InlineKeyboardButton("📊 Дашборд аналитики", callback_data="menu_cmd:dashboard")],
+            [InlineKeyboardButton(review_label, callback_data="onboard:run_now")],
+            [_dash_btn],
             [
                 InlineKeyboardButton("🔄 Синхронизация ▸", callback_data="menu_cat:sync"),
                 InlineKeyboardButton("📈 Аналитика ▸",     callback_data="menu_cat:analytics"),
@@ -3495,18 +3506,6 @@ class MaxAgent(BaseAgent):
         except Exception as e:
             logger.error(f"[Макс/drr_alerts] ошибка: {e}", exc_info=True)
 
-    _MENU_MAIN_KEYBOARD = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔔 Отзывы",              callback_data="onboard:run_now")],
-        [InlineKeyboardButton("📊 Дашборд аналитики",   callback_data="menu_cmd:dashboard")],
-        [
-            InlineKeyboardButton("🔄 Синхронизация ▸",  callback_data="menu_cat:sync"),
-            InlineKeyboardButton("📈 Аналитика ▸",      callback_data="menu_cat:analytics"),
-        ],
-        [
-            InlineKeyboardButton("📦 Товары ▸",         callback_data="menu_cat:products"),
-            InlineKeyboardButton("❓ Справка",           callback_data="menu_help"),
-        ],
-    ])
 
     _MENU_SUBMENUS: dict[str, tuple[str, list]] = {
         "sync": ("🔄 Синхронизация", [
@@ -3543,7 +3542,7 @@ class MaxAgent(BaseAgent):
         """/menu — главное меню Макса."""
         await update.message.reply_text(
             "Выбери действие:",
-            reply_markup=self._MENU_MAIN_KEYBOARD,
+            reply_markup=await self._build_keyboard(update.effective_chat.id),
         )
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3615,7 +3614,7 @@ class MaxAgent(BaseAgent):
         if data == "menu_back":
             await query.edit_message_text(
                 "👋 Вот твои магазины. Выбери действие:",
-                reply_markup=self._MENU_MAIN_KEYBOARD,
+                reply_markup=await self._build_keyboard(query.message.chat_id),
             )
             return
 
