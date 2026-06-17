@@ -2505,7 +2505,14 @@ class MaxAgent(BaseAgent):
             await update.message.reply_text(f"❌ Ошибка: {e}")
 
     async def _margin_check_text(self, chat_id: int) -> str:
-        """Маржинальность всех товаров с с/с — текст для /margin и menu_cmd:cost."""
+        """Маржинальность всех товаров с с/с — текст для /margin и menu_cmd:cost.
+
+        Использует последний полный календарный месяц, а не скользящее окно.
+        Причина: данные Ozon разбиты на две строки с разными report_date —
+        quantity из realization (последний день месяца) и payout из транзакций
+        (недельные бакеты). Скользящее окно смешивает quantity одного месяца
+        с payout другого — результат некорректный.
+        """
         from db import get_pool
         from config import config as cfg
         from datetime import date, timedelta
@@ -2514,8 +2521,15 @@ class MaxAgent(BaseAgent):
         TARGET   = cfg.TARGET_NET_MARGIN_PCT / 100.0
         denom    = (1 - TAX_RATE) - TARGET  # required_payout_per_unit = cost / denom
 
+        today = date.today()
+        # Последний полный месяц: первое и последнее число
+        month_end   = today.replace(day=1) - timedelta(days=1)
+        month_start = month_end.replace(day=1)
+        _MONTHS_RU = ["", "январь", "февраль", "март", "апрель", "май", "июнь",
+                      "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
+        period_label = f"{_MONTHS_RU[month_end.month]} {month_end.year}"
+
         pool = await get_pool()
-        date_from = date.today() - timedelta(days=28)
         async with pool.acquire() as conn:
             cost_rows = await conn.fetch("""
                 SELECT m.id, m.display_name, m.wb_article, m.ozon_sku,
@@ -2542,9 +2556,9 @@ class MaxAgent(BaseAgent):
                 LEFT JOIN product_mapping m
                     ON (f.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.')) = LOWER(REPLACE(f.product_id, ',', '.')))
                     OR (f.marketplace = 'ozon' AND m.ozon_sku = f.product_id)
-                WHERE f.chat_id = $1 AND f.report_date >= $2
+                WHERE f.chat_id = $1 AND f.report_date >= $2 AND f.report_date <= $3
                 GROUP BY COALESCE(m.display_name, f.product_id)
-            """, chat_id, date_from)
+            """, chat_id, month_start, month_end)
             price_rows = await conn.fetch("""
                 SELECT COALESCE(m.display_name, o.product_id) AS name, o.marketplace,
                        (SUM(o.seller_price * o.quantity) / SUM(o.quantity))::numeric(12,2) AS avg_price
@@ -2552,11 +2566,11 @@ class MaxAgent(BaseAgent):
                 LEFT JOIN product_mapping m
                     ON (o.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.')) = LOWER(REPLACE(o.product_id, ',', '.')))
                     OR (o.marketplace = 'ozon' AND m.ozon_sku = o.product_id)
-                WHERE o.chat_id = $1 AND o.order_date >= $2
+                WHERE o.chat_id = $1 AND o.order_date >= $2 AND o.order_date <= $3
                   AND o.seller_price IS NOT NULL AND o.seller_price > 0
                 GROUP BY o.marketplace, COALESCE(m.display_name, o.product_id)
                 HAVING SUM(o.quantity) > 0
-            """, chat_id, date_from)
+            """, chat_id, month_start, month_end)
 
         fin_by_name = {r["name"]: r for r in fin_rows}
         price_by    = {(r["name"], r["marketplace"]): float(r["avg_price"]) for r in price_rows}
@@ -2576,7 +2590,7 @@ class MaxAgent(BaseAgent):
             return round((cost / denom) / take_home)
 
         target_pct = cfg.TARGET_NET_MARGIN_PCT
-        lines = [f"💲 <b>Себестоимость и маржа</b> (28 дн.)\n"]
+        lines = [f"💲 <b>Себестоимость и маржа</b> ({period_label})\n"]
         missing_fin = False
 
         for r in cost_rows:
@@ -2597,7 +2611,8 @@ class MaxAgent(BaseAgent):
                 qty    = int(fin[f"qty_{mp}"] or 0)
                 payout = float(fin[f"payout_{mp}"] or 0)
                 if qty <= 0 or payout <= 0:
-                    lines.append(f"  {label}: с/с {cost:.0f}₽ — нет продаж за 28 дн.")
+                    lines.append(f"  {label}: с/с {cost:.0f}₽ — нет данных за {period_label}*")
+                    missing_fin = True
                     continue
                 profit     = payout * (1 - TAX_RATE) - qty * cost
                 margin_pct = round(profit / payout * 100, 1)
@@ -2611,7 +2626,7 @@ class MaxAgent(BaseAgent):
 
         lines.append(f"Цель: NET-маржа ≥ {int(target_pct)}%")
         if missing_fin:
-            lines.append("* нет данных → запусти /sync_fin")
+            lines.append(f"* нет данных за {period_label} → запусти /sync_fin")
         return "\n".join(lines)
 
     async def cmd_margin_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
