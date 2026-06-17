@@ -1032,7 +1032,9 @@ class BaseAgent(ABC):
 
     def build_app(self) -> Application:
         async def _post_init(app: Application) -> None:
+            from telegram import MenuButtonCommands
             await app.bot.set_my_commands(self._bot_commands())
+            await app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
         self.app = (
             Application.builder()
