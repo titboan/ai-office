@@ -312,35 +312,36 @@ class MaxAgent(BaseAgent):
         return "\n".join(lines)
 
     async def _build_keyboard(self, chat_id: int) -> InlineKeyboardMarkup:
-        """Динамическая клавиатура: кнопка pending появляется только если есть ожидающие."""
+        """Главная клавиатура — та же структура что и _MENU_MAIN_KEYBOARD, но с живым счётчиком отзывов."""
         from db import get_pending_reviews, get_marketplace_shops
         pending = await get_pending_reviews(chat_id)
         count = len(pending)
         shops = await get_marketplace_shops(chat_id)
         connected = {s["marketplace"] for s in shops}
 
-        row1 = [InlineKeyboardButton("▶️ Проверить отзывы сейчас", callback_data="onboard:run_now")]
-        if count > 0:
-            row1.append(InlineKeyboardButton(f"📬 Отзывы ({count})", callback_data="onboard:show_pending"))
-        row2 = [
-            InlineKeyboardButton("📊 Статистика",        callback_data="onboard:stats"),
-            InlineKeyboardButton("📦 Сводка магазина",   callback_data="onboard:daily_summary"),
+        review_label = (
+            f"🔔 Отзывы — {count} ждут ответа" if count > 0
+            else "🔔 Проверить отзывы"
+        )
+        rows = [
+            [InlineKeyboardButton(review_label,            callback_data="onboard:run_now")],
+            [InlineKeyboardButton("📊 Дашборд аналитики", callback_data="menu_cmd:dashboard")],
+            [
+                InlineKeyboardButton("🔄 Синхронизация ▸", callback_data="menu_cat:sync"),
+                InlineKeyboardButton("📈 Аналитика ▸",     callback_data="menu_cat:analytics"),
+            ],
+            [
+                InlineKeyboardButton("📦 Товары ▸",        callback_data="menu_cat:products"),
+                InlineKeyboardButton("❓ Справка",          callback_data="menu_help"),
+            ],
         ]
-        row2b = [InlineKeyboardButton("🔄 Синхронизировать", callback_data="onboard:sync")]
-        row3 = [
-            InlineKeyboardButton("📋 Меню",         callback_data="menu_back"),
-            InlineKeyboardButton("❓ Что я умею",   callback_data="onboard:help"),
-        ]
-
-        rows = [row1, row2, row2b]
         update_row = []
         if "wb" in connected:
-            update_row.append(InlineKeyboardButton("🔑 Обновить токен WB",   callback_data="onboard:update_wb"))
+            update_row.append(InlineKeyboardButton("🔑 Токен WB",   callback_data="onboard:update_wb"))
         if "ozon" in connected:
-            update_row.append(InlineKeyboardButton("🔑 Обновить токен Ozon", callback_data="onboard:update_ozon"))
+            update_row.append(InlineKeyboardButton("🔑 Токен Ozon", callback_data="onboard:update_ozon"))
         if update_row:
             rows.append(update_row)
-        rows.append(row3)
         return InlineKeyboardMarkup(rows)
 
     async def _send_status_with_buttons(
@@ -3216,32 +3217,25 @@ class MaxAgent(BaseAgent):
             logger.error(f"[Макс/drr_alerts] ошибка: {e}", exc_info=True)
 
     _MENU_MAIN_KEYBOARD = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 Дашборд аналитики",  callback_data="menu_cmd:dashboard")],
+        [InlineKeyboardButton("🔔 Отзывы",              callback_data="onboard:run_now")],
+        [InlineKeyboardButton("📊 Дашборд аналитики",   callback_data="menu_cmd:dashboard")],
         [
-            InlineKeyboardButton("🔔 Отзывы",          callback_data="menu_cat:reviews"),
-            InlineKeyboardButton("🔄 Синхронизация",   callback_data="menu_cat:sync"),
+            InlineKeyboardButton("🔄 Синхронизация ▸",  callback_data="menu_cat:sync"),
+            InlineKeyboardButton("📈 Аналитика ▸",      callback_data="menu_cat:analytics"),
         ],
         [
-            InlineKeyboardButton("📈 Аналитика",       callback_data="menu_cat:analytics"),
-            InlineKeyboardButton("📦 Товары",           callback_data="menu_cat:products"),
+            InlineKeyboardButton("📦 Товары ▸",         callback_data="menu_cat:products"),
+            InlineKeyboardButton("❓ Справка",           callback_data="menu_help"),
         ],
-        [InlineKeyboardButton("❓ Справка по командам", callback_data="menu_help")],
     ])
 
     _MENU_SUBMENUS: dict[str, tuple[str, list]] = {
-        "reviews": ("🔔 Отзывы и вопросы", [
-            [
-                InlineKeyboardButton("⭐ /reviews — статистика", callback_data="menu_cmd:reviews"),
-            ],
-            [
-                InlineKeyboardButton("🔔 /pending — ждут ответа", callback_data="menu_cmd:pending"),
-            ],
-            [InlineKeyboardButton("◀️ Назад", callback_data="menu_back")],
-        ]),
         "sync": ("🔄 Синхронизация", [
-            [InlineKeyboardButton("🔄 /sync — заказы, остатки, отзывы", callback_data="menu_cmd:sync")],
-            [InlineKeyboardButton("📣 /sync_adv — реклама",             callback_data="menu_cmd:sync_adv")],
-            [InlineKeyboardButton("💰 /sync_fin — финотчёт",            callback_data="menu_cmd:sync_fin")],
+            [InlineKeyboardButton("🔄 Полный синк — данные и остатки", callback_data="menu_cmd:sync")],
+            [
+                InlineKeyboardButton("📣 Реклама",  callback_data="menu_cmd:sync_adv"),
+                InlineKeyboardButton("💰 Финотчёт", callback_data="menu_cmd:sync_fin"),
+            ],
             [
                 InlineKeyboardButton("🎯 Воронка",  callback_data="menu_cmd:sync_funnel"),
                 InlineKeyboardButton("↩️ Возвраты", callback_data="menu_cmd:sync_returns"),
@@ -3249,23 +3243,20 @@ class MaxAgent(BaseAgent):
             ],
             [InlineKeyboardButton("◀️ Назад", callback_data="menu_back")],
         ]),
-        "analytics": ("📊 Аналитика", [
-            [
-                InlineKeyboardButton("📊 /data_status — свежесть данных", callback_data="menu_cmd:data_status"),
-            ],
-            [
-                InlineKeyboardButton("🏆 /shop_kpi — рейтинг продавца", callback_data="menu_cmd:shop_kpi"),
-            ],
-            [InlineKeyboardButton("◀️ Назад", callback_data="menu_back")],
+        "analytics": ("📈 Аналитика", [
+            [InlineKeyboardButton("⭐ Статистика отзывов",       callback_data="menu_cmd:reviews")],
+            [InlineKeyboardButton("🏆 KPI магазина — рейтинг",   callback_data="menu_cmd:shop_kpi")],
+            [InlineKeyboardButton("🗄️ Состояние данных в БД",    callback_data="menu_cmd:data_status")],
+            [InlineKeyboardButton("◀️ Назад",                    callback_data="menu_back")],
         ]),
         "products": ("📦 Товары", [
             [
-                InlineKeyboardButton("📋 /products", callback_data="menu_cmd:products"),
-                InlineKeyboardButton("💲 /cost",     callback_data="menu_cmd:cost"),
+                InlineKeyboardButton("📋 Список товаров", callback_data="menu_cmd:products"),
+                InlineKeyboardButton("💲 Себестоимость",  callback_data="menu_cmd:cost"),
             ],
             [
-                InlineKeyboardButton("🗺️ /map",      callback_data="menu_cmd:map"),
-                InlineKeyboardButton("🔄 /sync_sku", callback_data="menu_cmd:sync_sku"),
+                InlineKeyboardButton("🗺️ Маппинг артикулов", callback_data="menu_cmd:map"),
+                InlineKeyboardButton("🔄 Синк SKU",          callback_data="menu_cmd:sync_sku"),
             ],
             [InlineKeyboardButton("◀️ Назад", callback_data="menu_back")],
         ]),
@@ -3274,8 +3265,7 @@ class MaxAgent(BaseAgent):
     async def cmd_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/menu — главное меню Макса."""
         await update.message.reply_text(
-            "📋 <b>Меню Макса</b>\nВыбери раздел:",
-            parse_mode="HTML",
+            "Выбери действие:",
             reply_markup=self._MENU_MAIN_KEYBOARD,
         )
 
@@ -3347,8 +3337,7 @@ class MaxAgent(BaseAgent):
 
         if data == "menu_back":
             await query.edit_message_text(
-                "📋 <b>Меню Макса</b>\nВыбери раздел:",
-                parse_mode="HTML",
+                "👋 Вот твои магазины. Выбери действие:",
                 reply_markup=self._MENU_MAIN_KEYBOARD,
             )
             return
