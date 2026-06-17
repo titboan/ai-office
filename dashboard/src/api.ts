@@ -57,12 +57,15 @@ export interface DashboardData {
 const API_URL = import.meta.env.VITE_API_URL ?? ''
 
 export async function fetchDashboard(days = 14): Promise<DashboardData> {
-  const tg = (window as any).Telegram?.WebApp
-  const initData: string = tg?.initData ?? ''
+  const urlToken = new URLSearchParams(window.location.search).get('token') ?? ''
+  const headers: Record<string, string> = {}
+  if (!urlToken) {
+    const tg = (window as any).Telegram?.WebApp
+    headers['X-Telegram-Init-Data'] = tg?.initData ?? ''
+  }
 
-  const res = await fetch(`${API_URL}/api/dashboard?days=${days}`, {
-    headers: { 'X-Telegram-Init-Data': initData },
-  })
+  const tokenParam = urlToken ? `&token=${encodeURIComponent(urlToken)}` : ''
+  const res = await fetch(`${API_URL}/api/dashboard?days=${days}${tokenParam}`, { headers })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   return res.json()
 }

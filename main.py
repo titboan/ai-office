@@ -547,15 +547,22 @@ async def run_all_async() -> None:
                 "Access-Control-Allow-Headers": "X-Telegram-Init-Data",
                 "Access-Control-Allow-Methods": "GET, OPTIONS",
             })
-        init_data = request.headers.get("X-Telegram-Init-Data", "")
-        parsed = _validate_init_data(init_data, config.MARTA_BOT_TOKEN)
-        if parsed is None:
-            return web.Response(status=401, text="Unauthorized", headers=cors)
-        try:
-            user = _json.loads(parsed.get("user", "{}"))
-            chat_id = int(user["id"])
-        except Exception:
-            return web.Response(status=400, text="Bad Request", headers=cors)
+        # Токен-доступ для коллег: ?token=SECRET → показываем данные владельца
+        url_token = request.rel_url.query.get("token", "")
+        if url_token and config.DASHBOARD_TOKEN and url_token == config.DASHBOARD_TOKEN:
+            if not config.OWNER_CHAT_ID:
+                return web.Response(status=503, text="OWNER_CHAT_ID not configured", headers=cors)
+            chat_id = config.OWNER_CHAT_ID
+        else:
+            init_data = request.headers.get("X-Telegram-Init-Data", "")
+            parsed = _validate_init_data(init_data, config.MARTA_BOT_TOKEN)
+            if parsed is None:
+                return web.Response(status=401, text="Unauthorized", headers=cors)
+            try:
+                user = _json.loads(parsed.get("user", "{}"))
+                chat_id = int(user["id"])
+            except Exception:
+                return web.Response(status=400, text="Bad Request", headers=cors)
         if peter_agent is None:
             return web.Response(status=503, text="Peter agent not running", headers=cors)
         try:
