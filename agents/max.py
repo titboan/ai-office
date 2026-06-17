@@ -3434,31 +3434,43 @@ class MaxAgent(BaseAgent):
                 }
                 await msg.reply_text(hints[cmd])
 
+    async def cmd_dashboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/dashboard — открыть дашборд аналитики."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        from config import config as cfg
+        url = f"{cfg.DASHBOARD_URL}?token={cfg.DASHBOARD_TOKEN}" if cfg.DASHBOARD_TOKEN else cfg.DASHBOARD_URL
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📊 Открыть дашборд", url=url)]])
+        await update.message.reply_text("Аналитика продаж WB + Ozon:", reply_markup=keyboard)
+
     def _bot_commands(self) -> list:
         from telegram import BotCommand
         return [
-            BotCommand("start",            "Главное меню магазина"),
-            BotCommand("menu",             "Меню всех команд"),
-            BotCommand("sync",             "Синхронизация заказов, остатков, отзывов"),
-            BotCommand("sync_adv",         "Синхронизация рекламной статистики"),
-            BotCommand("sync_fin",         "Финансовые отчёты (комиссии, выплаты)"),
-            BotCommand("sync_funnel",      "Воронка конверсии карточек"),
-            BotCommand("sync_sku",         "Подтянуть Ozon SKU в реестр"),
-            BotCommand("sync_returns",     "Аналитика возвратов WB + Ozon"),
-            BotCommand("sync_promotions",  "Акции и кампании WB + Ozon"),
-            BotCommand("data_status",      "Состояние данных в БД"),
-            BotCommand("products",         "Список товаров и себестоимость"),
-            BotCommand("cost",             "Задать себестоимость товара"),
-            BotCommand("map",              "Добавить товар в реестр"),
-            BotCommand("shop_kpi",         "KPI магазина (рейтинг, штрафы)"),
-            BotCommand("pending",          "Отзывы и вопросы ожидающие ответа"),
-            BotCommand("reviews",          "Статистика отзывов сегодня"),
-            BotCommand("help",             "Справочник команд"),
-            BotCommand("cancel",           "Отменить активный мастер"),
-            BotCommand("reset",            "Очистить историю диалога"),
+            # Дашборд — первым
+            BotCommand("dashboard",        "📊 Открыть дашборд аналитики"),
+            # Аналитика
+            BotCommand("reviews",          "⭐ Статистика отзывов сегодня"),
+            BotCommand("pending",          "🔔 Отзывы и вопросы в очереди"),
+            BotCommand("shop_kpi",         "🏆 KPI магазина — рейтинг, штрафы"),
+            # Синхронизация
+            BotCommand("sync",             "🔄 Полная синхронизация данных"),
+            BotCommand("sync_fin",         "💰 Финансовые отчёты — комиссии, выплаты"),
+            BotCommand("sync_adv",         "📣 Рекламная статистика"),
+            BotCommand("sync_funnel",      "🎯 Воронка конверсии карточек"),
+            BotCommand("sync_returns",     "↩️ Аналитика возвратов WB + Ozon"),
+            BotCommand("sync_promotions",  "🎁 Акции и кампании WB + Ozon"),
+            # Каталог
+            BotCommand("products",         "📦 Каталог товаров и себестоимость"),
+            BotCommand("cost",             "💲 Задать себестоимость товара"),
+            BotCommand("map",              "🗺️ Добавить товар в реестр"),
+            # Прочее
+            BotCommand("data_status",      "🗄️ Состояние данных в БД"),
+            BotCommand("start",            "🏠 Главное меню магазина"),
+            BotCommand("help",             "❓ Справочник команд"),
+            BotCommand("cancel",           "✖️ Отменить активный мастер"),
         ]
 
     def _register_extra_handlers(self) -> None:
+        self.app.add_handler(CommandHandler("dashboard",     self.cmd_dashboard))
         self.app.add_handler(CommandHandler("start",         self.cmd_start))
         self.app.add_handler(CommandHandler("menu",          self.cmd_menu))
         self.app.add_handler(CommandHandler("help",          self.cmd_help))
