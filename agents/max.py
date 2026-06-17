@@ -2559,6 +2559,8 @@ class MaxAgent(BaseAgent):
                 WHERE f.chat_id = $1 AND f.report_date >= $2 AND f.report_date <= $3
                 GROUP BY COALESCE(m.display_name, f.product_id)
             """, chat_id, month_start, month_end)
+            # avg_price нужен только для расчёта take_home_ratio — не привязываем
+            # к периоду маржи, берём 90 дней чтобы данные точно были в БД.
             price_rows = await conn.fetch("""
                 SELECT COALESCE(m.display_name, o.product_id) AS name, o.marketplace,
                        (SUM(o.seller_price * o.quantity) / SUM(o.quantity))::numeric(12,2) AS avg_price
@@ -2566,11 +2568,11 @@ class MaxAgent(BaseAgent):
                 LEFT JOIN product_mapping m
                     ON (o.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.')) = LOWER(REPLACE(o.product_id, ',', '.')))
                     OR (o.marketplace = 'ozon' AND m.ozon_sku = o.product_id)
-                WHERE o.chat_id = $1 AND o.order_date >= $2 AND o.order_date <= $3
+                WHERE o.chat_id = $1 AND o.order_date >= CURRENT_DATE - INTERVAL '90 days'
                   AND o.seller_price IS NOT NULL AND o.seller_price > 0
                 GROUP BY o.marketplace, COALESCE(m.display_name, o.product_id)
                 HAVING SUM(o.quantity) > 0
-            """, chat_id, month_start, month_end)
+            """, chat_id)
 
         fin_by_name = {r["name"]: r for r in fin_rows}
         price_by    = {(r["name"], r["marketplace"]): float(r["avg_price"]) for r in price_rows}
@@ -2591,9 +2593,26 @@ class MaxAgent(BaseAgent):
 
         target_pct = cfg.TARGET_NET_MARGIN_PCT
 
-        # Фаза 1: собрать строки таблицы
-        tbl: list[tuple[str, str, str, str, str, str]] = []
-        # (name, mp_label, cost_str, margin_str, icon, rec_str)
+        def _cell(name, mp, cost, fin):
+            """(cost_str, margin_str, icon, rec_str) для одной ячейки WB или Ozon."""
+            if cost is None:
+                return None, None, None, None
+            cost_str = f"{cost:.0f}₽"
+            if fin is None:
+                return cost_str, "—", "", ""
+            qty    = int(fin[f"qty_{mp}"] or 0)
+            payout = float(fin[f"payout_{mp}"] or 0)
+            if qty <= 0 or payout <= 0:
+                return cost_str, "—", "", ""
+            profit     = payout * (1 - TAX_RATE) - qty * cost
+            margin_pct = round(profit / payout * 100, 1)
+            icon    = "🟢" if margin_pct >= target_pct else ("🟡" if margin_pct >= 30 else "🔴")
+            rec     = _rec(name, mp, qty, payout, cost)
+            rec_str = f"→{rec:,}₽".replace(",", " ") if (rec and margin_pct < target_pct) else ""
+            return cost_str, f"{margin_pct}%", icon, rec_str
+
+        # Одна строка на товар: WB и Ozon — отдельные ячейки
+        rows: list[tuple] = []
         missing_fin = False
 
         for r in cost_rows:
@@ -2602,48 +2621,44 @@ class MaxAgent(BaseAgent):
             cost_ozon = float(r["cost_ozon"]) if r["cost_ozon"] is not None else None
             fin       = fin_by_name.get(name)
 
-            for mp, cost in (("wb", cost_wb), ("ozon", cost_ozon)):
-                if cost is None:
-                    continue
-                label    = "WB" if mp == "wb" else "Ozon"
-                cost_str = f"{cost:.0f}₽"
-                if fin is None:
-                    tbl.append((name, label, cost_str, "—", "", ""))
-                    missing_fin = True
-                    continue
-                qty    = int(fin[f"qty_{mp}"] or 0)
-                payout = float(fin[f"payout_{mp}"] or 0)
-                if qty <= 0 or payout <= 0:
-                    tbl.append((name, label, cost_str, "—", "", ""))
-                    missing_fin = True
-                    continue
-                profit     = payout * (1 - TAX_RATE) - qty * cost
-                margin_pct = round(profit / payout * 100, 1)
-                icon    = "🟢" if margin_pct >= target_pct else ("🟡" if margin_pct >= 30 else "🔴")
-                rec     = _rec(name, mp, qty, payout, cost)
-                rec_str = f"→ {rec:,}₽".replace(",", " ") if (rec and margin_pct < target_pct) else ""
-                tbl.append((name, label, cost_str, f"{margin_pct}%", icon, rec_str))
+            wb_c, wb_m, wb_i, wb_r = _cell(name, "wb",   cost_wb,   fin)
+            oz_c, oz_m, oz_i, oz_r = _cell(name, "ozon", cost_ozon, fin)
 
-        if not tbl:
+            if fin is None and (cost_wb is not None or cost_ozon is not None):
+                missing_fin = True
+            elif fin is not None:
+                if cost_wb   is not None and int(fin["qty_wb"]   or 0) <= 0: missing_fin = True
+                if cost_ozon is not None and int(fin["qty_ozon"] or 0) <= 0: missing_fin = True
+
+            rows.append((name, wb_c, wb_m, wb_i, wb_r, oz_c, oz_m, oz_i, oz_r))
+
+        if not rows:
             return f"💲 Нет данных за {period_label}. Запусти /sync_fin."
 
-        # Фаза 2: ширины колонок (без emoji — не вписываются в ljust)
-        w0 = max(len(r[0]) for r in tbl)        # name
-        w1 = 4                                   # "Ozon"
-        w2 = max(len(r[2]) for r in tbl)        # cost
-        w3 = max(len(r[3]) for r in tbl)        # margin text ("42.3%" / "—")
+        def _cell_str(cost, margin, rec):
+            """Текст ячейки без emoji — для подсчёта ширины колонки."""
+            if cost is None:
+                return "—"
+            parts = [cost]
+            if margin: parts.append(margin)
+            if rec:    parts.append(rec)
+            return " ".join(parts)
 
-        hdr = f"{'Товар':<{w0}}  {'МП':<{w1}}  {'С/С':<{w2}}  Маржа"
-        sep = "─" * (w0 + 2 + w1 + 2 + w2 + 2 + w3 + 10)
+        w_name  = max(len(r[0]) for r in rows)
+        wb_strs = [_cell_str(r[1], r[2], r[4]) for r in rows]
+        w_wb    = max(len(s) for s in wb_strs)
+
+        hdr = f"{'Товар':<{w_name}}  {'WB':<{w_wb}}  Ozon"
+        sep = "─" * (w_name + 2 + w_wb + 20)
 
         table_lines = [hdr, sep]
-        for name, mp, cost_s, margin_s, icon, rec_s in tbl:
-            row = f"{name:<{w0}}  {mp:<{w1}}  {cost_s:<{w2}}  {margin_s:<{w3}}"
-            if icon:
-                row += f" {icon}"
-            if rec_s:
-                row += f"  {rec_s}"
-            table_lines.append(row)
+        for i, r in enumerate(rows):
+            name, wb_c, wb_m, wb_i, wb_r, oz_c, oz_m, oz_i, oz_r = r
+            wb_txt = wb_strs[i]
+            oz_txt = _cell_str(oz_c, oz_m, oz_r)
+            wb_part = f"{wb_txt:<{w_wb}}{(' ' + wb_i) if wb_i else ''}"
+            oz_part = f"{oz_txt}{(' ' + oz_i) if oz_i else ''}"
+            table_lines.append(f"{name:<{w_name}}  {wb_part}  {oz_part}")
 
         out = [
             f"💲 <b>Себестоимость и маржа</b>  ·  {period_label}",
