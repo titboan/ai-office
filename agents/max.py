@@ -2602,11 +2602,11 @@ class MaxAgent(BaseAgent):
     async def _margin_check_text(self, chat_id: int) -> str:
         """Маржинальность всех товаров с с/с — текст для /margin и menu_cmd:cost.
 
-        Использует последний полный календарный месяц, а не скользящее окно.
-        Причина: данные Ozon разбиты на две строки с разными report_date —
-        quantity из realization (последний день месяца) и payout из транзакций
-        (недельные бакеты). Скользящее окно смешивает quantity одного месяца
-        с payout другого — результат некорректный.
+        WB: скользящие 35 дней — каждая строка финотчёта уже содержит qty+payout,
+            поэтому данные актуальны (включает неполный текущий месяц).
+        Ozon: последний полный календарный месяц — qty приходит только в строке
+            реализации (последний день месяца), поэтому нельзя брать неполный месяц:
+            payout есть, qty=0, маржа не считается.
         """
         from db import get_pool
         from config import config as cfg
@@ -2614,15 +2614,18 @@ class MaxAgent(BaseAgent):
 
         TAX_RATE = cfg.NET_MARGIN_TAX_RATE
         TARGET   = cfg.TARGET_NET_MARGIN_PCT / 100.0
-        denom    = (1 - TAX_RATE) - TARGET  # required_payout_per_unit = cost / denom
+        denom    = (1 - TAX_RATE) - TARGET
 
         today = date.today()
-        # Последний полный месяц: первое и последнее число
         month_end   = today.replace(day=1) - timedelta(days=1)
         month_start = month_end.replace(day=1)
+        wb_since    = today - timedelta(days=35)
+
         _MONTHS_RU = ["", "январь", "февраль", "март", "апрель", "май", "июнь",
                       "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
-        period_label = f"{_MONTHS_RU[month_end.month]} {month_end.year}"
+        ozon_label = f"{_MONTHS_RU[month_end.month]} {month_end.year}"
+        wb_label   = f"{wb_since.strftime('%d.%m')}–{today.strftime('%d.%m')}"
+        period_label = f"WB: {wb_label} / Ozon: {ozon_label}"
 
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -2653,9 +2656,13 @@ class MaxAgent(BaseAgent):
                 LEFT JOIN product_mapping m
                     ON (f.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.')) = LOWER(REPLACE(f.product_id, ',', '.')))
                     OR (f.marketplace = 'ozon' AND m.ozon_sku = f.product_id)
-                WHERE f.chat_id = $1 AND f.report_date >= $2 AND f.report_date <= $3
+                WHERE f.chat_id = $1 AND (
+                    (f.marketplace = 'wb'   AND f.report_date >= $2)
+                    OR
+                    (f.marketplace = 'ozon' AND f.report_date >= $3 AND f.report_date <= $4)
+                )
                 GROUP BY COALESCE(m.display_name, f.product_id)
-            """, chat_id, month_start, month_end)
+            """, chat_id, wb_since, month_start, month_end)
 
         fin_by_name = {r["name"]: r for r in fin_rows}
         # Цены из product_mapping (обновляются автоматически при каждом /sync)
