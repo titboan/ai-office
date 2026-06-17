@@ -2590,7 +2590,10 @@ class MaxAgent(BaseAgent):
             return round((cost / denom) / take_home)
 
         target_pct = cfg.TARGET_NET_MARGIN_PCT
-        lines = [f"💲 <b>Себестоимость и маржа</b> ({period_label})\n"]
+
+        # Фаза 1: собрать строки таблицы
+        tbl: list[tuple[str, str, str, str, str, str]] = []
+        # (name, mp_label, cost_str, margin_str, icon, rec_str)
         missing_fin = False
 
         for r in cost_rows:
@@ -2598,36 +2601,60 @@ class MaxAgent(BaseAgent):
             cost_wb   = float(r["cost_wb"])   if r["cost_wb"]   is not None else None
             cost_ozon = float(r["cost_ozon"]) if r["cost_ozon"] is not None else None
             fin       = fin_by_name.get(name)
-            lines.append(f"<b>{name}</b>")
 
             for mp, cost in (("wb", cost_wb), ("ozon", cost_ozon)):
                 if cost is None:
                     continue
-                label = "WB" if mp == "wb" else "Ozon"
+                label    = "WB" if mp == "wb" else "Ozon"
+                cost_str = f"{cost:.0f}₽"
                 if fin is None:
-                    lines.append(f"  {label}: с/с {cost:.0f}₽ — нет данных выплат*")
+                    tbl.append((name, label, cost_str, "—", "", ""))
                     missing_fin = True
                     continue
                 qty    = int(fin[f"qty_{mp}"] or 0)
                 payout = float(fin[f"payout_{mp}"] or 0)
                 if qty <= 0 or payout <= 0:
-                    lines.append(f"  {label}: с/с {cost:.0f}₽ — нет данных за {period_label}*")
+                    tbl.append((name, label, cost_str, "—", "", ""))
                     missing_fin = True
                     continue
                 profit     = payout * (1 - TAX_RATE) - qty * cost
                 margin_pct = round(profit / payout * 100, 1)
-                icon = "🟢" if margin_pct >= target_pct else ("🟡" if margin_pct >= 30 else "🔴")
-                rec  = _rec(name, mp, qty, payout, cost)
-                line = f"  {label}: с/с {cost:.0f}₽ | {margin_pct}% {icon}"
-                if rec and margin_pct < target_pct:
-                    line += f" → цена ≥ {rec:,}₽".replace(",", " ")
-                lines.append(line)
-            lines.append("")
+                icon    = "🟢" if margin_pct >= target_pct else ("🟡" if margin_pct >= 30 else "🔴")
+                rec     = _rec(name, mp, qty, payout, cost)
+                rec_str = f"→ {rec:,}₽".replace(",", " ") if (rec and margin_pct < target_pct) else ""
+                tbl.append((name, label, cost_str, f"{margin_pct}%", icon, rec_str))
 
-        lines.append(f"Цель: NET-маржа ≥ {int(target_pct)}%")
+        if not tbl:
+            return f"💲 Нет данных за {period_label}. Запусти /sync_fin."
+
+        # Фаза 2: ширины колонок (без emoji — не вписываются в ljust)
+        w0 = max(len(r[0]) for r in tbl)        # name
+        w1 = 4                                   # "Ozon"
+        w2 = max(len(r[2]) for r in tbl)        # cost
+        w3 = max(len(r[3]) for r in tbl)        # margin text ("42.3%" / "—")
+
+        hdr = f"{'Товар':<{w0}}  {'МП':<{w1}}  {'С/С':<{w2}}  Маржа"
+        sep = "─" * (w0 + 2 + w1 + 2 + w2 + 2 + w3 + 10)
+
+        table_lines = [hdr, sep]
+        for name, mp, cost_s, margin_s, icon, rec_s in tbl:
+            row = f"{name:<{w0}}  {mp:<{w1}}  {cost_s:<{w2}}  {margin_s:<{w3}}"
+            if icon:
+                row += f" {icon}"
+            if rec_s:
+                row += f"  {rec_s}"
+            table_lines.append(row)
+
+        out = [
+            f"💲 <b>Себестоимость и маржа</b>  ·  {period_label}",
+            "",
+            "<pre>" + "\n".join(table_lines) + "</pre>",
+            "",
+            f"Цель: NET-маржа ≥ {int(target_pct)}%",
+        ]
         if missing_fin:
-            lines.append(f"* нет данных за {period_label} → запусти /sync_fin")
-        return "\n".join(lines)
+            out.append(f"Нет данных за {period_label} → запусти /sync_fin")
+        return "\n".join(out)
 
     async def cmd_margin_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/margin — маржинальность по всем товарам с рекомендованными ценами."""
