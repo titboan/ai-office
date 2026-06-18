@@ -323,17 +323,7 @@ class MaxAgent(BaseAgent):
             f"🔔 Отзывы — {count} ждут ответа" if count > 0
             else "🔔 Проверить отзывы"
         )
-        from config import config as _cfg
-        from telegram import WebAppInfo as _WAI
-        _dash_url = (
-            f"{_cfg.DASHBOARD_URL}?token={_cfg.DASHBOARD_TOKEN}"
-            if _cfg.DASHBOARD_TOKEN else _cfg.DASHBOARD_URL
-        )
-        _dash_btn = (
-            InlineKeyboardButton("📊 Дашборд аналитики", web_app=_WAI(url=_dash_url))
-            if _dash_url else
-            InlineKeyboardButton("📊 Дашборд аналитики", callback_data="menu_cmd:dashboard")
-        )
+        _dash_btn = InlineKeyboardButton("📊 Дашборд аналитики", callback_data="menu_cat:analytics")
         rows = [
             [InlineKeyboardButton(review_label, callback_data="onboard:run_now")],
             [_dash_btn],
@@ -3641,18 +3631,15 @@ class MaxAgent(BaseAgent):
             cmd = data.split(":", 1)[1]
 
             if cmd == "dashboard":
-                from config import config as cfg
-                url = (
-                    f"{cfg.DASHBOARD_URL}?token={cfg.DASHBOARD_TOKEN}"
-                    if cfg.DASHBOARD_TOKEN else cfg.DASHBOARD_URL
-                )
-                from telegram import WebAppInfo
-                await msg.reply_text(
-                    "📊 Аналитика продаж WB + Ozon:",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("📊 Открыть дашборд", web_app=WebAppInfo(url=url)),
-                    ]]),
-                )
+                submenu = self._MENU_SUBMENUS.get("analytics")
+                if submenu:
+                    title, buttons = submenu
+                    await query.edit_message_text(
+                        f"<b>{title}</b>\nВыбери действие:",
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup(buttons),
+                    )
+                return
 
             elif cmd == "data_status":
                 await self._send_data_status(chat_id, msg)
