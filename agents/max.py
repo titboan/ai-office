@@ -388,10 +388,19 @@ class MaxAgent(BaseAgent):
     # ------------------------------------------------------------------ #
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        from telegram import Chat
+        from telegram import Chat, MenuButtonCommands
         if update.effective_chat and update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
             logger.debug(f"[max:handler] cmd_start вызван из группы — текст: {update.message.text[:50] if update.message and update.message.text else '?'}")
         chat_id = update.effective_user.id
+
+        # Сброс per-chat override MenuButtonWebApp → стандартный список команд
+        try:
+            await context.bot.set_chat_menu_button(
+                chat_id=chat_id,
+                menu_button=MenuButtonCommands(),
+            )
+        except Exception:
+            pass
 
         from db import get_marketplace_shops
         shops = await get_marketplace_shops(chat_id)
