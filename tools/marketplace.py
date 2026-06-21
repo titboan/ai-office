@@ -1612,104 +1612,96 @@ class OzonClient:
         logger.info(f"[Ozon.get_realization_quantity_revenue] {date_from}–{date_to}: {len(results)} агрегатов")
         return results
 
+    # Типы операций Ozon Finance API, относящихся к рекламным расходам.
+    # Установлены эмпирически из логов (2026-06-21): transaction_type=all.
+    # CPC и CPO дублируют данные Performance API, но Finance API — источник истины
+    # для ДРР (совпадает с кабинетом продавца); Performance API остаётся для
+    # разбивки по кампаниям/товарам в CtrRoas.
+    _ADV_OPERATION_TYPES = frozenset({
+        "OperationMarketplaceCostPerClick",   # Оплата за клик (CPC)
+        "OperationPromotionWithCostPerOrder",  # Продвижение с оплатой за заказ (CPO)
+        "OperationSubscriptionPremium",        # Подписка Premium
+        "MarketplaceServiceBrandCommission",   # Продвижение бренда
+    })
+
     async def get_fin_adv_spend(self, date_from: str, date_to: str) -> list[dict]:
-        """ВРЕМЕННО ДИАГНОСТИЧЕСКАЯ: попытка найти Premium/бренд/CPC/CPO расходы в финтранзакциях Ozon.
+        """Рекламные расходы Ozon из Finance API — все типы включая Premium и бренд.
 
-        Прошлая версия искала их в services[] заказов/возвратов (transaction_type=orders/returns) —
-        там оказалась только логистика (DirectFlowLogistic, LastMileCourier и т.п.), реклама не нашлась.
-        Реальная реклама из приложения Ozon (Premium, бренд, CPC, CPO) туда не попадает.
-
-        Эта версия дополнительно опрашивает transaction_type=services/compensation/other
-        (на случай если "all" в Ozon API их не включает — известная особенность) и логирует
-        ВСЕ операции верхнего уровня (operation_type + amount), не только services[] внутри заказов.
-        По этому логу нужно вручную найти operation_type для Premium/бренда/CPO и точные суммы.
-
-        Возвращает [] до тех пор, пока реальные operation_type не будут известны и зашиты в код.
+        Использует /v3/finance/transaction/list (transaction_type=all) и фильтрует
+        по _ADV_OPERATION_TYPES. Возвращает суммы по дням, совпадающие с разделом
+        «Продвижение и реклама» в кабинете продавца (кроме «Бонусов продавца» — 2₽,
+        пренебрежимо малы и не видны отдельным operation_type).
         """
         import json as _json
-        from collections import defaultdict as _dd
         url = f"{self._BASE}/v3/finance/transaction/list"
-        all_services:   dict[str, float] = _dd(float)   # services[] внутри заказов/возвратов (для аудита)
-        all_operations: dict[str, float] = _dd(float)   # operation_type верхнего уровня (для аудита)
+        daily: dict[str, float] = {}
         seen_op_ids: set = set()
 
-        for tx_type in ("all", "services", "compensation", "other"):
-            page = 1
-            while True:
-                body = {
-                    "filter": {
-                        "date": {
-                            "from": f"{date_from}T00:00:00.000Z",
-                            "to":   f"{date_to}T23:59:59.000Z",
-                        },
-                        "transaction_type": tx_type,
+        page = 1
+        while True:
+            body = {
+                "filter": {
+                    "date": {
+                        "from": f"{date_from}T00:00:00.000Z",
+                        "to":   f"{date_to}T23:59:59.000Z",
                     },
-                    "page":      page,
-                    "page_size": 1000,
-                }
-                data = None
-                async with aiohttp.ClientSession() as s:
-                    for attempt in range(3):
-                        try:
-                            async with s.post(
-                                url, json=body, headers=self._headers(),
-                                timeout=aiohttp.ClientTimeout(total=30),
-                            ) as resp:
-                                raw = await resp.text()
-                                if resp.status == 429:
-                                    await asyncio.sleep(60)
-                                    continue
-                                if resp.status != 200:
-                                    logger.error(f"[Ozon.get_fin_adv_spend] HTTP {resp.status}: {raw[:200]}")
-                                    break
-                                data = _json.loads(raw)
+                    "transaction_type": "all",
+                },
+                "page":      page,
+                "page_size": 1000,
+            }
+            data = None
+            async with aiohttp.ClientSession() as s:
+                for attempt in range(3):
+                    try:
+                        async with s.post(
+                            url, json=body, headers=self._headers(),
+                            timeout=aiohttp.ClientTimeout(total=30),
+                        ) as resp:
+                            raw = await resp.text()
+                            if resp.status == 429:
+                                await asyncio.sleep(60)
+                                continue
+                            if resp.status != 200:
+                                logger.error(f"[Ozon.get_fin_adv_spend] HTTP {resp.status}: {raw[:200]}")
                                 break
-                        except Exception as e:
-                            logger.error(f"[Ozon.get_fin_adv_spend] {e}")
+                            data = _json.loads(raw)
                             break
-                if data is None:
-                    break
+                    except Exception as e:
+                        logger.error(f"[Ozon.get_fin_adv_spend] {e}")
+                        break
+            if data is None:
+                break
 
-                operations = (data.get("result") or {}).get("operations") or []
-                for op in operations:
-                    op_id = op.get("operation_id")
-                    if op_id is not None:
-                        if op_id in seen_op_ids:
-                            continue
-                        seen_op_ids.add(op_id)
+            operations = (data.get("result") or {}).get("operations") or []
+            for op in operations:
+                op_id = op.get("operation_id")
+                if op_id is not None:
+                    if op_id in seen_op_ids:
+                        continue
+                    seen_op_ids.add(op_id)
 
-                    op_type = op.get("operation_type") or op.get("operation_type_name") or "?"
-                    amount  = abs(float(op.get("amount", 0) or 0))
-                    if amount > 0:
-                        all_operations[op_type] += amount
+                op_type = op.get("operation_type") or op.get("operation_type_name") or ""
+                if op_type not in self._ADV_OPERATION_TYPES:
+                    continue
 
-                    for svc in (op.get("services") or []):
-                        name  = svc.get("name", "")
-                        price = abs(float(svc.get("price", 0) or 0))
-                        if price > 0:
-                            all_services[name] += price
+                amount   = abs(float(op.get("amount", 0) or 0))
+                op_date  = (op.get("operation_date") or date_from)[:10]
+                if amount > 0:
+                    daily[op_date] = daily.get(op_date, 0.0) + amount
 
-                page_count = (data.get("result") or {}).get("page_count") or 1
-                if page >= page_count or not operations:
-                    break
-                page += 1
+            page_count = (data.get("result") or {}).get("page_count") or 1
+            if page >= page_count or not operations:
+                break
+            page += 1
 
-        # Логируем всё что нашли — нужно вручную найти operation_type для Premium/бренда
-        big_ops = {k: v for k, v in all_operations.items() if v >= 1000}
+        results = [{"date": d, "adv_spend": round(v, 2)} for d, v in sorted(daily.items())]
+        total = sum(r["adv_spend"] for r in results)
         logger.info(
-            f"[Ozon.get_fin_adv_spend] {date_from}–{date_to} | "
-            f"КРУПНЫЕ операции (>=1000₽): "
-            + (", ".join(f"{n}={v:.0f}₽" for n, v in sorted(big_ops.items(), key=lambda x: -x[1])) or "нет")
+            f"[Ozon.get_fin_adv_spend] {date_from}–{date_to}: "
+            f"{len(results)} дней, итого {total:.0f}₽ (CPC+CPO+Premium+Бренд)"
         )
-        logger.info(
-            "[Ozon.get_fin_adv_spend] все operation_type: "
-            + (", ".join(f"{n}={v:.0f}₽" for n, v in sorted(all_operations.items(), key=lambda x: -x[1])) or "пусто")
-        )
-        logger.info(
-            "[Ozon.get_fin_adv_spend] services[] внутри операций: "
-            + (", ".join(f"{n}={v:.0f}₽" for n, v in sorted(all_services.items(), key=lambda x: -x[1])) or "пусто")
-        )
-        return []
+        return results
 
     async def get_funnel_stats(self, date_from: str, date_to: str) -> list[dict]:
         """Воронка конверсии карточки Ozon через /v1/analytics/data с метриками показов и корзины."""
