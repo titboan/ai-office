@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from loguru import logger
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
@@ -323,7 +323,15 @@ class MaxAgent(BaseAgent):
             f"🔔 Отзывы — {count} ждут ответа" if count > 0
             else "🔔 Проверить отзывы"
         )
-        _dash_btn = InlineKeyboardButton("📊 Дашборд аналитики", callback_data="menu_cat:analytics")
+        _dash_url = (
+            f"{config.DASHBOARD_URL}?token={config.DASHBOARD_TOKEN}"
+            if config.DASHBOARD_TOKEN else config.DASHBOARD_URL
+        )
+        _dash_btn = (
+            InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=_dash_url))
+            if _dash_url else
+            InlineKeyboardButton("📊 Дашборд", callback_data="menu_cat:analytics")
+        )
         rows = [
             [InlineKeyboardButton(review_label, callback_data="onboard:run_now")],
             [_dash_btn],
@@ -3639,18 +3647,7 @@ class MaxAgent(BaseAgent):
         if data.startswith("menu_cmd:"):
             cmd = data.split(":", 1)[1]
 
-            if cmd == "dashboard":
-                submenu = self._MENU_SUBMENUS.get("analytics")
-                if submenu:
-                    title, buttons = submenu
-                    await query.edit_message_text(
-                        f"<b>{title}</b>\nВыбери действие:",
-                        parse_mode="HTML",
-                        reply_markup=InlineKeyboardMarkup(buttons),
-                    )
-                return
-
-            elif cmd == "data_status":
+            if cmd == "data_status":
                 await self._send_data_status(chat_id, msg)
 
             elif cmd == "sync":
@@ -3815,10 +3812,7 @@ class MaxAgent(BaseAgent):
 
     async def cmd_dashboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/dashboard — открыть дашборд аналитики."""
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-        from config import config as cfg
-        from telegram import WebAppInfo
-        url = f"{cfg.DASHBOARD_URL}?token={cfg.DASHBOARD_TOKEN}" if cfg.DASHBOARD_TOKEN else cfg.DASHBOARD_URL
+        url = f"{config.DASHBOARD_URL}?token={config.DASHBOARD_TOKEN}" if config.DASHBOARD_TOKEN else config.DASHBOARD_URL
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📊 Открыть дашборд", web_app=WebAppInfo(url=url))]])
         await update.message.reply_text("Аналитика продаж WB + Ozon:", reply_markup=keyboard)
 
