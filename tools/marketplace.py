@@ -1974,9 +1974,11 @@ class OzonPerformanceClient:
                         if raw_bytes:
                             import zipfile as _zipfile
                             with _zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
-                                csv_text_batch = zf.read(zf.namelist()[0]).decode("utf-8-sig", errors="replace")
-                            csv_texts.append(csv_text_batch)
-                            logger.info(f"[OzonPerf] batch {batch_num}/{total_batches} CSV получен, строк: {csv_text_batch.count(chr(10))}")
+                                names = zf.namelist()
+                                for fname in names:
+                                    csv_text_file = zf.read(fname).decode("utf-8-sig", errors="replace")
+                                    csv_texts.append(csv_text_file)
+                            logger.info(f"[OzonPerf] batch {batch_num}/{total_batches} ZIP файлов: {len(names)}, строк в первом: {csv_texts[-len(names)].count(chr(10)) if names else 0}")
                 except Exception as e:
                     logger.error(f"[OzonPerf] batch {batch_num} report exception: {e}")
 
@@ -2031,16 +2033,38 @@ class OzonPerformanceClient:
                 if row_count == 0:
                     continue  # кампания без активности — не пишем в БД
                 ctr = round(clicks_sum / views_sum * 100, 2) if views_sum else 0.0
-                results.append({
-                    "campaign_id":   cid,
-                    "campaign_name": campaign_names.get(cid, cid),
-                    "stat_date":     date_from,
-                    "views":         views_sum,
-                    "clicks":        clicks_sum,
-                    "ctr":           ctr,
-                    "spend":         spend_sum,
-                    "product_stats": product_stats,
-                })
+                # Разбиваем агрегат на дни: Ozon Performance API возвращает только
+                # суммарный расход за период, не по дням. Храним ежедневную долю
+                # (spend/days) на каждый день отдельно — это позволяет корректно
+                # суммировать данные в дашборде без двойного счёта при ежедневных синках.
+                from datetime import datetime as _dt, timedelta as _td
+                try:
+                    d0 = _dt.strptime(date_from, "%Y-%m-%d")
+                    d1 = _dt.strptime(date_to,   "%Y-%m-%d")
+                except ValueError:
+                    d0 = d1 = _dt.now()
+                days_count = max((d1 - d0).days + 1, 1)
+                daily_spend   = round(spend_sum   / days_count, 4)
+                daily_views   = views_sum   // days_count
+                daily_clicks  = clicks_sum  // days_count
+                for day_offset in range(days_count):
+                    day_str = (d0 + _td(days=day_offset)).strftime("%Y-%m-%d")
+                    day_ps  = [
+                        {**ps, "spend": round(ps["spend"] / days_count, 4),
+                               "views": ps["views"] // days_count,
+                               "clicks": ps["clicks"] // days_count}
+                        for ps in product_stats
+                    ]
+                    results.append({
+                        "campaign_id":   cid,
+                        "campaign_name": campaign_names.get(cid, cid),
+                        "stat_date":     day_str,
+                        "views":         daily_views,
+                        "clicks":        daily_clicks,
+                        "ctr":           ctr,
+                        "spend":         daily_spend,
+                        "product_stats": day_ps,
+                    })
         except Exception as e:
             logger.error(f"[OzonPerf] CSV parse exception: {e}")
 
