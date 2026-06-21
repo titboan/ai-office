@@ -1634,15 +1634,21 @@ class OzonClient:
                     break
                 page += 1
 
+        # Логируем всё что нашли — нужно вручную найти operation_type для Premium/бренда
+        big_ops = {k: v for k, v in all_operations.items() if v >= 1000}
         logger.info(
-            "[Ozon.get_fin_adv_spend] services[] внутри заказов/возвратов: "
-            + ", ".join(f"{n}={v:.0f}₽" for n, v in sorted(all_services.items(), key=lambda x: -x[1]))
+            f"[Ozon.get_fin_adv_spend] {date_from}–{date_to} | "
+            f"КРУПНЫЕ операции (>=1000₽): "
+            + (", ".join(f"{n}={v:.0f}₽" for n, v in sorted(big_ops.items(), key=lambda x: -x[1])) or "нет")
         )
         logger.info(
-            "[Ozon.get_fin_adv_spend] операции верхнего уровня (operation_type=amount): "
-            + ", ".join(f"{n}={v:.0f}₽" for n, v in sorted(all_operations.items(), key=lambda x: -x[1]))
+            "[Ozon.get_fin_adv_spend] все operation_type: "
+            + (", ".join(f"{n}={v:.0f}₽" for n, v in sorted(all_operations.items(), key=lambda x: -x[1])) or "пусто")
         )
-        logger.info(f"[Ozon.get_fin_adv_spend] {date_from}–{date_to}: реклама не определена, диагностика выше")
+        logger.info(
+            "[Ozon.get_fin_adv_spend] services[] внутри операций: "
+            + (", ".join(f"{n}={v:.0f}₽" for n, v in sorted(all_services.items(), key=lambda x: -x[1])) or "пусто")
+        )
         return []
 
     async def get_funnel_stats(self, date_from: str, date_to: str) -> list[dict]:
