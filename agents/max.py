@@ -1151,8 +1151,12 @@ class MaxAgent(BaseAgent):
         from datetime import date as _date
 
         shops = await get_marketplace_shops(chat_id)
-        date_to_adv   = datetime.now(_UTC).strftime("%Y-%m-%d")
-        date_from_adv = (datetime.now(_UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
+        date_to_adv      = datetime.now(_UTC).strftime("%Y-%m-%d")
+        date_from_adv_wb = (datetime.now(_UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
+        # Ozon Performance возвращает агрегат за период одним CSV (не по дням),
+        # поэтому синкаем 30 дней — стоимость API та же, зато покрываем полное окно
+        # дашборда и перезаписываем любые устаревшие строки из старого формата.
+        date_from_adv_ozon = (datetime.now(_UTC) - timedelta(days=30)).strftime("%Y-%m-%d")
 
         for shop in shops:
             mp = shop["marketplace"]
@@ -1160,7 +1164,7 @@ class MaxAgent(BaseAgent):
             if mp == "wb":
                 try:
                     client = WBClient(shop["api_token"])
-                    ad_stats = await client.get_ad_stats(date_from=date_from_adv, date_to=date_to_adv)
+                    ad_stats = await client.get_ad_stats(date_from=date_from_adv_wb, date_to=date_to_adv)
                     prod_count = 0
                     for s in ad_stats:
                         stat_date = _date.fromisoformat(s["stat_date"]) if isinstance(s["stat_date"], str) else s["stat_date"]
@@ -1214,7 +1218,7 @@ class MaxAgent(BaseAgent):
                     if ozon_perf_client_id and ozon_perf_client_secret:
                         redis = await self._get_redis()
                         perf_client = OzonPerformanceClient(ozon_perf_client_id, ozon_perf_client_secret, redis)
-                        ad_stats = await perf_client.get_ad_stats(date_from=date_from_adv, date_to=date_to_adv)
+                        ad_stats = await perf_client.get_ad_stats(date_from=date_from_adv_ozon, date_to=date_to_adv)
                         prod_count = 0
                         for s in ad_stats:
                             stat_date = _date.fromisoformat(s["stat_date"]) if isinstance(s["stat_date"], str) else s["stat_date"]
