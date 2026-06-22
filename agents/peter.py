@@ -10,6 +10,7 @@ from config import config
 from tools import save_research
 from utils.tg_format import strip_html as _strip_html
 from utils.tg_rich import send_rich_or_fallback as _send_rich
+from task_queue import create_task as enqueue_task
 from .base_agent import BaseAgent
 
 _UTC = timezone.utc
@@ -694,6 +695,14 @@ class PeterAgent(BaseAgent):
                     f"SEO-ДАННЫЕ ПО ТОВАРАМ (30 дней, urgency по убыванию):\n"
                     f"{json.dumps(seo_data[:20], ensure_ascii=False, default=str, indent=2)}"
                 )
+                # Cache problematic articles so /seo_audit buttons work immediately after
+                problematic = [p for p in seo_data if p.get("issues")]
+                if problematic:
+                    articles_payload = json.dumps([
+                        {"article": p["article"], "marketplace": p["marketplace"], "name": p["name"]}
+                        for p in problematic
+                    ])
+                    await self._redis_set(f"seo_audit:{chat_id}", articles_payload, ttl=3600)
             except Exception as e:
                 logger.warning(f"[Питер] handle_task seo_audit: ошибка данных: {e}")
                 prompt = f"Аналитическая задача от {from_agent}: {task}"
@@ -1443,6 +1452,82 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
             update=update,
         )
 
+        # Offer to dispatch SEO tasks to Elina for problematic products
+        problematic = [p for p in data if p["issues"]]
+        if problematic:
+            articles_payload = json.dumps([
+                {"article": p["article"], "marketplace": p["marketplace"], "name": p["name"]}
+                for p in problematic
+            ])
+            await self._redis_set(f"seo_audit:{chat_id}", articles_payload, ttl=3600)
+            n = len(problematic)
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🚀 SEO топ-3", callback_data=f"pseo:top3:{chat_id}"),
+                InlineKeyboardButton(f"🚀 SEO все ({n})", callback_data=f"pseo:all:{chat_id}"),
+            ]])
+            await update.message.reply_text(
+                f"Запустить SEO-задачи у Элины для {n} товаров?",
+                reply_markup=keyboard,
+            )
+
+    async def _handle_seo_audit_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Обработчик кнопок запуска SEO у Элины после аудита (pseo:*)."""
+        query = update.callback_query
+        await query.answer()
+        parts = (query.data or "").split(":")
+        # parts: ["pseo", "top3"|"all", chat_id]
+        if len(parts) < 3:
+            return
+        mode = parts[1]
+        try:
+            target_chat_id = int(parts[2])
+        except ValueError:
+            return
+
+        raw = await self._redis_get(f"seo_audit:{target_chat_id}")
+        if not raw:
+            await query.edit_message_text("⏰ Результаты аудита устарели — запусти /seo_audit снова.")
+            return
+
+        try:
+            articles_list: list[dict] = json.loads(raw)
+        except Exception:
+            await query.edit_message_text("❌ Ошибка чтения данных аудита.")
+            return
+
+        subset = articles_list[:3] if mode == "top3" else articles_list
+        if not subset:
+            await query.edit_message_text("✅ Нет товаров для SEO-оптимизации.")
+            return
+
+        enqueued = 0
+        for item in subset:
+            article = item.get("article", "")
+            mp = item.get("marketplace", "")
+            name = item.get("name", article)
+            if not article:
+                continue
+            try:
+                await enqueue_task(
+                    assigned_agent="elina",
+                    payload=f"напиши seo для товара {article}",
+                    from_agent="peter",
+                    chat_id=target_chat_id,
+                )
+                enqueued += 1
+                logger.info(f"[Питер/seo_audit] enqueued SEO task for {mp} {article} ({name})")
+            except Exception as e:
+                logger.error(f"[Питер/seo_audit] ошибка enqueue {article}: {e}")
+
+        names = ", ".join(f"`{it['article']}`" for it in subset)
+        await query.edit_message_text(
+            f"✅ Отправила {enqueued} SEO-задач Элине: {names}\n"
+            f"_Результаты появятся в Notion Content DB._",
+            parse_mode="Markdown",
+        )
+
     async def cmd_analyze(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -1735,4 +1820,7 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_peter_next_callback, pattern=r"^pnext:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_seo_audit_callback, pattern=r"^pseo:")
         )
