@@ -463,7 +463,22 @@ async def _create_schema() -> None:
             ALTER TABLE product_mapping
             ADD COLUMN IF NOT EXISTS category TEXT
         """)
-        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards)")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS competitor_snapshots (
+                id            SERIAL PRIMARY KEY,
+                keyword       TEXT          NOT NULL,
+                position      INT           NOT NULL,
+                product_name  TEXT,
+                brand         TEXT,
+                price         NUMERIC(10,2),
+                rating        NUMERIC(3,1),
+                review_count  INT,
+                marketplace   VARCHAR(10)   NOT NULL DEFAULT 'wb',
+                snapshot_date DATE          NOT NULL DEFAULT CURRENT_DATE,
+                UNIQUE(keyword, position, snapshot_date, marketplace)
+            )
+        """)
+        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots)")
 
 async def save_project(
     chat_id: int,
@@ -1637,3 +1652,59 @@ async def upsert_returns_analytics(
             chat_id, marketplace, product_id, product_name or "", stat_date,
             returns_count or 0, float(return_amount or 0), return_rate,
         )
+
+
+# ── Снапшоты цен конкурентов ───────────────────────────────────────────────────
+
+async def upsert_competitor_snapshot(rows: list[dict]) -> None:
+    """Сохраняет снапшот цен конкурентов. rows: список с ключами из get_competitor_prices."""
+    if not rows:
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO competitor_snapshots
+                (keyword, position, product_name, brand, price, rating, review_count, marketplace, snapshot_date)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (keyword, position, snapshot_date, marketplace) DO UPDATE SET
+                product_name = EXCLUDED.product_name,
+                brand        = EXCLUDED.brand,
+                price        = EXCLUDED.price,
+                rating       = EXCLUDED.rating,
+                review_count = EXCLUDED.review_count
+            """,
+            [
+                (
+                    r["keyword"], r["position"], r.get("product_name"), r.get("brand"),
+                    r.get("price"), r.get("rating"), r.get("review_count"),
+                    r.get("marketplace", "wb"), r["snapshot_date"],
+                )
+                for r in rows
+            ],
+        )
+
+
+async def get_competitor_snapshots(weeks: int = 4) -> list[dict]:
+    """Медиана и диапазон цен по ключевым словам за последние N недель."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                keyword,
+                snapshot_date,
+                marketplace,
+                COUNT(*)                                                          AS product_count,
+                ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price)::numeric, 0) AS median_price,
+                ROUND(AVG(price)::numeric, 0)                                    AS avg_price,
+                MIN(price)                                                        AS min_price,
+                MAX(price)                                                        AS max_price
+            FROM competitor_snapshots
+            WHERE snapshot_date >= CURRENT_DATE - ($1 * 7)
+            GROUP BY keyword, snapshot_date, marketplace
+            ORDER BY keyword, snapshot_date DESC
+            """,
+            weeks,
+        )
+    return [dict(r) for r in rows]

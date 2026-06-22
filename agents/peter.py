@@ -829,6 +829,13 @@ class PeterAgent(BaseAgent):
             await update.message.reply_text(f"❌ Ошибка сбора данных: {e}")
             return
 
+        comp_data = []
+        try:
+            from db import get_competitor_snapshots
+            comp_data = await get_competitor_snapshots(weeks=4)
+        except Exception:
+            pass
+
         total_revenue = sum(float(r["revenue"] or 0) for r in data["revenue"])
         avg_per_day = round(total_revenue / days, 0) if days else 0
 
@@ -862,6 +869,13 @@ class PeterAgent(BaseAgent):
                 f"{json.dumps(data['kw_top'], ensure_ascii=False, default=str, indent=2)}"
             )
 
+        comp_str = ""
+        if comp_data:
+            comp_str = (
+                f"\n\nЦЕНЫ КОНКУРЕНТОВ WB (снапшот, медиана топ-100 по нише, последние 4 нед.):\n"
+                f"{json.dumps(comp_data, ensure_ascii=False, default=str, indent=2)}"
+            )
+
         prompt = f"""Проанализируй данные магазинов за последние {days} дней.
 {goal_str}
 
@@ -869,7 +883,7 @@ class PeterAgent(BaseAgent):
 {json.dumps(data, ensure_ascii=False, default=str, indent=2)}
 
 РАСШИРЕННЫЕ ДАННЫЕ (тренд, CTR/ROAS по товарам, остатки):
-{json.dumps(adv_data, ensure_ascii=False, default=str, indent=2)}{mom_str}{returns_str}{kw_str}
+{json.dumps(adv_data, ensure_ascii=False, default=str, indent=2)}{mom_str}{returns_str}{kw_str}{comp_str}
 
 ВАЖНО:
 - Данные по заказам, не по выкупам. Реальная выручка ниже на % возвратов.
@@ -888,6 +902,7 @@ class PeterAgent(BaseAgent):
 - returns_top — товары с наибольшей суммой возвратов за 30 дней (если есть данные после /sync_returns). Укажи топ-3 по return_amount и возможные причины. Если пусто — данные не синхронизированы (/sync_returns у Макса).
 - kw_top — топ ключевых слов WB по охвату (если есть данные после /sync_keywords). Укажи ключи с лучшей позицией (чем меньше число, тем выше в поиске) и наибольшим search_count. Если пусто — данные не синхронизированы (/sync_keywords у Макса).
 {"- Цель: " + str(goal) + " ₽/день суммарно WB+Ozon." if goal else ""}
+{"- ЦЕНЫ КОНКУРЕНТОВ: median_price — медиана топ-100 товаров WB по ключевому запросу ниши. Сравни свои цены (из product_mapping через adv_data) с медианой. Если цена выше медианы >15% — укажи это как риск; если ниже — возможность поднять." if comp_data else ""}
 
 Дай конкретный анализ по формату из system prompt с 5 практическими действиями."""
 

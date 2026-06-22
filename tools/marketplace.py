@@ -366,6 +366,44 @@ class WBClient:
         logger.info(f"[WB.update_prices] upload_id={upload_id} товаров={len(items)}")
         return {"success": bool(upload_id), "upload_id": upload_id}
 
+    async def get_competitor_prices(self, keyword: str, limit: int = 100) -> list[dict]:
+        """Публичный API WB (без токена) — топ-N товаров по запросу.
+
+        Возвращает [{"position", "product_name", "brand", "price", "rating", "review_count"}].
+        Используется для еженедельного снапшота цен конкурентов.
+        """
+        url = "https://search.wb.ru/exactmatch/ru/common/v7/search"
+        params = {
+            "query": keyword,
+            "limit": limit,
+            "resultset": "catalog",
+            "sort": "popular",
+            "suppressSpellcheck": "false",
+        }
+        results = []
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"[WB.competitor_prices] HTTP {resp.status} для '{keyword}'")
+                        return []
+                    body = await resp.json(content_type=None)
+            products = (body.get("data") or {}).get("products") or []
+            for idx, p in enumerate(products[:limit], start=1):
+                price_raw = p.get("salePriceU") or p.get("priceU") or 0
+                results.append({
+                    "position":     idx,
+                    "product_name": p.get("name") or "",
+                    "brand":        p.get("brand") or "",
+                    "price":        round(price_raw / 100, 2) if price_raw else 0.0,
+                    "rating":       float(p.get("rating") or 0),
+                    "review_count": int(p.get("feedbacks") or 0),
+                })
+        except Exception as e:
+            logger.error(f"[WB.competitor_prices] ошибка для '{keyword}': {e}")
+        logger.info(f"[WB.competitor_prices] '{keyword}' → {len(results)} товаров")
+        return results
+
     async def get_sales(self, date_from: datetime, statistics_token: str) -> list[dict]:
         """Выкупленные заказы через Statistics API."""
         _STATS_BASE = "https://statistics-api.wildberries.ru"
