@@ -972,6 +972,62 @@ class PeterAgent(BaseAgent):
             after_markup=self._PETER_NEXT_DRR,
         )
 
+    async def run_drr_for_chat(self, chat_id: int, days: int = 30) -> None:
+        """Запустить ДРР-отчёт по chat_id без Update (вызов из другого агента)."""
+        await self.bot.send_message(chat_id, f"💰 Считаю ДРР за {days} дней…")
+        try:
+            data = await self._collect_data(chat_id, days=days)
+            adv_data = await self._collect_advanced_data(chat_id, days=days)
+        except Exception as e:
+            logger.error(f"[Питер/drr] ошибка сбора данных: {e}", exc_info=True)
+            await self.bot.send_message(chat_id, f"❌ Ошибка сбора данных: {e}")
+            return
+
+        prompt = f"""Выдай ДРР-отчёт по товарам и площадкам. Используй формат PETER_DRR_PROMPT.
+
+ПЕРИОД: {days} дней
+
+РЕКЛАМНЫЕ РАСХОДЫ ПО ПЛОЩАДКАМ:
+{json.dumps(data["adv"], ensure_ascii=False, default=str, indent=2)}
+
+ОБОРОТ ПО ПЛОЩАДКАМ:
+{json.dumps(data["revenue"], ensure_ascii=False, default=str, indent=2)}
+
+МЕТРИКИ ПО ТОВАРАМ (CTR, ROAS, расход, выкупы):
+{json.dumps(adv_data["product_metrics"], ensure_ascii=False, default=str, indent=2)}
+
+ВАЖНО:
+- ДРР = adv_spend / buyouts × 100%
+- ROAS = buyouts / adv_spend (выкупы, без возвратов)
+- Если product_metrics пустой — данные ещё не синхронизированы (/sync_adv)
+- avg_ctr в процентах (2.5 = 2.5%)
+- Используй display_name товаров (поле "name") если есть
+
+Используй формат PETER_DRR_PROMPT."""
+
+        try:
+            from anthropic import AsyncAnthropic
+            client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+            resp = await client.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=2048,
+                system=PETER_DRR_PROMPT,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            answer = resp.content[0].text
+        except Exception as e:
+            logger.error(f"[Питер/drr] ошибка Claude: {e}", exc_info=True)
+            await self.bot.send_message(chat_id, f"❌ Ошибка анализа: {e}")
+            return
+
+        await self._send_answer(
+            answer,
+            notion_title=f"ДРР {datetime.now(_UTC).strftime('%d.%m.%Y')}",
+            notion_source="cmd:drr",
+            chat_id=chat_id,
+            after_markup=self._PETER_NEXT_DRR,
+        )
+
     async def cmd_funnel(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:

@@ -197,6 +197,8 @@ async def run_all_async() -> None:
 
     max_agent   = next((a for a in started if isinstance(a, MaxAgent)), None)
     peter_agent = next((a for a in started if a.__class__.__name__ == "PeterAgent"), None)
+    if max_agent is not None and peter_agent is not None:
+        max_agent._peter_agent = peter_agent
 
     async def _scheduled_reviews_loop():
         """Обработка всех отзывов каждые 15 минут."""
