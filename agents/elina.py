@@ -112,44 +112,111 @@ class ElinaAgent(BaseAgent):
         await _send_rich(self.bot_token, update.effective_chat.id, result)
 
     async def cmd_seo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/seo <product_id> — SEO-карточка на основе ключевых слов WB."""
+        """/seo <product_id> — SEO-карточка на основе текущего контента, отзывов и воронки."""
         product_id = " ".join(context.args).strip() if context.args else ""
         if not product_id:
             await update.message.reply_text(
                 "Использование: /seo <product_id>\n"
                 "Пример: /seo 12345678\n\n"
-                "product_id — артикул WB (nm_id). Данные берутся из /sync_keywords у Макса."
+                "product_id — nm_id WB или offer_id Ozon.\n"
+                "Сначала запусти /sync_cards у Макса для загрузки контента карточки."
             )
             return
 
         chat_id = update.effective_user.id
-        await update.message.reply_text("🔍 Ищу ключевые слова…")
+        await update.message.reply_text("🔍 Собираю данные по товару…")
 
-        from db import get_keywords_top
-        keywords = await get_keywords_top(chat_id, marketplace="wb", product_id=product_id, limit=30)
+        from db import get_seo_context
+        ctx = await get_seo_context(chat_id, product_id)
 
-        if not keywords:
+        card     = ctx.get("card")
+        reviews  = ctx.get("reviews") or []
+        funnel   = ctx.get("funnel") or {}
+        keywords = ctx.get("keywords") or []
+
+        if not card and not reviews and not keywords:
             await update.message.reply_text(
-                f"❌ Ключевые слова для товара {product_id} не найдены.\n"
-                "Сначала запусти /sync_keywords у Макса."
+                f"❌ Нет данных для товара {product_id}.\n"
+                "Запусти /sync_cards у Макса для загрузки контента карточки."
             )
             return
 
-        kw_lines = "\n".join(
-            f"- {k['keyword']} (позиция: {k['position'] or '?'}, охват: {k['search_count'] or '?'})"
-            for k in keywords[:20]
-        )
-        product_name = keywords[0].get("product_name") or product_id
+        # ── Текущая карточка ─────────────────────────────────────────────
+        card_section = ""
+        if card:
+            import json as _json
+            title = card.get("title") or ""
+            desc  = card.get("description") or ""
+            chars = card.get("characteristics")
+            if isinstance(chars, str):
+                try:
+                    chars = _json.loads(chars)
+                except Exception:
+                    chars = []
+            chars_lines = ""
+            if chars:
+                chars_lines = "\n".join(
+                    f"  • {c.get('name', '')}: {', '.join(str(v) for v in (c.get('value') or []))}"
+                    for c in (chars or [])[:10]
+                )
+            marketplace = card.get("marketplace", "WB").upper()
+            card_section = (
+                f"Текущий контент карточки ({marketplace}):\n"
+                f"  Заголовок ({len(title)} симв.): {title or '—'}\n"
+                f"  Описание ({len(desc)} симв.): {desc[:300] or '—'}{'…' if len(desc) > 300 else ''}\n"
+                + (f"  Характеристики:\n{chars_lines}\n" if chars_lines else "")
+            )
+
+        # ── Воронка ──────────────────────────────────────────────────────
+        funnel_section = ""
+        total_views = funnel.get("total_views")
+        if total_views:
+            ctr    = funnel.get("avg_ctr")
+            pos    = funnel.get("avg_position")
+            orders = funnel.get("total_orders")
+            funnel_section = (
+                f"Воронка за 30 дней:\n"
+                f"  Просмотры: {int(total_views or 0):,}\n"
+                f"  CTR в корзину: {float(ctr or 0):.1f}%\n"
+                f"  Заказов: {int(orders or 0):,}\n"
+                + (f"  Средняя позиция в поиске: {float(pos):.1f}\n" if pos else "")
+            )
+
+        # ── Отзывы → ключевые слова покупателей ─────────────────────────
+        reviews_section = ""
+        if reviews:
+            texts = [r["text"] for r in reviews if r.get("text")]
+            sample = " | ".join(texts[:15])[:1500]
+            neg_count = sum(1 for r in reviews if (r.get("rating") or 5) <= 2)
+            reviews_section = (
+                f"Отзывы покупателей (последние {len(reviews)}, негативных: {neg_count}):\n"
+                f"  {sample}\n"
+            )
+
+        # ── Исторические ключи WB ────────────────────────────────────────
+        kw_section = ""
+        if keywords:
+            kw_lines = "\n".join(
+                f"  • {k['keyword']} (позиция: {k['position'] or '?'}, охват: {k['search_count'] or '?'})"
+                for k in keywords[:20]
+            )
+            kw_section = f"Исторические поисковые запросы WB:\n{kw_lines}\n"
+
+        product_name = (card or {}).get("title") or (keywords[0].get("product_name") if keywords else None) or product_id
 
         brief = (
-            f"Напиши SEO-оптимизированную карточку товара для Wildberries.\n\n"
-            f"Товар: {product_name} (артикул {product_id})\n\n"
-            f"Ключевые слова из WB-поиска (по убыванию охвата):\n{kw_lines}\n\n"
-            f"Требования:\n"
-            f"1. Заголовок (до 60 символов) — включи 2-3 ключа с лучшей позицией\n"
-            f"2. Описание (300-500 символов) — естественно вписать топ-5 ключей\n"
-            f"3. Характеристики (5-7 пунктов) — использовать ключевые слова в формулировках\n"
-            f"4. Не перечислять ключи подряд — текст должен читаться естественно"
+            f"Напиши SEO-оптимизированную карточку товара для маркетплейса.\n\n"
+            f"Товар: {product_name} (ID: {product_id})\n\n"
+            + (card_section + "\n" if card_section else "")
+            + (funnel_section + "\n" if funnel_section else "")
+            + (reviews_section + "\n" if reviews_section else "")
+            + (kw_section + "\n" if kw_section else "")
+            + "Задача:\n"
+            "1. Заголовок (до 60 символов) — включи 2-3 сильных ключа из данных выше\n"
+            "2. Описание (300-500 символов) — естественно вписать топ-5 запросов покупателей\n"
+            "3. Характеристики (5-7 пунктов) — использовать формулировки из отзывов\n"
+            "4. Текст должен читаться естественно, не как набор ключей\n"
+            "5. Указать, если текущий CTR низкий — что конкретно слабо в заголовке/описании"
         )
 
         await update.message.reply_text("✍️ Пишу SEO-карточку…")
@@ -179,9 +246,9 @@ class ElinaAgent(BaseAgent):
             "📌 **Команды:**\n"
             "/write <бриф> — написать текст по заданию\n"
             "/post <тема> — написать пост для Telegram\n"
-            "/seo <product_id> — SEO-карточка по ключевым словам WB\n"
+            "/seo <product_id> — SEO-карточка по контенту, отзывам и воронке\n"
             "/reset — очистить историю\n\n"
-            "💡 Пример: /seo 12345678 — карточка на основе реальных поисковых запросов"
+            "💡 Пример: /seo 12345678 — сначала /sync_cards у Макса, потом /seo"
         )
 
     def _bot_commands(self) -> list:
