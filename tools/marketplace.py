@@ -498,17 +498,17 @@ class WBClient:
         logger.info(f"[WB.get_ad_stats] итого записей: {len(results)}")
         return results
 
-    async def get_nm_ids(self) -> dict[str, str]:
-        """Возвращает {lower(vendorCode): str(nmId)} через WB Content API v2.
+    async def get_nm_ids(self) -> dict[str, dict]:
+        """Возвращает {lower(vendorCode): {"nm_id": str, "subject": str}} через WB Content API v2.
 
-        Нужно чтобы связать wb_article (supplierArticle) с nmId, который хранится
-        в product_adv_stats. WB fullstats отдаёт spend по nmId, а product_mapping
-        хранит wb_article — без этого маппинга join не работает.
+        nm_id нужен для join с product_adv_stats (fullstats отдаёт nmId).
+        subject — предмет карточки (напр. "Корм для кошек") — используется
+        как автоматическая категория товара в product_mapping.
         """
         import json as _json
         _CONTENT_BASE = "https://content-api.wildberries.ru"
         headers = {"Authorization": self._token, "Content-Type": "application/json"}
-        result: dict[str, str] = {}
+        result: dict[str, dict] = {}
         cursor: dict = {}
 
         async with aiohttp.ClientSession() as session:
@@ -528,10 +528,11 @@ class WBClient:
 
                 cards = (data.get("data") or {}).get("cards") or []
                 for card in cards:
-                    nm_id  = card.get("nmID")
-                    vendor = card.get("vendorCode", "")
+                    nm_id   = card.get("nmID")
+                    vendor  = card.get("vendorCode", "")
+                    subject = card.get("subjectName", "") or ""
                     if nm_id and vendor:
-                        result[vendor.lower()] = str(nm_id)
+                        result[vendor.lower()] = {"nm_id": str(nm_id), "subject": subject}
 
                 cur = (data.get("data") or {}).get("cursor") or {}
                 if len(cards) < 100 or not cur.get("nmID"):

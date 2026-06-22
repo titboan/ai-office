@@ -1184,27 +1184,35 @@ class MaxAgent(BaseAgent):
                             )
                             prod_count += 1
                     logger.info(f"[Макс/adv] WB реклама: {len(ad_stats)} записей, {prod_count} nm-записей")
-                    # Заполняем wb_nm_id в product_mapping для тех товаров, у которых его ещё нет.
-                    # nmId (из fullstats) ≠ wb_article (supplierArticle) — нужен маппинг через Content API.
+                    # Заполняем wb_nm_id и category в product_mapping через WB Content API.
+                    # nmId (из fullstats) ≠ wb_article (supplierArticle) — нужен маппинг.
+                    # subjectName из тех же карточек — автоматическая категория товара.
                     try:
                         from db import get_pool
                         pool = await get_pool()
                         async with pool.acquire() as conn:
-                            unmapped = await conn.fetch(
-                                "SELECT id, wb_article FROM product_mapping "
-                                "WHERE wb_article IS NOT NULL AND wb_nm_id IS NULL"
+                            needs_sync = await conn.fetch(
+                                "SELECT id, wb_article, category FROM product_mapping "
+                                "WHERE wb_article IS NOT NULL "
+                                "AND (wb_nm_id IS NULL OR category IS NULL)"
                             )
-                        if unmapped:
+                        if needs_sync:
                             nm_map = await client.get_nm_ids()
                             async with pool.acquire() as conn:
-                                for row in unmapped:
-                                    nm_id = nm_map.get((row["wb_article"] or "").lower())
-                                    if nm_id:
-                                        await conn.execute(
-                                            "UPDATE product_mapping SET wb_nm_id = $1 WHERE id = $2",
-                                            nm_id, row["id"],
-                                        )
-                            logger.info(f"[Макс/adv] wb_nm_id обновлён для {len(unmapped)} товаров")
+                                for row in needs_sync:
+                                    card = nm_map.get((row["wb_article"] or "").lower())
+                                    if not card:
+                                        continue
+                                    nm_id   = card["nm_id"]
+                                    subject = card["subject"] or None
+                                    await conn.execute(
+                                        """UPDATE product_mapping
+                                           SET wb_nm_id  = COALESCE(wb_nm_id, $1),
+                                               category  = COALESCE(category, $2)
+                                           WHERE id = $3""",
+                                        nm_id, subject, row["id"],
+                                    )
+                            logger.info(f"[Макс/adv] wb_nm_id+category синхронизированы для {len(needs_sync)} товаров")
                     except Exception as e:
                         logger.error(f"[Макс/adv] wb_nm_id sync ошибка: {e}")
                 except Exception as e:
