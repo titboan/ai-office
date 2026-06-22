@@ -59,7 +59,8 @@ PETER_SYSTEM = f"""Ты Питер, бизнес-аналитик команды
 - ROAS = revenue/spend. ROAS > 5 → увеличь бюджет. ROAS < 2 → стоп
 - days_left < 14 → срочный дозаказ, назови товар
 - ДРР норма: WB ~15-20%, Ozon ~10-15%
-- Конкретные суммы, не абстрактные советы"""
+- Конкретные суммы, не абстрактные советы
+- category — тип товара (корм, лакомства, лёгкое, корень и т.д.). Если пользователь спрашивает «по корму», «реклама на лакомства» и т.п. — анализируй ТОЛЬКО товары с нужной category, остальные не упоминай. Если category не задана у товара — укажи это."""
 
 PETER_AUDIT_PROMPT = """Ты проводишь полный аудит магазина на маркетплейсах.
 
@@ -241,10 +242,11 @@ class PeterAgent(BaseAgent):
                 GROUP BY marketplace
             """, chat_id, date_from)
 
-            # 2. Топ-10 товаров по обороту — с display_name из реестра
+            # 2. Топ-10 товаров по обороту — с display_name и category из реестра
             top_products = await conn.fetch("""
                 SELECT o.marketplace, o.product_id,
                        COALESCE(m.display_name, MAX(o.product_name)) AS product_name,
+                       MAX(m.category)                               AS category,
                        SUM(o.seller_price * o.quantity)::numeric(12,2)      AS revenue,
                        SUM(o.quantity)                                AS qty
                 FROM marketplace_orders o
@@ -584,6 +586,7 @@ class PeterAgent(BaseAgent):
                     s.marketplace,
                     s.product_id,
                     COALESCE(m.display_name, MAX(s.product_name)) AS name,
+                    MAX(m.category)                               AS category,
                     SUM(s.stock)::integer                          AS stock,
                     COALESCE(v.daily_orders, 0)                    AS daily_orders,
                     CASE WHEN COALESCE(v.daily_orders, 0) > 0

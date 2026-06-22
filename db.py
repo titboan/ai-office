@@ -445,7 +445,11 @@ async def _create_schema() -> None:
             ALTER TABLE product_mapping
             ADD COLUMN IF NOT EXISTS wb_nm_id TEXT
         """)
-        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id)")
+        await conn.execute("""
+            ALTER TABLE product_mapping
+            ADD COLUMN IF NOT EXISTS category TEXT
+        """)
+        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category)")
 
 async def save_project(
     chat_id: int,
