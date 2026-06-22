@@ -2101,7 +2101,7 @@ class MaxAgent(BaseAgent):
         lock_key = f"review_lock:{review_id}"
         locked = await self._redis_get(lock_key)
         if locked:
-            await query.answer("✅ Уже обработано", show_alert=True)
+            await query.answer(f"✅ Уже обработал: {locked}", show_alert=False)
             return
 
         user = query.from_user
@@ -2237,7 +2237,7 @@ class MaxAgent(BaseAgent):
         lock_key = f"question_lock:{question_id}"
         locked = await self._redis_get(lock_key)
         if locked:
-            await query.answer("✅ Уже обработано", show_alert=True)
+            await query.answer(f"✅ Уже обработал: {locked}", show_alert=False)
             return
 
         user = query.from_user
