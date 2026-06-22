@@ -1480,6 +1480,25 @@ async def get_keywords_top(
         return [dict(r) for r in rows]
 
 
+async def get_top_keywords_for_competitors(limit: int = 10) -> list[str]:
+    """Топ ключей по search_count из product_search_keywords по всем магазинам.
+    Используется для еженедельного снапшота цен конкурентов.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (keyword) keyword
+            FROM product_search_keywords
+            WHERE marketplace = 'wb' AND search_count IS NOT NULL AND search_count > 0
+            ORDER BY keyword, search_count DESC NULLS LAST
+            LIMIT $1
+            """,
+            limit,
+        )
+    return [r["keyword"] for r in rows]
+
+
 async def find_product_id_in_text(text: str) -> str | None:
     """Ищет в тексте wb_article, ozon_offer_id или display_name из product_mapping.
 

@@ -593,9 +593,16 @@ async def run_all_async() -> None:
                 logger.info(f"[competitor_monitor] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
                 await asyncio.sleep(wait_seconds)
 
-                keywords = getattr(config, "COMPETITOR_KEYWORDS", [])
+                from db import get_top_keywords_for_competitors
+                keywords = await get_top_keywords_for_competitors(limit=10)
                 if not keywords:
+                    # fallback — захардкоженные ключи из конфига
+                    keywords = getattr(config, "COMPETITOR_KEYWORDS", [])
+                if not keywords:
+                    logger.info("[competitor_monitor] нет ключевых слов — пропускаем")
                     continue
+
+                logger.info(f"[competitor_monitor] ключи ({len(keywords)}): {keywords[:3]}…")
 
                 from tools.marketplace import WBClient
                 from datetime import date
