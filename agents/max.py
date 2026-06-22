@@ -3577,8 +3577,13 @@ class MaxAgent(BaseAgent):
             "💡 Пример: /cost КБ50 850"
         )
 
-    async def _check_stock_alerts(self, chat_id: int) -> None:
-        """Проверяет остатки и шлёт алерт если stock_days < 7 или stock = 0."""
+    async def _check_stock_alerts(self, chat_id: int, *, deduplicate: bool = False) -> None:
+        """Проверяет остатки и шлёт алерт если stock_days < STOCK_ALERT_DAYS_THRESHOLD или stock = 0.
+
+        deduplicate=True: пропускает товары, по которым алерт уже отправлялся сегодня (Redis TTL 23 ч).
+        """
+        from config import config as _cfg
+        threshold = getattr(_cfg, "STOCK_ALERT_DAYS_THRESHOLD", 21)
         try:
             from db import get_pool
             pool = await get_pool()
@@ -3614,15 +3619,28 @@ class MaxAgent(BaseAgent):
                 vel   = float(r["daily_velocity"] or 0)
                 days_left = (stock / vel) if vel > 0 else (999 if stock > 0 else 0)
                 mp_label  = "🟣 WB" if r["marketplace"] == "wb" else "🔵 Ozon"
+
                 if stock == 0:
-                    alerts.append(f"{mp_label} <b>{r['name']}</b> — ❌ нет остатков")
-                elif days_left < 7:
-                    alerts.append(f"{mp_label} <b>{r['name']}</b> — ⚠️ {int(days_left)} дн.")
+                    severity = "critical"
+                    line = f"{mp_label} <b>{r['name']}</b> — ❌ нет остатков"
+                elif days_left < threshold:
+                    severity = "low"
+                    line = f"{mp_label} <b>{r['name']}</b> — ⚠️ {int(days_left)} дн."
+                else:
+                    continue
+
+                if deduplicate:
+                    rkey = f"stock_alert:{chat_id}:{r['marketplace']}:{r['product_id']}:{severity}"
+                    if await self._redis_get(rkey):
+                        continue
+                    await self._redis_set(rkey, "1", ttl=23 * 3600)
+
+                alerts.append(line)
 
             if not alerts:
                 return
 
-            text = "⚠️ <b>Кончаются остатки:</b>\n\n" + "\n".join(alerts[:15])
+            text = "⚠️ <b>Алерт остатков:</b>\n\n" + "\n".join(alerts[:15])
             if len(alerts) > 15:
                 text += f"\n…и ещё {len(alerts) - 15} позиций"
             await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")

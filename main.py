@@ -49,7 +49,7 @@ AGENTS: dict[str, tuple] = {
     "peter":  (PeterAgent,  "peter"),
     "elina":  (ElinaAgent,  "elina"),
     "alex":   (AlexAgent,   "alex"),
-    "dan":    (DanAgent,    "dan"),
+    # "dan": (DanAgent, "dan"),  # заморожен: Pollinations.ai слишком медленный, заменить на DALL-E 3 если нужно
     "eva":    (EvaAgent,    "eva"),
     "max":    (MaxAgent,    "max"),
     "tina":   (TinaAgent,   "tina"),
@@ -537,6 +537,41 @@ async def run_all_async() -> None:
                 await asyncio.sleep(60)
 
     asyncio.create_task(_tender_digest_loop())
+
+    async def _stock_alerts_loop():
+        """Ежедневно в STOCK_ALERT_HOUR_UTC — алерты по остаткам < STOCK_ALERT_DAYS_THRESHOLD дней."""
+        from datetime import datetime, timezone, timedelta
+        from db import get_all_active_shops
+
+        while True:
+            try:
+                now    = datetime.now(timezone.utc)
+                hour   = getattr(config, "STOCK_ALERT_HOUR_UTC", 10)
+                target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+                if target <= now:
+                    target += timedelta(days=1)
+                wait_seconds = (target - now).total_seconds()
+                logger.info(f"[stock_alerts] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
+                await asyncio.sleep(wait_seconds)
+
+                if max_agent is None:
+                    continue
+
+                shops = await get_all_active_shops()
+                unique_chats = list({s["chat_id"] for s in shops})
+                for chat_id in unique_chats:
+                    try:
+                        await max_agent._check_stock_alerts(chat_id, deduplicate=True)
+                    except Exception as e:
+                        logger.error(f"[stock_alerts] chat_id={chat_id} ошибка: {e}")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[stock_alerts] критическая ошибка: {e}")
+                await asyncio.sleep(60)
+
+    asyncio.create_task(_stock_alerts_loop())
 
     # ── Dashboard API (aiohttp) ───────────────────────────────────────────────
     _CORS_ORIGIN = config.DASHBOARD_URL or "*"
