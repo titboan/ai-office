@@ -681,8 +681,27 @@ class PeterAgent(BaseAgent):
 
         chat_id = getattr(self, "_current_chat_id", None) or 0
 
+        _seo_audit_kw = (
+            "seo аудит", "аудит seo", "seo анализ", "анализ seo",
+            "слабые карточки", "карточки переделать", "переделать карточки",
+            "какие карточки", "приоритет seo", "seo приоритет",
+        )
+        if chat_id and any(kw in task.lower() for kw in _seo_audit_kw):
+            try:
+                seo_data = await self._collect_seo_audit_data(chat_id, days=30)
+                prompt = (
+                    f"Аналитическая задача от {from_agent}: {task}\n\n"
+                    f"SEO-ДАННЫЕ ПО ТОВАРАМ (30 дней, urgency по убыванию):\n"
+                    f"{json.dumps(seo_data[:20], ensure_ascii=False, default=str, indent=2)}"
+                )
+            except Exception as e:
+                logger.warning(f"[Питер] handle_task seo_audit: ошибка данных: {e}")
+                prompt = f"Аналитическая задача от {from_agent}: {task}"
+        else:
+            prompt = ""
+
         _supply_kw = ("поставк", "поставить", "регион", "склад", "кластер", "везти", "отгрузк")
-        if chat_id and any(kw in task.lower() for kw in _supply_kw):
+        if not prompt and chat_id and any(kw in task.lower() for kw in _supply_kw):
             try:
                 supply_data = await self._collect_supply_data(chat_id, days=14)
                 prompt = (
@@ -1249,6 +1268,181 @@ class PeterAgent(BaseAgent):
             update=update,
         )
 
+    async def _collect_seo_audit_data(self, chat_id: int, days: int = 30) -> list[dict]:
+        """Воронка + контент карточек + SEO-проблемы для каждого товара."""
+        from db import get_pool
+        pool = await get_pool()
+        date_from = (datetime.now(_UTC) - timedelta(days=days)).date()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                WITH funnel AS (
+                    SELECT marketplace, product_id,
+                           SUM(views)::bigint             AS views,
+                           SUM(add_to_cart)::bigint       AS add_to_cart,
+                           SUM(orders_count)::bigint      AS orders,
+                           AVG(avg_position)::numeric(5,1) AS avg_position
+                    FROM product_funnel_stats
+                    WHERE chat_id = $1 AND stat_date >= $2
+                    GROUP BY marketplace, product_id
+                )
+                SELECT
+                    f.marketplace,
+                    f.product_id,
+                    COALESCE(m.display_name, f.product_id)                           AS name,
+                    CASE WHEN f.marketplace = 'wb'
+                         THEN COALESCE(m.wb_article,    f.product_id)
+                         ELSE COALESCE(m.ozon_offer_id, f.product_id) END            AS article,
+                    f.views,
+                    f.add_to_cart,
+                    f.orders,
+                    CASE WHEN f.views > 0
+                         THEN ROUND(f.add_to_cart::numeric / f.views * 100, 2)
+                         ELSE 0 END                                                   AS ctr,
+                    f.avg_position,
+                    pc.title,
+                    LENGTH(COALESCE(pc.title, ''))                                   AS title_len,
+                    LENGTH(COALESCE(pc.description, ''))                             AS desc_len,
+                    COALESCE(JSONB_ARRAY_LENGTH(pc.characteristics), 0)              AS chars_count
+                FROM funnel f
+                LEFT JOIN product_mapping m ON
+                    (f.marketplace = 'wb'   AND m.wb_nm_id        = f.product_id) OR
+                    (f.marketplace = 'ozon' AND m.ozon_sku::text  = f.product_id)
+                LEFT JOIN product_cards pc ON pc.chat_id = $1
+                    AND pc.marketplace = f.marketplace
+                    AND (
+                        (f.marketplace = 'wb'   AND pc.product_id = f.product_id) OR
+                        (f.marketplace = 'ozon' AND pc.product_id = m.ozon_offer_id)
+                    )
+                WHERE f.views > 0
+                ORDER BY f.views DESC
+                LIMIT 40
+            """, chat_id, date_from)
+
+        if not rows:
+            return []
+
+        results = []
+        for row in rows:
+            r = dict(row)
+            ctr         = float(r["ctr"] or 0)
+            title_len   = int(r["title_len"] or 0)
+            desc_len    = int(r["desc_len"] or 0)
+            chars_count = int(r["chars_count"] or 0)
+            views       = int(r["views"] or 0)
+            avg_pos     = r["avg_position"]
+
+            issues: list[str] = []
+            if r["title"] is None:
+                issues.append("нет данных карточки — нужен /sync_cards")
+            else:
+                if title_len < 40:
+                    issues.append(f"заголовок {title_len}/60 симв.")
+                if desc_len < 150:
+                    issues.append(f"описание {desc_len} симв.")
+                if chars_count < 5:
+                    issues.append(f"характеристик {chars_count}/7")
+
+            if ctr < 2.0 and views >= 100:
+                issues.append(f"CTR {ctr}% (норма 2–3%)")
+            if avg_pos and float(avg_pos) > 50:
+                issues.append(f"позиция в поиске {avg_pos}")
+
+            # Urgency: много показов + плохой CTR = максимальный приоритет переделки
+            urgency = int(views * (1.0 / (ctr + 0.5))) if views > 0 else 0
+
+            results.append({
+                "marketplace":  r["marketplace"],
+                "name":         r["name"],
+                "article":      r["article"],
+                "views":        views,
+                "ctr":          ctr,
+                "avg_position": float(avg_pos) if avg_pos else None,
+                "orders":       int(r["orders"] or 0),
+                "title_len":    title_len,
+                "desc_len":     desc_len,
+                "chars_count":  chars_count,
+                "issues":       issues,
+                "urgency":      urgency,
+            })
+
+        results.sort(key=lambda x: x["urgency"], reverse=True)
+        return results
+
+    async def cmd_seo_audit(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """/seo_audit [период=30] — аудит SEO карточек, приоритизация для переделки."""
+        chat_id = update.effective_user.id
+        days = 30
+        if context.args:
+            try:
+                days = int(context.args[0])
+            except ValueError:
+                pass
+
+        await update.message.reply_text(f"🔍 Анализирую SEO карточек за {days} дней…")
+
+        data = await self._collect_seo_audit_data(chat_id, days)
+        if not data:
+            await update.message.reply_text(
+                "❌ Данных нет. Запусти /sync_funnel и /sync_cards у Макса."
+            )
+            return
+
+        avg_ctr           = sum(p["ctr"] for p in data) / len(data)
+        products_w_issues = sum(1 for p in data if p["issues"])
+        no_card_data      = sum(1 for p in data if p["title_len"] == 0 and "нет данных" in " ".join(p["issues"]))
+
+        prompt = f"""Период: {days} дней. Всего товаров: {len(data)}.
+Средний CTR: {avg_ctr:.1f}%. Товаров с SEO-проблемами: {products_w_issues}.
+{f'Без данных карточки (нужен /sync_cards): {no_card_data}.' if no_card_data else ''}
+
+SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сортировка по убыванию):
+{json.dumps(data[:25], ensure_ascii=False, indent=2)}
+
+Составь чёткий список товаров для переделки SEO.
+Для каждого: что конкретно слабо + одно действие.
+В рекомендациях пиши артикул для команды /seo у Элины.
+
+Формат ответа (Rich Markdown, до 35 строк):
+
+🔍 **SEO-аудит за {days} дней** — X товаров нужно переделать
+
+**🔴 Срочно (высокие показы, плохой CTR):**
+`АРТИКУЛ` [МП] — CTR X%, показов N: [что слабо]
+→ `/seo АРТИКУЛ` у Элины
+
+**🟡 Улучшить (контент неполный):**
+`АРТИКУЛ` — заголовок Xсимв., [что добавить]
+
+**🟢 Низкая видимость (мало показов):**
+`АРТИКУЛ` — позиция X, нужны ключевые слова
+
+> Главный вывод одной строкой."""
+
+        try:
+            from anthropic import AsyncAnthropic
+            client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+            resp = await client.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=2048,
+                system=PETER_SYSTEM,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            answer = resp.content[0].text
+        except Exception as e:
+            logger.error(f"[Питер/seo_audit] ошибка Claude: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка анализа: {e}")
+            return
+
+        await self._send_answer(
+            answer,
+            notion_title=f"SEO-аудит {datetime.now(_UTC).strftime('%d.%m.%Y')}",
+            notion_source="cmd:seo_audit",
+            update=update,
+        )
+
     async def cmd_analyze(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -1518,8 +1712,9 @@ class PeterAgent(BaseAgent):
             BotCommand("report",  "Отчёт о продажах и план роста"),
             BotCommand("audit",   "Полная оценка магазина (SWOT, KPI)"),
             BotCommand("drr",     "ДРР и ROAS по товарам"),
-            BotCommand("funnel",  "Воронка конверсии карточек"),
-            BotCommand("abc",     "ABC-анализ: какие товары дают 80% выручки"),
+            BotCommand("funnel",    "Воронка конверсии карточек"),
+            BotCommand("seo_audit", "SEO-аудит: какие карточки нужно переделать"),
+            BotCommand("abc",       "ABC-анализ: какие товары дают 80% выручки"),
             BotCommand("supply",  "План поставок по регионам и кластерам"),
             BotCommand("analyze", "Произвольный бизнес-анализ"),
             BotCommand("reset",   "Очистить историю диалога"),
@@ -1531,8 +1726,9 @@ class PeterAgent(BaseAgent):
         self.app.add_handler(CommandHandler("analyze", self.cmd_analyze))
         self.app.add_handler(CommandHandler("audit",   self.cmd_audit))
         self.app.add_handler(CommandHandler("drr",     self.cmd_drr))
-        self.app.add_handler(CommandHandler("funnel",  self.cmd_funnel))
-        self.app.add_handler(CommandHandler("abc",     self.cmd_abc))
+        self.app.add_handler(CommandHandler("funnel",    self.cmd_funnel))
+        self.app.add_handler(CommandHandler("seo_audit", self.cmd_seo_audit))
+        self.app.add_handler(CommandHandler("abc",        self.cmd_abc))
         self.app.add_handler(CommandHandler("supply",  self.cmd_supply))
         self.app.add_handler(
             CallbackQueryHandler(self._handle_peter_menu_callback, pattern=r"^pmenu:")
