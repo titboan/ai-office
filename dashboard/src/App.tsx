@@ -119,7 +119,7 @@ export default function App() {
           <TopProducts data={data.top_products} />
 
           {/* ДРР по площадкам */}
-          <DrrGauge revenue={data.revenue} adv={data.adv} />
+          <DrrGauge adv={data.adv} salesByDay={data.sales_by_day ?? []} />
 
           {/* Рентабельность (NET-маржа) */}
           <MarginChart data={data.net_margin ?? []} />

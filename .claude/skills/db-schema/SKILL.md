@@ -42,7 +42,10 @@ marketplace_adv_stats    -- рекламная статистика WB и Ozon (
 wb_campaigns             -- названия WB кампаний (вручную — API 404)
 
 product_mapping          -- реестр товаров
-  wb_article             -- nullable
+  wb_article             -- nullable, supplierArticle (строка, напр. "КБ50")
+  wb_nm_id               -- nullable, WB nmId (числовая строка). Заполняется
+                         --   автоматически через Content API при /sync_adv.
+                         --   Нужен для join с product_adv_stats (fullstats отдаёт nmId, не wb_article)
   ozon_offer_id          -- nullable
   ozon_sku               -- nullable
   display_name           -- UNIQUE, ключ для /add и /cost
@@ -57,6 +60,7 @@ product_adv_stats        -- реклама на уровне товара (produ
   chat_id, marketplace, product_id, campaign_id, stat_date
   views, clicks, ctr, spend, orders_count
   UNIQUE(chat_id, marketplace, product_id, stat_date)
+  WB product_id = nmId (числовая строка) — join через product_mapping.wb_nm_id
   Ozon product_id = SKU (числовой)
 ```
 

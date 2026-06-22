@@ -441,7 +441,11 @@ async def _create_schema() -> None:
             ADD COLUMN IF NOT EXISTS ozon_price NUMERIC(10,2),
             ADD COLUMN IF NOT EXISTS prices_updated_at TIMESTAMPTZ
         """)
-        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices)")
+        await conn.execute("""
+            ALTER TABLE product_mapping
+            ADD COLUMN IF NOT EXISTS wb_nm_id TEXT
+        """)
+        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id)")
 
 async def save_project(
     chat_id: int,

@@ -1,8 +1,8 @@
-import { RevenueRow, AdvRow } from '../api'
+import { AdvRow, DayRevenue } from '../api'
 
-function drr(revenue: number, spend: number) {
-  if (!revenue) return null
-  return (spend / revenue) * 100
+function drr(buyouts: number, spend: number) {
+  if (!buyouts) return null
+  return (spend / buyouts) * 100
 }
 
 function color(val: number | null) {
@@ -12,11 +12,11 @@ function color(val: number | null) {
   return 'text-green-600'
 }
 
-export default function DrrGauge({ revenue, adv }: { revenue: RevenueRow[]; adv: AdvRow[] }) {
-  const byMp = (mp: string) => {
-    const r = revenue.find(x => x.marketplace === mp)?.revenue ?? 0
+export default function DrrGauge({ adv, salesByDay }: { adv: AdvRow[]; salesByDay: DayRevenue[] }) {
+  const byMp = (mp: 'wb' | 'ozon') => {
+    const buyouts = salesByDay.reduce((sum, row) => sum + (row[mp] ?? 0), 0)
     const s = adv.find(x => x.marketplace === mp)?.spend ?? 0
-    return { r, s, drr: drr(r, s) }
+    return { buyouts, s, drr: drr(buyouts, s) }
   }
 
   const wb = byMp('wb')
@@ -26,14 +26,14 @@ export default function DrrGauge({ revenue, adv }: { revenue: RevenueRow[]; adv:
     <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
       <h2 className="text-sm font-semibold mb-3">ДРР по площадкам</h2>
       <div className="flex gap-4">
-        {[{ label: '🟣 WB', ...wb }, { label: '🔵 Ozon', ...ozon }].map(({ label, r, s, drr: d }) => (
+        {[{ label: '🟣 WB', ...wb }, { label: '🔵 Ozon', ...ozon }].map(({ label, buyouts, s, drr: d }) => (
           <div key={label} className="flex-1 text-center">
             <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">{label}</div>
             <div className={`text-2xl font-bold ${color(d)}`}>
               {d !== null ? `${d.toFixed(1)}%` : '—'}
             </div>
             <div className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-              {r.toLocaleString()} ₽ / реклама {s.toLocaleString()} ₽
+              выкупы {buyouts.toLocaleString()} ₽ / реклама {s.toLocaleString()} ₽
             </div>
           </div>
         ))}
