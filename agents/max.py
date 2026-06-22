@@ -2892,9 +2892,9 @@ class MaxAgent(BaseAgent):
             await update.message.reply_text(f"❌ Ошибка: {e}")
 
     async def cmd_map(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/map name=X wb=Y ozon=Z — добавить/обновить товар в реестре.
-        name обязателен. wb и ozon — опционально (товар может быть на одной площадке).
-        Значения без пробелов. Пример: /map name=КБ50 wb=БК50гр ozon=КБ50"""
+        """/map name=X wb=Y ozon=Z [category=корм] — добавить/обновить товар в реестре.
+        name обязателен. wb/ozon/category — опционально.
+        Пример: /map name=КБ50 wb=БК50гр ozon=КБ50 category=корм"""
         params = {}
         for tok in (update.message.text or "").split()[1:]:
             if "=" in tok:
@@ -2903,25 +2903,28 @@ class MaxAgent(BaseAgent):
         name = params.get("name")
         if not name:
             await update.message.reply_text(
-                "Формат: /map name=КБ50 wb=БК50гр ozon=КБ50\n"
-                "name обязателен, wb/ozon — опционально. Значения без пробелов."
+                "Формат: /map name=КБ50 wb=БК50гр ozon=КБ50 category=корм\n"
+                "name обязателен, остальное — опционально. Значения без пробелов."
             )
             return
         wb = params.get("wb") or None
         ozon = params.get("ozon") or None
+        category = params.get("category") or None
         try:
             from db import get_pool
             pool = await get_pool()
             async with pool.acquire() as conn:
                 await conn.execute("""
-                    INSERT INTO product_mapping (display_name, wb_article, ozon_offer_id)
-                    VALUES ($1, $2, $3)
+                    INSERT INTO product_mapping (display_name, wb_article, ozon_offer_id, category)
+                    VALUES ($1, $2, $3, $4)
                     ON CONFLICT (display_name)
-                    DO UPDATE SET wb_article = EXCLUDED.wb_article,
-                                  ozon_offer_id = EXCLUDED.ozon_offer_id
-                """, name, wb, ozon)
+                    DO UPDATE SET wb_article    = EXCLUDED.wb_article,
+                                  ozon_offer_id = EXCLUDED.ozon_offer_id,
+                                  category      = COALESCE(EXCLUDED.category, product_mapping.category)
+                """, name, wb, ozon, category)
+            cat_str = f" | Категория: {category}" if category else ""
             await update.message.reply_text(
-                f"✅ Товар '{name}' сохранён.\nWB={wb or '—'} OZ={ozon or '—'}\n"
+                f"✅ Товар '{name}' сохранён.\nWB={wb or '—'} OZ={ozon or '—'}{cat_str}\n"
                 f"Себестоимость: /cost {name} <сумма>"
             )
         except Exception as e:
@@ -3129,6 +3132,28 @@ class MaxAgent(BaseAgent):
 
         if step == "name":
             state["name"] = text
+            state["step"] = "category"
+            await self._redis_set(f"catalog_add:{chat_id}", _json.dumps(state), ttl=300)
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("корм",      callback_data="addcat:корм"),
+                    InlineKeyboardButton("лакомства", callback_data="addcat:лакомства"),
+                ],
+                [
+                    InlineKeyboardButton("лёгкое",   callback_data="addcat:лёгкое"),
+                    InlineKeyboardButton("корень",    callback_data="addcat:корень"),
+                ],
+                [
+                    InlineKeyboardButton("✏️ Другое", callback_data="addcat:other"),
+                    InlineKeyboardButton("Пропустить", callback_data="addcat:skip"),
+                ],
+            ])
+            await update.message.reply_text(
+                f"Товар: {text}\nКатегория товара?", reply_markup=kb
+            )
+
+        elif step == "category_text":
+            state["category"] = text
             state["step"] = "platform"
             await self._redis_set(f"catalog_add:{chat_id}", _json.dumps(state), ttl=300)
             kb = InlineKeyboardMarkup([[
@@ -3136,7 +3161,9 @@ class MaxAgent(BaseAgent):
                 InlineKeyboardButton("Ozon", callback_data="addmp:ozon"),
                 InlineKeyboardButton("Обе",  callback_data="addmp:both"),
             ]])
-            await update.message.reply_text(f"Товар: {text}\nНа какой площадке?", reply_markup=kb)
+            await update.message.reply_text(
+                f"Категория: {text}\nНа какой площадке?", reply_markup=kb
+            )
 
         elif step == "wb_article":
             state["wb"] = text
@@ -3169,23 +3196,25 @@ class MaxAgent(BaseAgent):
         await update.message.reply_text("Себестоимость (₽)? Или пропусти — задашь позже через /cost", reply_markup=kb)
 
     async def _save_product(self, update_or_query, chat_id: int, state: dict, edit: bool = False) -> None:
-        name = state.get("name")
-        wb   = state.get("wb") or None
-        ozon = state.get("ozon") or None
-        cost = state.get("cost") or None
+        name     = state.get("name")
+        wb       = state.get("wb") or None
+        ozon     = state.get("ozon") or None
+        cost     = state.get("cost") or None
+        category = state.get("category") or None
         await self._redis_set(f"catalog_add:{chat_id}", "", ttl=1)
         try:
             from db import get_pool
             pool = await get_pool()
             async with pool.acquire() as conn:
                 row = await conn.fetchrow("""
-                    INSERT INTO product_mapping (display_name, wb_article, ozon_offer_id)
-                    VALUES ($1, $2, $3)
+                    INSERT INTO product_mapping (display_name, wb_article, ozon_offer_id, category)
+                    VALUES ($1, $2, $3, $4)
                     ON CONFLICT (display_name)
-                    DO UPDATE SET wb_article = EXCLUDED.wb_article,
-                                  ozon_offer_id = EXCLUDED.ozon_offer_id
+                    DO UPDATE SET wb_article    = EXCLUDED.wb_article,
+                                  ozon_offer_id = EXCLUDED.ozon_offer_id,
+                                  category      = COALESCE(EXCLUDED.category, product_mapping.category)
                     RETURNING id
-                """, name, wb, ozon)
+                """, name, wb, ozon, category)
                 if cost is not None:
                     await conn.execute("""
                         INSERT INTO product_costs (mapping_id, cost, updated_at)
@@ -3194,7 +3223,8 @@ class MaxAgent(BaseAgent):
                         DO UPDATE SET cost = $2, updated_at = now()
                     """, row["id"], cost)
             cost_str = f", с/с {cost} ₽" if cost else " (с/с не задана)"
-            text = f"✅ {name} сохранён{cost_str}\nWB={wb or '—'} OZ={ozon or '—'}"
+            cat_str  = f", категория: {category}" if category else ""
+            text = f"✅ {name} сохранён{cost_str}{cat_str}\nWB={wb or '—'} OZ={ozon or '—'}"
             if edit:
                 await update_or_query.edit_message_text(text)
             else:
@@ -3219,7 +3249,32 @@ class MaxAgent(BaseAgent):
         state = _json.loads(raw)
         data  = query.data
 
-        if data == "addmp:wb":
+        if data.startswith("addcat:"):
+            cat_val = data.split(":", 1)[1]
+            if cat_val == "skip":
+                state["category"] = None
+            elif cat_val == "other":
+                state["step"] = "category_text"
+                await self._redis_set(f"catalog_add:{chat_id}", _json.dumps(state), ttl=300)
+                await query.edit_message_text("Введи категорию (например: добавки, корень, сухой корм):")
+                return
+            else:
+                state["category"] = cat_val
+            state["step"] = "platform"
+            await self._redis_set(f"catalog_add:{chat_id}", _json.dumps(state), ttl=300)
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("WB",   callback_data="addmp:wb"),
+                InlineKeyboardButton("Ozon", callback_data="addmp:ozon"),
+                InlineKeyboardButton("Обе",  callback_data="addmp:both"),
+            ]])
+            cat_label = state.get("category") or "без категории"
+            await query.edit_message_text(
+                f"Товар: {state['name']} | Категория: {cat_label}\nНа какой площадке?",
+                reply_markup=kb,
+            )
+
+        elif data == "addmp:wb":
             state["step"] = "wb_article"
             state["need_ozon"] = False
             await self._redis_set(f"catalog_add:{chat_id}", _json.dumps(state), ttl=300)
@@ -4009,7 +4064,7 @@ class MaxAgent(BaseAgent):
             CallbackQueryHandler(self._handle_question_callback, pattern=r"^qrev:")
         )
         self.app.add_handler(
-            CallbackQueryHandler(self._handle_catalog_add_callback,  pattern=r"^addmp:")
+            CallbackQueryHandler(self._handle_catalog_add_callback,  pattern=r"^(addmp|addcat):")
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_catalog_cost_callback, pattern=r"^costpick:")
