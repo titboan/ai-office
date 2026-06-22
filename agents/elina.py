@@ -36,7 +36,7 @@ _LETTER_KEYWORDS  = ("письмо", "email", "рассылк", "newsletter", "e
 _ARTICLE_KEYWORDS = ("статья", "блог", "blog", "seo", "лендинг", "landing", "сценари", "скрипт")
 
 # Ключевые слова для автодетекции SEO-запроса в handle_task
-_SEO_INTENT_KEYWORDS = ("seo", "карточк", "оптимизир", "заголовок товар", "описание товар")
+_SEO_INTENT_KEYWORDS = ("seo", "карточк", "оптимизир", "заголовок товар", "описание товар", "артикул")
 # Числовой product_id (WB nm_id — 7-10 цифр)
 _PRODUCT_ID_RE = re.compile(r'\b(\d{7,10})\b')
 # Свежесть данных: синкаем если старше 12 часов
@@ -255,11 +255,18 @@ class ElinaAgent(BaseAgent):
         # Автодетекция SEO-запроса через очередь (цепочка Марты)
         task_lower = task.lower()
         if any(kw in task_lower for kw in _SEO_INTENT_KEYWORDS):
-            match = _PRODUCT_ID_RE.search(task)
-            if match:
-                product_id = match.group(1)
-                chat_id = getattr(self, "_current_chat_id", None)
-                if chat_id:
+            chat_id = getattr(self, "_current_chat_id", None)
+            if chat_id:
+                # 1. Числовой nm_id в тексте (приоритет)
+                match = _PRODUCT_ID_RE.search(task)
+                product_id: str | None = match.group(1) if match else None
+
+                # 2. Артикул / display_name из product_mapping
+                if not product_id:
+                    from db import find_product_id_in_text
+                    product_id = await find_product_id_in_text(task)
+
+                if product_id:
                     logger.info(f"[Элина] SEO auto-detect → product_id={product_id}, chat_id={chat_id}")
                     return await self._do_seo_task(product_id, chat_id)
 
@@ -318,6 +325,20 @@ class ElinaAgent(BaseAgent):
             return
 
         chat_id = update.effective_user.id
+
+        # Если не числовой nm_id — пробуем резолюцию через product_mapping
+        if not _PRODUCT_ID_RE.fullmatch(product_id):
+            from db import find_product_id_in_text
+            resolved = await find_product_id_in_text(product_id)
+            if resolved:
+                product_id = resolved
+            else:
+                await update.message.reply_text(
+                    f"❌ Артикул «{product_id}» не найден в реестре товаров.\n"
+                    "Проверь /products у Макса — нужен wb_article, ozon_offer_id или display_name."
+                )
+                return
+
         await update.message.reply_text("🔍 Синхронизирую карточки и собираю данные…")
         result = await self._do_seo_task(product_id, chat_id)
         await _send_rich(self.bot_token, update.effective_chat.id, result)

@@ -1461,6 +1461,39 @@ async def get_keywords_top(
         return [dict(r) for r in rows]
 
 
+async def find_product_id_in_text(text: str) -> str | None:
+    """Ищет в тексте wb_article, ozon_offer_id или display_name из product_mapping.
+
+    Возвращает wb_nm_id (приоритет) или ozon_offer_id первого совпадения.
+    Нужно чтобы Элина принимала "КБ50" или "Корм для кошек" вместо числового nm_id.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT wb_article, wb_nm_id, ozon_offer_id, display_name
+            FROM product_mapping
+            WHERE wb_article IS NOT NULL OR ozon_offer_id IS NOT NULL
+            """
+        )
+
+    text_lower = text.lower()
+    # Сначала ищем по точным артикулам (wb_article, ozon_offer_id) — они короткие и уникальные
+    for row in rows:
+        for candidate in (row["wb_article"] or "", row["ozon_offer_id"] or ""):
+            candidate = candidate.strip().lower()
+            if candidate and len(candidate) >= 2 and candidate in text_lower:
+                return row["wb_nm_id"] or row["ozon_offer_id"] or candidate
+
+    # Затем по display_name (минимум 4 символа чтобы не было ложных совпадений)
+    for row in rows:
+        display = (row["display_name"] or "").strip().lower()
+        if display and len(display) >= 4 and display in text_lower:
+            return row["wb_nm_id"] or row["ozon_offer_id"] or display
+
+    return None
+
+
 # ── Карточки товаров ──────────────────────────────────────────────────────────
 
 async def upsert_product_card(
