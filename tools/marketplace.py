@@ -501,8 +501,9 @@ class WBClient:
     async def get_nm_ids(self) -> dict[str, dict]:
         """Возвращает {lower(vendorCode): {"nm_id": str, "title": str, "description": str, "characteristics": list, "category": str}}.
 
-        Ключ nm_id нужен для join с product_adv_stats (fullstats отдаёт nmId).
-        Поля title/description/characteristics/category используются для SEO-анализа.
+        nm_id нужен для join с product_adv_stats (fullstats отдаёт nmId).
+        category (= subjectName) — предмет карточки, используется как авто-категория в product_mapping.
+        Поля title/description/characteristics используются для SEO-анализа карточек.
         """
         import json as _json
         _CONTENT_BASE = "https://content-api.wildberries.ru"
@@ -532,7 +533,6 @@ class WBClient:
                     subject = card.get("subjectName", "") or ""
                     desc    = card.get("description", "") or ""
                     chars   = card.get("characteristics") or []
-                    # Заголовок — характеристика с name "Наименование" или "Название"
                     title = ""
                     for ch in chars:
                         if ch.get("name", "").lower() in ("наименование", "название"):
