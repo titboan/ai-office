@@ -1090,6 +1090,30 @@ class MaxAgent(BaseAgent):
                         logger.error(f"[Макс/sync] get_orders_analytics Ozon {df_str}: {e}")
                 logger.info(f"[Макс/sync] Ozon analytics итого: {total_new} новых записей за 14 дней")
 
+                # Авто-категории Ozon: description-category/tree + product/info/list
+                try:
+                    from db import get_pool as _get_pool
+                    _pool = await _get_pool()
+                    async with _pool.acquire() as conn:
+                        uncategorized = await conn.fetch(
+                            "SELECT ozon_offer_id FROM product_mapping "
+                            "WHERE ozon_offer_id IS NOT NULL AND category IS NULL"
+                        )
+                    if uncategorized:
+                        offer_ids = [r["ozon_offer_id"] for r in uncategorized]
+                        cat_map = await client.get_product_categories(offer_ids)
+                        if cat_map:
+                            async with _pool.acquire() as conn:
+                                for offer_id, cat_name in cat_map.items():
+                                    await conn.execute(
+                                        "UPDATE product_mapping SET category = $1 "
+                                        "WHERE ozon_offer_id = $2 AND category IS NULL",
+                                        cat_name, offer_id,
+                                    )
+                            logger.info(f"[Макс/sync] Ozon категории: обновлено {len(cat_map)} товаров")
+                except Exception as e:
+                    logger.error(f"[Макс/sync] Ozon категории ошибка: {e}")
+
         await self.sync_prices(chat_id)
 
     async def sync_prices(self, chat_id: int) -> None:
