@@ -680,8 +680,24 @@ class PeterAgent(BaseAgent):
         logger.info(f"[Питер] Задача от {from_agent}: {task!r}")
 
         chat_id = getattr(self, "_current_chat_id", None) or 0
+
+        _supply_kw = ("поставк", "поставить", "регион", "склад", "кластер", "везти", "отгрузк")
+        if chat_id and any(kw in task.lower() for kw in _supply_kw):
+            try:
+                supply_data = await self._collect_supply_data(chat_id, days=14)
+                prompt = (
+                    f"Аналитическая задача от {from_agent}: {task}\n\n"
+                    f"ДАННЫЕ ПО ОСТАТКАМ И ПРОДАЖАМ (14 дней):\n"
+                    f"{json.dumps(supply_data, ensure_ascii=False, default=str, indent=2)}"
+                )
+            except Exception as e:
+                logger.warning(f"[Питер] handle_task supply: ошибка данных: {e}")
+                prompt = f"Аналитическая задача от {from_agent}: {task}"
+        else:
+            prompt = ""
+
         data_str = ""
-        if chat_id:
+        if chat_id and not prompt:
             try:
                 data = await self._collect_data(chat_id, days=14)
                 adv_data = await self._collect_advanced_data(chat_id, days=14)
@@ -694,7 +710,8 @@ class PeterAgent(BaseAgent):
             except Exception as e:
                 logger.warning(f"[Питер] handle_task: ошибка сбора данных: {e}")
 
-        prompt = f"Аналитическая задача от {from_agent}: {task}{data_str}"
+        if not prompt:
+            prompt = f"Аналитическая задача от {from_agent}: {task}{data_str}"
         try:
             from anthropic import AsyncAnthropic
             client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -1076,6 +1093,162 @@ class PeterAgent(BaseAgent):
             update=update,
         )
 
+    async def _collect_supply_data(self, chat_id: int, days: int = 14) -> dict:
+        """Остатки по складам/кластерам + темп продаж для плана поставки."""
+        from db import get_pool
+        from agents.max import _get_cluster, _get_ozon_cluster
+        pool = await get_pool()
+        date_from = (datetime.now(_UTC) - timedelta(days=days)).date()
+
+        async with pool.acquire() as conn:
+            raw_stocks = await conn.fetch("""
+                SELECT s.marketplace, s.product_id, s.warehouse_name,
+                       SUM(s.stock)::int AS stock,
+                       COALESCE(m.display_name, MAX(s.product_name)) AS name
+                FROM marketplace_stocks s
+                LEFT JOIN product_mapping m
+                       ON (s.marketplace = 'wb'   AND m.wb_article    = s.product_id)
+                       OR (s.marketplace = 'ozon' AND m.ozon_offer_id = s.product_id)
+                WHERE s.chat_id = $1
+                GROUP BY s.marketplace, s.product_id, s.warehouse_name, m.display_name
+            """, chat_id)
+
+            velocity_raw = await conn.fetch("""
+                SELECT o.marketplace,
+                       CASE WHEN o.marketplace = 'ozon'
+                            THEN COALESCE(mm.ozon_offer_id, o.product_id)
+                            ELSE o.product_id END AS key,
+                       COALESCE(m.display_name, MAX(o.product_name)) AS name,
+                       ROUND(SUM(o.quantity)::numeric / $2, 2) AS daily_rate
+                FROM marketplace_orders o
+                LEFT JOIN product_mapping mm ON mm.ozon_sku = o.product_id
+                LEFT JOIN product_mapping m
+                       ON (o.marketplace = 'wb'   AND m.wb_article    = o.product_id)
+                       OR (o.marketplace = 'ozon' AND m.ozon_sku      = o.product_id)
+                WHERE o.chat_id = $1 AND o.order_date >= $3
+                GROUP BY o.marketplace,
+                         CASE WHEN o.marketplace = 'ozon'
+                              THEN COALESCE(mm.ozon_offer_id, o.product_id)
+                              ELSE o.product_id END,
+                         m.display_name
+                HAVING SUM(o.quantity) > 0
+            """, chat_id, days, date_from)
+
+        velocity: dict[tuple, float] = {
+            (r["marketplace"], r["key"]): float(r["daily_rate"]) for r in velocity_raw
+        }
+        velocity_names: dict[tuple, str] = {
+            (r["marketplace"], r["key"]): r["name"] or r["key"] for r in velocity_raw
+        }
+
+        cluster_stocks: dict[str, dict] = {}
+        for row in raw_stocks:
+            mp = row["marketplace"]
+            pid = row["product_id"]
+            wh = row["warehouse_name"] or ""
+            cluster = _get_cluster(wh) if mp == "wb" else _get_ozon_cluster(wh)
+            name = row["name"] or pid
+            stock = row["stock"] or 0
+
+            key = (mp, pid)
+            daily_rate = velocity.get(key, 0.0)
+            name = velocity_names.get(key, name)
+
+            prod_key = f"{mp}:{name}"
+            if prod_key not in cluster_stocks:
+                cluster_stocks[prod_key] = {
+                    "name": name, "marketplace": mp, "daily_rate": daily_rate,
+                    "clusters": {},
+                }
+            entry = cluster_stocks[prod_key]
+            entry["clusters"][cluster] = entry["clusters"].get(cluster, 0) + stock
+            if daily_rate and entry["daily_rate"] == 0:
+                entry["daily_rate"] = daily_rate
+
+        TARGET_DAYS = 45
+        result = []
+        for prod_data in sorted(cluster_stocks.values(), key=lambda x: -x["daily_rate"]):
+            dr = prod_data["daily_rate"]
+            clusters_out = []
+            for cl, stock in sorted(prod_data["clusters"].items()):
+                days_left = round(stock / dr, 1) if dr > 0 else 999
+                qty_to_send = max(0, round(TARGET_DAYS * dr - stock))
+                clusters_out.append({
+                    "cluster": cl, "stock": stock,
+                    "days_left": days_left, "qty_to_send": qty_to_send,
+                })
+            result.append({
+                "name": prod_data["name"],
+                "marketplace": prod_data["marketplace"],
+                "daily_rate": float(dr),
+                "target_days": TARGET_DAYS,
+                "clusters": clusters_out,
+            })
+
+        return {"products": result, "days_analyzed": days}
+
+    async def cmd_supply(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """/supply [период=14] — план поставок по регионам/кластерам."""
+        chat_id = update.effective_user.id
+        days = 14
+        for tok in (context.args or []):
+            if tok.startswith("период="):
+                try:
+                    days = int(tok.split("=", 1)[1])
+                except ValueError:
+                    pass
+
+        await update.message.reply_text(f"📦 Анализирую остатки по складам за {days} дней…")
+        try:
+            supply_data = await self._collect_supply_data(chat_id, days=days)
+        except Exception as e:
+            logger.error(f"[Питер/supply] ошибка данных: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+            return
+
+        prompt = f"""Составь план поставок на ближайшие 30 дней.
+
+ДАННЫЕ ПО ОСТАТКАМ И ПРОДАЖАМ (период анализа: {days} дней):
+{json.dumps(supply_data, ensure_ascii=False, indent=2)}
+
+ФОРМАТ ОТВЕТА:
+Для каждого товара: название | площадка | темп продаж/день
+Для каждого кластера: кластер | остаток (шт) | дней осталось | к поставке (шт) | приоритет
+
+ПРАВИЛА:
+- days_left < 7  → 🔴 СРОЧНО (везти немедленно)
+- days_left 7-20 → 🟡 Скоро  (ближайшая поставка)
+- days_left > 20 → 🟢 Норма  (можно не везти)
+- qty_to_send = 0 → пропустить кластер или написать «не нужно»
+- Итого по товару: суммарный объём поставки в штуках
+- В конце: топ-3 самых срочных позиции (товар + кластер)
+- Если данных нет (нет синхронизации) — предупреди и напиши /sync у Макса"""
+
+        await update.message.reply_text("🤔 Составляю план поставки…")
+        try:
+            from anthropic import AsyncAnthropic
+            client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+            resp = await client.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=3000,
+                system=PETER_SYSTEM,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            answer = resp.content[0].text
+        except Exception as e:
+            logger.error(f"[Питер/supply] ошибка Claude: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка анализа: {e}")
+            return
+
+        await self._send_answer(
+            answer,
+            notion_title=f"План поставок {datetime.now(_UTC).strftime('%d.%m.%Y')}",
+            notion_source="cmd:supply",
+            update=update,
+        )
+
     async def cmd_analyze(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -1244,6 +1417,7 @@ class PeterAgent(BaseAgent):
             "/audit — полная оценка магазина (SWOT, KPI, топ-5 действий)\n"
             "/drr [период=30] — ДРР и ROAS по товарам с вердиктами\n"
             "/funnel [период=30] — воронка конверсии карточек (показы→корзина→заказ)\n"
+            "/supply [период=14] — план поставок по регионам и кластерам\n"
             "/analyze <вопрос> — произвольный бизнес-анализ\n"
             "/reset — очистить историю\n\n"
             "💡 Пример: /report цель=100000 период=14"
@@ -1259,7 +1433,10 @@ class PeterAgent(BaseAgent):
             InlineKeyboardButton("🔻 Воронка", callback_data="pmenu:funnel"),
         ],
         [
-            InlineKeyboardButton("🔤 ABC",     callback_data="pmenu:abc"),
+            InlineKeyboardButton("📦 Поставки", callback_data="pmenu:supply"),
+            InlineKeyboardButton("🔤 ABC",      callback_data="pmenu:abc"),
+        ],
+        [
             InlineKeyboardButton("💬 Вопрос",  callback_data="pmenu:analyze"),
         ],
     ])
@@ -1293,6 +1470,13 @@ class PeterAgent(BaseAgent):
             "A — 80%, B — следующие 15%, C — хвост.\n\n"
             "/abc — запустить (период 30 дней)\n"
             "/abc 14 — за 14 дней"
+        ),
+        "supply": (
+            "📦 <b>План поставок</b>\n\n"
+            "Какие товары, в какие регионы и сколько штук нужно везти.\n"
+            "Расчёт: текущие остатки по складам ÷ темп продаж = дней осталось.\n\n"
+            "/supply — запустить (период 14 дней)\n"
+            "/supply период=30 — за 30 дней"
         ),
         "analyze": (
             "💬 <b>Произвольный анализ</b>\n\n"
@@ -1336,6 +1520,7 @@ class PeterAgent(BaseAgent):
             BotCommand("drr",     "ДРР и ROAS по товарам"),
             BotCommand("funnel",  "Воронка конверсии карточек"),
             BotCommand("abc",     "ABC-анализ: какие товары дают 80% выручки"),
+            BotCommand("supply",  "План поставок по регионам и кластерам"),
             BotCommand("analyze", "Произвольный бизнес-анализ"),
             BotCommand("reset",   "Очистить историю диалога"),
         ]
@@ -1348,6 +1533,7 @@ class PeterAgent(BaseAgent):
         self.app.add_handler(CommandHandler("drr",     self.cmd_drr))
         self.app.add_handler(CommandHandler("funnel",  self.cmd_funnel))
         self.app.add_handler(CommandHandler("abc",     self.cmd_abc))
+        self.app.add_handler(CommandHandler("supply",  self.cmd_supply))
         self.app.add_handler(
             CallbackQueryHandler(self._handle_peter_menu_callback, pattern=r"^pmenu:")
         )
