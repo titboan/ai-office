@@ -2302,6 +2302,11 @@ class MaxAgent(BaseAgent):
         if update.effective_chat and update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
             logger.debug(f"[max:handler] _handle_edit_reply вызван из группы — текст: {update.message.text[:50] if update.message and update.message.text else '?'}")
         chat_id = update.effective_chat.id
+
+        # Сначала проверяем ожидание кастомной цены от репрайсера
+        if await self._handle_reprice_text(update, context):
+            return
+
         pending = await self._redis_get(f"pending_edit:{chat_id}")
         if not pending:
             return
@@ -3648,6 +3653,355 @@ class MaxAgent(BaseAgent):
         except Exception as e:
             logger.error(f"[Макс/stock_alerts] ошибка: {e}", exc_info=True)
 
+    # ─── Репрайсинг ───────────────────────────────────────────────────────────
+
+    async def _collect_reprice_suggestions(self, chat_id: int) -> list[dict]:
+        """Собирает данные по каждому товару/маркетплейсу и формирует рекомендации по ценам.
+
+        Сигналы:
+          1. ДРР > 35% И маржа > 40% → поднять +10% (реклама дорогая, маржа позволяет)
+          2. Дней остатков < 14 → поднять +7% (товар популярен)
+          3. NET-маржа < 20% → только алерт, без изменения цены
+        """
+        from db import get_pool
+        from config import config as _cfg
+
+        TAX = _cfg.NET_MARGIN_TAX_RATE
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT
+                    m.display_name      AS name,
+                    m.wb_article,
+                    m.wb_nm_id,
+                    m.ozon_offer_id,
+                    m.wb_price,
+                    m.ozon_price,
+                    MAX(c.cost) FILTER (WHERE c.marketplace = 'wb')   AS cost_wb,
+                    MAX(c.cost) FILTER (WHERE c.marketplace = 'ozon') AS cost_ozon,
+
+                    /* DRR WB за 7 дней */
+                    (SELECT CASE WHEN COALESCE(SUM(o.seller_price * o.quantity), 0) > 0
+                                 THEN ROUND(SUM(a.spend) /
+                                            SUM(o.seller_price * o.quantity) * 100, 1)
+                                 ELSE NULL END
+                     FROM product_adv_stats a
+                     LEFT JOIN marketplace_orders o
+                            ON o.chat_id = $1 AND o.marketplace = 'wb'
+                           AND o.product_id = a.product_id
+                           AND o.order_date >= NOW() - INTERVAL '7 days'
+                     WHERE a.chat_id = $1 AND a.marketplace = 'wb'
+                       AND a.stat_date >= NOW() - INTERVAL '7 days'
+                       AND a.product_id = m.wb_nm_id
+                    ) AS drr_wb,
+
+                    /* DRR Ozon за 7 дней */
+                    (SELECT CASE WHEN COALESCE(SUM(o.seller_price * o.quantity), 0) > 0
+                                 THEN ROUND(SUM(a.spend) /
+                                            SUM(o.seller_price * o.quantity) * 100, 1)
+                                 ELSE NULL END
+                     FROM product_adv_stats a
+                     LEFT JOIN marketplace_orders o
+                            ON o.chat_id = $1 AND o.marketplace = 'ozon'
+                           AND o.product_id = a.product_id
+                           AND o.order_date >= NOW() - INTERVAL '7 days'
+                     WHERE a.chat_id = $1 AND a.marketplace = 'ozon'
+                       AND a.stat_date >= NOW() - INTERVAL '7 days'
+                       AND a.product_id = m.ozon_sku
+                    ) AS drr_ozon,
+
+                    /* Дней остатков WB */
+                    (SELECT CASE WHEN COALESCE(SUM(o2.quantity), 0) > 0
+                                 THEN FLOOR(COALESCE(SUM(s.stock), 0)::float
+                                            / (SUM(o2.quantity) / 14.0))
+                                 ELSE NULL END
+                     FROM marketplace_stocks s
+                     LEFT JOIN marketplace_orders o2
+                            ON o2.chat_id = $1 AND o2.marketplace = 'wb'
+                           AND o2.product_id = m.wb_article
+                           AND o2.order_date >= NOW() - INTERVAL '14 days'
+                     WHERE s.chat_id = $1 AND s.marketplace = 'wb'
+                       AND s.product_id = m.wb_article
+                    ) AS days_wb,
+
+                    /* Дней остатков Ozon */
+                    (SELECT CASE WHEN COALESCE(SUM(o2.quantity), 0) > 0
+                                 THEN FLOOR(COALESCE(SUM(s.stock), 0)::float
+                                            / (SUM(o2.quantity) / 14.0))
+                                 ELSE NULL END
+                     FROM marketplace_stocks s
+                     LEFT JOIN marketplace_orders o2
+                            ON o2.chat_id = $1 AND o2.marketplace = 'ozon'
+                           AND o2.product_id = COALESCE(m.ozon_sku, s.product_id)
+                           AND o2.order_date >= NOW() - INTERVAL '14 days'
+                     WHERE s.chat_id = $1 AND s.marketplace = 'ozon'
+                       AND s.product_id = m.ozon_offer_id
+                    ) AS days_ozon
+                FROM product_mapping m
+                JOIN product_costs c ON c.mapping_id = m.id
+                GROUP BY m.id, m.display_name, m.wb_article, m.wb_nm_id,
+                         m.ozon_offer_id, m.ozon_sku, m.wb_price, m.ozon_price
+            """, chat_id)
+
+        suggestions = []
+
+        for r in rows:
+            name = r["name"]
+
+            for mp in ("wb", "ozon"):
+                price = float(r[f"{mp}_price"] or 0)
+                cost  = float(r[f"cost_{mp}"] or 0)
+                drr   = float(r[f"drr_{mp}"] or 0) if r[f"drr_{mp}"] is not None else None
+                days  = float(r[f"days_{mp}"] or 0) if r[f"days_{mp}"] is not None else None
+
+                # Нет цены или себестоимости — пропустить
+                if price <= 0 or cost <= 0:
+                    continue
+
+                # Маржа (упрощённо: без финотчёта, только по цене и себестоимости)
+                margin_pct = (price - cost) / price * (1 - TAX) * 100 if price > 0 else 0
+
+                delta_pct = 0
+                reasons: list[str] = []
+
+                if drr is not None and drr > 35 and margin_pct > 40:
+                    delta_pct = max(delta_pct, 10)
+                    reasons.append(f"ДРР {drr:.0f}% высокий, маржа {margin_pct:.0f}% позволяет")
+
+                if days is not None and days < 14:
+                    delta_pct = max(delta_pct, 7)
+                    reasons.append(f"остаток {int(days)} дн — товар популярен")
+
+                low_margin = margin_pct < 20
+
+                if not reasons and not low_margin:
+                    continue  # всё в норме — не предлагать
+
+                mp_label = "🟣 WB" if mp == "wb" else "🔵 Ozon"
+                product_id = r["wb_article"] if mp == "wb" else r["ozon_offer_id"]
+                nm_id      = r["wb_nm_id"]   if mp == "wb" else None
+                offer_id   = r["ozon_offer_id"] if mp == "ozon" else None
+
+                if not product_id:
+                    continue
+
+                new_price = round(price * (1 + delta_pct / 100)) if delta_pct > 0 else price
+
+                suggestions.append({
+                    "marketplace": mp,
+                    "mp_label":    mp_label,
+                    "name":        name,
+                    "product_id":  product_id,
+                    "nm_id":       nm_id,
+                    "offer_id":    offer_id,
+                    "current_price": price,
+                    "new_price":   new_price,
+                    "delta_pct":   delta_pct,
+                    "cost":        cost,
+                    "margin_pct":  round(margin_pct, 1),
+                    "drr":         drr,
+                    "days_left":   days,
+                    "low_margin":  low_margin,
+                    "reason":      "; ".join(reasons) if reasons else "маржа ниже 20%",
+                    "actionable":  delta_pct > 0,
+                })
+
+        return suggestions
+
+    async def cmd_reprice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/reprice — рекомендации по изменению цен с подтверждением."""
+        chat_id = update.effective_user.id
+
+        lock_key = f"reprice_lock:{chat_id}"
+        if await self._redis_get(lock_key):
+            await update.message.reply_text(
+                "⏳ Уже есть активные предложения по ценам.\n"
+                "Ответь на них или подожди 10 минут."
+            )
+            return
+
+        await update.message.reply_text("🔍 Анализирую цены и сигналы…")
+
+        suggestions = await self._collect_reprice_suggestions(chat_id)
+        if not suggestions:
+            await update.message.reply_text(
+                "✅ Все цены выглядят нормально — сигналов для изменения нет.\n\n"
+                "Проверь что заданы себестоимости (/cost) и синхронизированы финотчёты (/sync_fin)."
+            )
+            return
+
+        await self._redis_set(lock_key, "1", ttl=600)
+
+        sent = 0
+        for s in suggestions[:10]:
+            lines = [
+                f"{s['mp_label']} <b>{s['name']}</b>",
+                f"Текущая цена: <b>{s['current_price']:.0f} ₽</b>  |  Себестоим.: {s['cost']:.0f} ₽",
+                f"Маржа: {s['margin_pct']:.0f}%"
+                + (f"  |  ДРР: {s['drr']:.0f}%" if s["drr"] else "")
+                + (f"  |  Остаток: {s['days_left']:.0f} дн." if s["days_left"] else ""),
+            ]
+            if s["actionable"]:
+                lines += [
+                    "",
+                    f"💡 Рекомендация: +{s['delta_pct']}% → <b>{s['new_price']:.0f} ₽</b>",
+                    f"Причина: {s['reason']}",
+                ]
+                pid   = s["product_id"][:20]  # не превышать лимит callback_data
+                price = int(s["new_price"])
+                mp    = s["marketplace"]
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ Применить", callback_data=f"rp:{mp}:{pid}:{price}:apply"),
+                    InlineKeyboardButton("❌ Пропустить", callback_data=f"rp:{mp}:{pid}:{price}:skip"),
+                    InlineKeyboardButton("✏️ Изменить",  callback_data=f"rp:{mp}:{pid}:{price}:edit"),
+                ]])
+            else:
+                lines += ["", f"⚠️ {s['reason']} — цену менять не рекомендую, проверь себестоимость"]
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("❌ Понял", callback_data=f"rp:{mp}:{pid}:{int(s['current_price'])}:skip"),
+                ]])
+
+            await self.bot.send_message(
+                chat_id=chat_id,
+                text="\n".join(lines),
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+            sent += 1
+
+        if sent == 0:
+            await self.bot.send_message(chat_id=chat_id, text="✅ Предложений нет.")
+
+    async def _handle_reprice_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        query = update.callback_query
+        await query.answer()
+
+        # Формат: rp:{mp}:{product_id}:{new_price}:{action}
+        parts = query.data.split(":", 4)
+        if len(parts) != 5:
+            return
+        _, mp, product_id, price_str, action = parts
+        chat_id = query.from_user.id
+        new_price = int(price_str)
+
+        lock_key = f"reprice_lock:{chat_id}"
+
+        if action == "skip":
+            await query.edit_message_text(
+                query.message.text + "\n\n🚫 Пропущено",
+                reply_markup=None,
+            )
+            return
+
+        if action == "edit":
+            await query.edit_message_text(
+                query.message.text + "\n\n✏️ Введи новую цену (только цифры):",
+                reply_markup=None,
+            )
+            await self._redis_set(
+                f"pending_reprice:{chat_id}",
+                f"{mp}:{product_id}:{new_price}",
+                ttl=300,
+            )
+            return
+
+        if action == "apply":
+            lock = f"reprice_apply:{mp}:{product_id}"
+            if await self._redis_get(lock):
+                await query.answer("Уже применяется…", show_alert=False)
+                return
+            await self._redis_set(lock, "1", ttl=60)
+
+            ok = await self._apply_price(chat_id, mp, product_id, new_price)
+            suffix = f"\n\n{'✅ Цена обновлена → {new_price} ₽'.format(new_price=new_price) if ok else '❌ Ошибка при обновлении цены — проверь логи'}"
+            await query.edit_message_text(
+                query.message.text + suffix,
+                reply_markup=None,
+                parse_mode="HTML",
+            )
+            # Снимаем lock репрайсера если все карточки обработаны
+            await self._redis_set(lock_key, "", ttl=1)
+
+    async def _handle_reprice_text(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> bool:
+        """Обрабатывает ввод кастомной цены после нажатия ✏️ Изменить.
+
+        Возвращает True если сообщение было обработано как ввод репрайсера.
+        """
+        chat_id = update.effective_user.id
+        raw = (update.message.text or "").strip()
+        pending = await self._redis_get(f"pending_reprice:{chat_id}")
+        if not pending:
+            return False
+
+        if not raw.isdigit():
+            await update.message.reply_text("❌ Введи только число (цену в рублях).")
+            return True
+
+        mp, product_id, _ = pending.split(":", 2)
+        new_price = int(raw)
+        await self._redis_set(f"pending_reprice:{chat_id}", "", ttl=1)
+
+        ok = await self._apply_price(chat_id, mp, product_id, new_price)
+        if ok:
+            await update.message.reply_text(f"✅ Цена обновлена → {new_price} ₽")
+        else:
+            await update.message.reply_text("❌ Ошибка при обновлении цены — проверь логи")
+        return True
+
+    async def _apply_price(self, chat_id: int, mp: str, product_id: str, new_price: int) -> bool:
+        """Отправляет новую цену на WB или Ozon. Возвращает True при успехе."""
+        from db import get_marketplace_shops, get_pool
+        from tools.marketplace import WBClient, OzonClient
+
+        shops = await get_marketplace_shops(chat_id)
+        shop  = next((s for s in shops if s["marketplace"] == mp), None)
+        if not shop:
+            logger.error(f"[Макс/reprice] магазин {mp} не найден для chat_id={chat_id}")
+            return False
+
+        try:
+            if mp == "wb":
+                # Нужен wb_nm_id для WB price API
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        "SELECT wb_nm_id FROM product_mapping WHERE wb_article = $1",
+                        product_id,
+                    )
+                if not row or not row["wb_nm_id"]:
+                    logger.error(f"[Макс/reprice] wb_nm_id не найден для {product_id}")
+                    return False
+                client = WBClient(shop["api_token"])
+                result = await client.update_prices([{"nm_id": int(row["wb_nm_id"]), "price": new_price}])
+                ok = result.get("success", False)
+
+            else:  # ozon
+                client = OzonClient(shop["api_token"], shop["client_id"])
+                result = await client.update_prices([{"offer_id": product_id, "price": new_price}])
+                ok = result.get("success", False)
+
+            if ok:
+                # Обновить локально чтобы margin_check сразу показал новую цену
+                pool = await get_pool()
+                price_col = "wb_price" if mp == "wb" else "ozon_price"
+                id_col    = "wb_article" if mp == "wb" else "ozon_offer_id"
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        f"UPDATE product_mapping SET {price_col} = $1, prices_updated_at = NOW() WHERE {id_col} = $2",
+                        float(new_price), product_id,
+                    )
+                logger.info(f"[Макс/reprice] {mp} {product_id} → {new_price} ₽ ✓")
+            return ok
+
+        except Exception as e:
+            logger.error(f"[Макс/reprice] ошибка: {e}", exc_info=True)
+            return False
+
     async def _check_drr_alerts(self, chat_id: int) -> None:
         """Проверяет ДРР по товарам за 7 дней и шлёт алерт если ДРР > 25% при расходе > 500₽."""
         try:
@@ -4098,6 +4452,7 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("map",           self.cmd_map))
         self.app.add_handler(CommandHandler("cost",          self.cmd_cost_wizard))
         self.app.add_handler(CommandHandler("margin",        self.cmd_margin_check))
+        self.app.add_handler(CommandHandler("reprice",       self.cmd_reprice))
         self.app.add_handler(CommandHandler("add",           self.cmd_add))
         self.app.add_handler(CommandHandler("cancel",        self.cmd_cancel))
         self.app.add_handler(
@@ -4117,6 +4472,9 @@ class MaxAgent(BaseAgent):
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_catalog_cost_callback, pattern=r"^costpick:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_reprice_callback, pattern=r"^rp:")
         )
 
         self.app.add_handler(

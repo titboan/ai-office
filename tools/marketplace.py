@@ -345,6 +345,27 @@ class WBClient:
         logger.info(f"[WB.get_current_prices] итого: {len(results)} товаров")
         return results
 
+    async def update_prices(self, items: list[dict]) -> dict:
+        """Обновить цены товаров на WB через /api/v2/upload/task.
+
+        items: [{"nm_id": int, "price": int}] — price в рублях (итоговая цена без скидки).
+        Возвращает {"success": bool, "upload_id": str}.
+        """
+        if not items:
+            return {"success": True, "upload_id": ""}
+        _PRICES_BASE = "https://discounts-prices-api.wildberries.ru"
+        payload = {"data": [{"nmID": int(item["nm_id"]), "price": int(item["price"])} for item in items]}
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "POST", f"{_PRICES_BASE}/api/v2/upload/task",
+                headers=self._headers(), json=payload, label="WB.update_prices",
+            )
+        if not data:
+            return {"success": False, "upload_id": ""}
+        upload_id = (data.get("data") or {}).get("uploadID", "")
+        logger.info(f"[WB.update_prices] upload_id={upload_id} товаров={len(items)}")
+        return {"success": bool(upload_id), "upload_id": upload_id}
+
     async def get_sales(self, date_from: datetime, statistics_token: str) -> list[dict]:
         """Выкупленные заказы через Statistics API."""
         _STATS_BASE = "https://statistics-api.wildberries.ru"
@@ -1924,6 +1945,37 @@ class OzonClient:
                         results.append({"product_id": offer_id, "price": price})
         logger.info(f"[Ozon.get_current_prices] итого: {len(results)} товаров")
         return results
+
+    async def update_prices(self, items: list[dict]) -> dict:
+        """Обновить цены товаров на Ozon через /v1/product/import/prices.
+
+        items: [{"offer_id": str, "price": float}].
+        Возвращает {"success": bool, "task_id": int|None}.
+        """
+        if not items:
+            return {"success": True, "task_id": None}
+        url = f"{self._BASE}/v1/product/import/prices"
+        payload = {
+            "prices": [
+                {
+                    "offer_id":  item["offer_id"],
+                    "price":     str(int(round(item["price"]))),
+                    "old_price": "0",
+                    "min_price": "0",
+                }
+                for item in items
+            ]
+        }
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "POST", url,
+                headers=self._headers(), json=payload, label="Ozon.update_prices",
+            )
+        if not data:
+            return {"success": False, "task_id": None}
+        task_id = (data.get("result") or {}).get("task_id")
+        logger.info(f"[Ozon.update_prices] task_id={task_id} товаров={len(items)}")
+        return {"success": True, "task_id": task_id}
 
     async def get_product_content(self, offer_ids: list[str]) -> dict[str, dict]:
         """Контент карточек: title, description, attributes.
