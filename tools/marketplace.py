@@ -498,6 +498,49 @@ class WBClient:
         logger.info(f"[WB.get_ad_stats] итого записей: {len(results)}")
         return results
 
+    async def get_nm_ids(self) -> dict[str, str]:
+        """Возвращает {lower(vendorCode): str(nmId)} через WB Content API v2.
+
+        Нужно чтобы связать wb_article (supplierArticle) с nmId, который хранится
+        в product_adv_stats. WB fullstats отдаёт spend по nmId, а product_mapping
+        хранит wb_article — без этого маппинга join не работает.
+        """
+        import json as _json
+        _CONTENT_BASE = "https://content-api.wildberries.ru"
+        headers = {"Authorization": self._token, "Content-Type": "application/json"}
+        result: dict[str, str] = {}
+        cursor: dict = {}
+
+        async with aiohttp.ClientSession() as session:
+            while True:
+                body: dict = {"settings": {"filter": {"withPhoto": -1}, "cursor": {**cursor, "limit": 100}}}
+                async with session.post(
+                    f"{_CONTENT_BASE}/content/v2/get/cards/list",
+                    headers=headers,
+                    json=body,
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[WB.get_nm_ids] HTTP {resp.status}: {raw[:200]}")
+                        break
+                    data = _json.loads(raw)
+
+                cards = (data.get("data") or {}).get("cards") or []
+                for card in cards:
+                    nm_id  = card.get("nmID")
+                    vendor = card.get("vendorCode", "")
+                    if nm_id and vendor:
+                        result[vendor.lower()] = str(nm_id)
+
+                cur = (data.get("data") or {}).get("cursor") or {}
+                if len(cards) < 100 or not cur.get("nmID"):
+                    break
+                cursor = {"updatedAt": cur.get("updatedAt", ""), "nmID": cur["nmID"]}
+
+        logger.info(f"[WB.get_nm_ids] товаров: {len(result)}")
+        return result
+
     async def get_financial_report(self, date_from: str, date_to: str, statistics_token: str) -> list[dict]:
         """Финансовый отчёт WB через /api/v5/supplier/reportDetailByPeriod.
 

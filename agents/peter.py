@@ -525,8 +525,8 @@ class PeterAgent(BaseAgent):
                          ELSE NULL END                              AS drr
                 FROM product_adv_stats p
                 LEFT JOIN product_mapping m
-                       ON m.wb_article = p.product_id
-                       OR m.ozon_sku   = p.product_id
+                       ON m.wb_nm_id  = p.product_id
+                       OR m.ozon_sku  = p.product_id
                 LEFT JOIN (
                     SELECT
                         sl.marketplace,

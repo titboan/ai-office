@@ -1180,6 +1180,29 @@ class MaxAgent(BaseAgent):
                             )
                             prod_count += 1
                     logger.info(f"[Макс/adv] WB реклама: {len(ad_stats)} записей, {prod_count} nm-записей")
+                    # Заполняем wb_nm_id в product_mapping для тех товаров, у которых его ещё нет.
+                    # nmId (из fullstats) ≠ wb_article (supplierArticle) — нужен маппинг через Content API.
+                    try:
+                        from db import get_pool
+                        pool = await get_pool()
+                        async with pool.acquire() as conn:
+                            unmapped = await conn.fetch(
+                                "SELECT id, wb_article FROM product_mapping "
+                                "WHERE wb_article IS NOT NULL AND wb_nm_id IS NULL"
+                            )
+                        if unmapped:
+                            nm_map = await client.get_nm_ids()
+                            async with pool.acquire() as conn:
+                                for row in unmapped:
+                                    nm_id = nm_map.get((row["wb_article"] or "").lower())
+                                    if nm_id:
+                                        await conn.execute(
+                                            "UPDATE product_mapping SET wb_nm_id = $1 WHERE id = $2",
+                                            nm_id, row["id"],
+                                        )
+                            logger.info(f"[Макс/adv] wb_nm_id обновлён для {len(unmapped)} товаров")
+                    except Exception as e:
+                        logger.error(f"[Макс/adv] wb_nm_id sync ошибка: {e}")
                 except Exception as e:
                     logger.error(f"[Макс/adv] WB реклама: {e}")
 
@@ -3459,7 +3482,7 @@ class MaxAgent(BaseAgent):
                              ELSE NULL END                      AS drr
                     FROM product_adv_stats p
                     LEFT JOIN product_mapping m ON (
-                        m.wb_article = p.product_id OR m.ozon_sku = p.product_id
+                        m.wb_nm_id = p.product_id OR m.ozon_sku = p.product_id
                     )
                     LEFT JOIN marketplace_orders o ON (
                         o.chat_id    = p.chat_id
