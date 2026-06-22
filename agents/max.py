@@ -3740,12 +3740,31 @@ class MaxAgent(BaseAgent):
 
         if data.startswith("menu_c3:"):
             key = data.split(":", 1)[1]
-            hints = {
-                "report": "📊 Перейди к Питеру и запроси /report",
-                "drr":    "💰 Перейди к Питеру и запроси /drr",
-                "funnel": "🔻 Перейди к Питеру и запроси /funnel",
-            }
-            await query.answer(hints.get(key, "Следующий шаг"), show_alert=True)
+            peter = getattr(self, "_peter_agent", None)
+            if key == "drr" and peter is not None:
+                await query.answer()
+                import asyncio as _asyncio
+                _asyncio.create_task(peter.run_drr_for_chat(chat_id, days=30))
+                await query.message.reply_text(
+                    "💰 ДРР запускается у Питера — результат появится в его чате…"
+                )
+            elif key == "report" and peter is not None:
+                await query.answer()
+                await query.message.reply_text(
+                    "📊 Перейди к Питеру и запроси /report"
+                )
+            elif key == "funnel" and peter is not None:
+                await query.answer()
+                await query.message.reply_text(
+                    "🔻 Перейди к Питеру и запроси /funnel"
+                )
+            else:
+                hints = {
+                    "report": "📊 Перейди к Питеру и запроси /report",
+                    "drr":    "💰 Перейди к Питеру и запроси /drr",
+                    "funnel": "🔻 Перейди к Питеру и запроси /funnel",
+                }
+                await query.answer(hints.get(key, "Следующий шаг"), show_alert=True)
             return
 
         if data.startswith("menu_cmd:"):
