@@ -1125,6 +1125,77 @@ class OzonClient:
                 mapping[int(sku)] = offer_id
         return mapping
 
+    async def get_product_categories(self, offer_ids: list[str]) -> dict[str, str]:
+        """Возвращает {offer_id: category_name} через product/info/list + description-category/tree.
+
+        Вызывается при sync, чтобы авто-заполнить product_mapping.category для Ozon-товаров.
+        Запрашивает только offer_ids у которых category IS NULL.
+        """
+        import json as _json
+        if not offer_ids:
+            return {}
+
+        # 1. Получить description_category_id для каждого offer_id
+        offer_to_cat_id: dict[str, int] = {}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self._BASE}/v3/product/info/list",
+                    headers=self._headers(),
+                    json={"offer_id": offer_ids},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[Ozon.get_product_categories] product/info/list {resp.status}: {raw[:200]}")
+                        return {}
+                    data = _json.loads(raw)
+            for item in (data.get("items") or []):
+                oid = str(item.get("offer_id") or "").strip()
+                cat_id = item.get("description_category_id")
+                if oid and cat_id:
+                    offer_to_cat_id[oid] = int(cat_id)
+        except Exception as e:
+            logger.error(f"[Ozon.get_product_categories] product/info/list exception: {e}")
+            return {}
+
+        if not offer_to_cat_id:
+            return {}
+
+        # 2. Получить дерево категорий и построить плоский словарь {id: name}
+        cat_names: dict[int, str] = {}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self._BASE}/v2/description-category/tree",
+                    headers=self._headers(),
+                    json={},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[Ozon.get_product_categories] category/tree {resp.status}: {raw[:200]}")
+                    else:
+                        tree_data = _json.loads(raw)
+
+                        def _flatten(nodes: list) -> None:
+                            for node in nodes:
+                                cid = node.get("description_category_id")
+                                name = node.get("category_name", "")
+                                if cid:
+                                    cat_names[int(cid)] = name
+                                _flatten(node.get("children") or [])
+
+                        _flatten(tree_data.get("result") or [])
+        except Exception as e:
+            logger.error(f"[Ozon.get_product_categories] category/tree exception: {e}")
+
+        return {
+            oid: cat_names.get(cat_id, "")
+            for oid, cat_id in offer_to_cat_id.items()
+            if cat_names.get(cat_id)
+        }
+
     async def get_stocks(self, **_) -> list[dict]:
         """Остатки по складам: analytics API + обогащение offer_id через product/info/list."""
         import json as _json
