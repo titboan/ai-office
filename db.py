@@ -463,7 +463,7 @@ async def _create_schema() -> None:
             ALTER TABLE product_mapping
             ADD COLUMN IF NOT EXISTS category TEXT
         """)
-        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category)")
+        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards)")
 
 async def save_project(
     chat_id: int,
@@ -1482,20 +1482,19 @@ async def find_product_id_in_text(text: str) -> str | None:
         )
 
     text_lower = text.lower()
-    # Сначала ищем по точным артикулам (wb_article, ozon_offer_id) — они короткие и уникальные
     for row in rows:
         for candidate in (row["wb_article"] or "", row["ozon_offer_id"] or ""):
             candidate = candidate.strip().lower()
             if candidate and len(candidate) >= 2 and candidate in text_lower:
                 return row["wb_nm_id"] or row["ozon_offer_id"] or candidate
 
-    # Затем по display_name (минимум 4 символа чтобы не было ложных совпадений)
     for row in rows:
         display = (row["display_name"] or "").strip().lower()
         if display and len(display) >= 4 and display in text_lower:
             return row["wb_nm_id"] or row["ozon_offer_id"] or display
 
     return None
+
 
 
 # ── Карточки товаров ──────────────────────────────────────────────────────────

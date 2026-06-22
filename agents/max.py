@@ -1228,7 +1228,7 @@ class MaxAgent(BaseAgent):
                                     if not entry:
                                         continue
                                     nm_id    = entry["nm_id"]
-                                    category = entry.get("category") or None
+                                    category = entry.get("category") or entry.get("subject") or None
                                     await conn.execute(
                                         """UPDATE product_mapping
                                            SET wb_nm_id  = COALESCE(wb_nm_id, $1),
