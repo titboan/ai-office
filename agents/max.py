@@ -1232,7 +1232,7 @@ class MaxAgent(BaseAgent):
                     for row in fin_adv:
                         await upsert_fin_adv(
                             chat_id=chat_id, marketplace="ozon",
-                            stat_date=row["date"], adv_spend=row["adv_spend"],
+                            stat_date=_date.fromisoformat(row["date"]), adv_spend=row["adv_spend"],
                         )
                     logger.info(f"[Макс/adv] Ozon финотчёт рекламы: {len(fin_adv)} дней")
                 except Exception as e:
