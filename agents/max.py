@@ -1228,7 +1228,7 @@ class MaxAgent(BaseAgent):
                                     if not card:
                                         continue
                                     nm_id   = card["nm_id"]
-                                    subject = card["subject"] or None
+                                    subject = card.get("subject") or card.get("category") or None
                                     await conn.execute(
                                         """UPDATE product_mapping
                                            SET wb_nm_id  = COALESCE(wb_nm_id, $1),
@@ -1544,6 +1544,82 @@ class MaxAgent(BaseAgent):
             )
         except Exception as e:
             logger.error(f"[Макс/sync_promotions] {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+
+    async def sync_cards(self, chat_id: int) -> dict:
+        """Синхронизация контента карточек (title, description, characteristics) в product_cards."""
+        from db import get_marketplace_shops, upsert_product_card, get_pool
+        from tools.marketplace import WBClient, OzonClient
+
+        shops = await get_marketplace_shops(chat_id)
+        counts: dict = {"wb": 0, "ozon": 0}
+
+        for shop in shops:
+            mp = shop["marketplace"]
+
+            if mp == "wb":
+                try:
+                    client = WBClient(shop["api_token"])
+                    cards = await client.get_nm_ids()
+                    for _vendor, info in cards.items():
+                        await upsert_product_card(
+                            chat_id=chat_id,
+                            marketplace="wb",
+                            product_id=info["nm_id"],
+                            title=info.get("title"),
+                            description=info.get("description"),
+                            characteristics=info.get("characteristics"),
+                            category=info.get("category"),
+                        )
+                    counts["wb"] = len(cards)
+                    logger.info(f"[Макс/sync_cards] WB: {len(cards)} карточек")
+                except Exception as e:
+                    logger.error(f"[Макс/sync_cards] WB: {e}", exc_info=True)
+
+            if mp == "ozon":
+                try:
+                    client = OzonClient(shop["api_token"], shop.get("client_id", ""))
+                    pool = await get_pool()
+                    async with pool.acquire() as conn:
+                        rows = await conn.fetch(
+                            "SELECT ozon_offer_id FROM product_mapping WHERE ozon_offer_id IS NOT NULL"
+                        )
+                    offer_ids = [r["ozon_offer_id"] for r in rows]
+                    if offer_ids:
+                        content = await client.get_product_content(offer_ids)
+                        for oid, info in content.items():
+                            await upsert_product_card(
+                                chat_id=chat_id,
+                                marketplace="ozon",
+                                product_id=oid,
+                                title=info.get("title"),
+                                description=info.get("description"),
+                                characteristics=info.get("characteristics"),
+                                category=None,
+                            )
+                        counts["ozon"] = len(content)
+                        logger.info(f"[Макс/sync_cards] Ozon: {len(content)} карточек")
+                except Exception as e:
+                    logger.error(f"[Макс/sync_cards] Ozon: {e}", exc_info=True)
+
+        return counts
+
+    async def cmd_sync_cards(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/sync_cards — скачать контент карточек WB + Ozon (title, description, characteristics)."""
+        chat_id = update.effective_user.id
+        await update.message.reply_text("📦 Синхронизирую контент карточек…")
+        try:
+            counts = await self.sync_cards(chat_id)
+            wb_cnt   = counts.get("wb", 0)
+            ozon_cnt = counts.get("ozon", 0)
+            await update.message.reply_text(
+                f"✅ Карточки синхронизированы\n"
+                f"WB: {wb_cnt} карточек\n"
+                f"Ozon: {ozon_cnt} карточек\n\n"
+                f"Теперь /seo у Элины покажет текущий контент карточки."
+            )
+        except Exception as e:
+            logger.error(f"[Макс/sync_cards] {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
 
     async def cmd_sync_keywords(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3962,6 +4038,7 @@ class MaxAgent(BaseAgent):
             BotCommand("sync_adv",         "📣 Рекламная статистика"),
             BotCommand("sync_fin",         "💰 Финансовые отчёты — комиссии, выплаты"),
             BotCommand("sync_funnel",      "🎯 Воронка конверсии карточек"),
+            BotCommand("sync_cards",       "📝 Контент карточек — заголовок, описание"),
             BotCommand("sync_returns",     "↩️ Аналитика возвратов"),
             BotCommand("sync_promotions",  "🎁 Акции и кампании"),
             # Аналитика
@@ -3993,6 +4070,7 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("sync_adv",      self.cmd_sync_adv))
         self.app.add_handler(CommandHandler("sync_fin",      self.cmd_sync_fin))
         self.app.add_handler(CommandHandler("sync_funnel",      self.cmd_sync_funnel))
+        self.app.add_handler(CommandHandler("sync_cards",       self.cmd_sync_cards))
         self.app.add_handler(CommandHandler("sync_promotions", self.cmd_sync_promotions))
         self.app.add_handler(CommandHandler("sync_keywords",   self.cmd_sync_keywords))
         self.app.add_handler(CommandHandler("sync_returns",    self.cmd_sync_returns))

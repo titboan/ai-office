@@ -499,11 +499,10 @@ class WBClient:
         return results
 
     async def get_nm_ids(self) -> dict[str, dict]:
-        """Возвращает {lower(vendorCode): {"nm_id": str, "subject": str}} через WB Content API v2.
+        """Возвращает {lower(vendorCode): {"nm_id", "subject", "title", "description", "characteristics", "category"}}.
 
-        nm_id нужен для join с product_adv_stats (fullstats отдаёт nmId).
-        subject — предмет карточки (напр. "Корм для кошек") — используется
-        как автоматическая категория товара в product_mapping.
+        nm_id нужен для join с product_adv_stats. subject/category — предмет карточки для
+        автоматической категоризации в product_mapping. title/description/characteristics — для SEO.
         """
         import json as _json
         _CONTENT_BASE = "https://content-api.wildberries.ru"
@@ -531,8 +530,25 @@ class WBClient:
                     nm_id   = card.get("nmID")
                     vendor  = card.get("vendorCode", "")
                     subject = card.get("subjectName", "") or ""
+                    desc    = card.get("description", "") or ""
+                    chars   = card.get("characteristics") or []
+                    title = ""
+                    for ch in chars:
+                        if ch.get("name", "").lower() in ("наименование", "название"):
+                            vals = ch.get("value") or []
+                            title = vals[0] if vals else ""
+                            break
+                    if not title:
+                        title = subject
                     if nm_id and vendor:
-                        result[vendor.lower()] = {"nm_id": str(nm_id), "subject": subject}
+                        result[vendor.lower()] = {
+                            "nm_id":           str(nm_id),
+                            "subject":         subject,
+                            "title":           title,
+                            "description":     desc,
+                            "characteristics": chars,
+                            "category":        subject,
+                        }
 
                 cur = (data.get("data") or {}).get("cursor") or {}
                 if len(cards) < 100 or not cur.get("nmID"):
@@ -1908,6 +1924,78 @@ class OzonClient:
                         results.append({"product_id": offer_id, "price": price})
         logger.info(f"[Ozon.get_current_prices] итого: {len(results)} товаров")
         return results
+
+    async def get_product_content(self, offer_ids: list[str]) -> dict[str, dict]:
+        """Контент карточек: title, description, attributes.
+
+        Шаг 1: /v3/product/info/attributes (батч 100) → name + attributes.
+        Шаг 2: /v1/product/info/description (на каждый offer_id параллельно) → description.
+        Возвращает {offer_id: {"title": str, "description": str, "characteristics": list}}.
+        """
+        import json as _json
+        if not offer_ids:
+            return {}
+
+        result: dict[str, dict] = {}
+
+        # Шаг 1: заголовок и атрибуты батчами по 100
+        for i in range(0, len(offer_ids), 100):
+            batch = offer_ids[i : i + 100]
+            body = {
+                "filter":   {"offer_id": batch, "visibility": "ALL"},
+                "last_id":  "",
+                "limit":    100,
+                "sort_dir": "ASC",
+            }
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{self._BASE}/v3/product/info/attributes",
+                        headers=self._headers(),
+                        json=body,
+                        timeout=_TIMEOUT,
+                    ) as resp:
+                        if resp.status != 200:
+                            logger.error(f"[Ozon.get_product_content] attributes HTTP {resp.status}: {(await resp.text())[:200]}")
+                            continue
+                        data = _json.loads(await resp.text())
+                for item in (data.get("result") or []):
+                    oid = str(item.get("offer_id") or "").strip()
+                    if oid:
+                        result[oid] = {
+                            "title":           item.get("name") or "",
+                            "description":     "",
+                            "characteristics": item.get("attributes") or [],
+                        }
+            except Exception as e:
+                logger.error(f"[Ozon.get_product_content] attributes batch {i}: {e}")
+
+        # Шаг 2: описания параллельно (семафор 5)
+        sem = asyncio.Semaphore(5)
+
+        async def _fetch_desc(session: aiohttp.ClientSession, oid: str) -> None:
+            async with sem:
+                try:
+                    async with session.post(
+                        f"{self._BASE}/v1/product/info/description",
+                        headers=self._headers(),
+                        json={"offer_id": oid},
+                        timeout=_TIMEOUT,
+                    ) as resp:
+                        if resp.status == 200:
+                            data = _json.loads(await resp.text())
+                            desc = (data.get("result") or {}).get("description") or ""
+                            if oid in result:
+                                result[oid]["description"] = desc
+                except Exception as e:
+                    logger.error(f"[Ozon.get_product_content] desc {oid}: {e}")
+
+        if result:
+            async with aiohttp.ClientSession() as session:
+                await asyncio.gather(*[_fetch_desc(session, oid) for oid in list(result)])
+
+        logger.info(f"[Ozon.get_product_content] получено {len(result)} карточек")
+        return result
 
 
 class OzonPerformanceClient:

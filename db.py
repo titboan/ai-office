@@ -411,6 +411,20 @@ async def _create_schema() -> None:
             )
         """)
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS product_cards (
+                id              SERIAL PRIMARY KEY,
+                chat_id         BIGINT        NOT NULL,
+                marketplace     TEXT          NOT NULL,
+                product_id      TEXT          NOT NULL,
+                title           TEXT,
+                description     TEXT,
+                characteristics JSONB,
+                category        TEXT,
+                fetched_at      TIMESTAMPTZ   DEFAULT NOW(),
+                UNIQUE(chat_id, marketplace, product_id)
+            )
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS product_returns_analytics (
                 chat_id       BIGINT         NOT NULL,
                 marketplace   TEXT           NOT NULL,
@@ -449,7 +463,7 @@ async def _create_schema() -> None:
             ALTER TABLE product_mapping
             ADD COLUMN IF NOT EXISTS category TEXT
         """)
-        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category)")
+        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards)")
 
 async def save_project(
     chat_id: int,
@@ -1449,6 +1463,116 @@ async def get_keywords_top(
                 chat_id, marketplace, limit,
             )
         return [dict(r) for r in rows]
+
+
+# ── Карточки товаров ──────────────────────────────────────────────────────────
+
+async def upsert_product_card(
+    chat_id: int,
+    marketplace: str,
+    product_id: str,
+    title: str | None,
+    description: str | None,
+    characteristics: list | None,
+    category: str | None,
+) -> None:
+    import json as _json
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO product_cards
+                (chat_id, marketplace, product_id, title, description, characteristics, category, fetched_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+            ON CONFLICT (chat_id, marketplace, product_id) DO UPDATE SET
+                title           = EXCLUDED.title,
+                description     = EXCLUDED.description,
+                characteristics = EXCLUDED.characteristics,
+                category        = EXCLUDED.category,
+                fetched_at      = NOW()
+            """,
+            chat_id, marketplace, product_id,
+            title, description,
+            _json.dumps(characteristics or [], ensure_ascii=False),
+            category,
+        )
+
+
+async def get_product_card(chat_id: int, marketplace: str, product_id: str) -> dict | None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM product_cards WHERE chat_id=$1 AND marketplace=$2 AND product_id=$3",
+            chat_id, marketplace, product_id,
+        )
+        return dict(row) if row else None
+
+
+async def get_seo_context(chat_id: int, product_id: str) -> dict:
+    """SEO-контекст: текущая карточка + отзывы + воронка + исторические ключи.
+
+    product_id — nm_id для WB или offer_id для Ozon.
+    Возвращает dict с ключами: card, reviews, funnel, keywords.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        card_row = await conn.fetchrow(
+            """
+            SELECT * FROM product_cards
+            WHERE chat_id=$1 AND product_id=$2
+            ORDER BY fetched_at DESC LIMIT 1
+            """,
+            chat_id, product_id,
+        )
+        card = dict(card_row) if card_row else None
+
+        review_rows = await conn.fetch(
+            """
+            SELECT text, rating, created_at
+            FROM marketplace_reviews
+            WHERE chat_id=$1 AND product_id=$2 AND text IS NOT NULL AND text != ''
+            ORDER BY created_at DESC
+            LIMIT 50
+            """,
+            chat_id, product_id,
+        )
+        reviews = [dict(r) for r in review_rows]
+
+        funnel_row = await conn.fetchrow(
+            """
+            SELECT
+                SUM(views)             AS total_views,
+                SUM(add_to_cart)       AS total_cart,
+                SUM(orders_count)      AS total_orders,
+                AVG(avg_position)      AS avg_position,
+                AVG(conv_view_to_cart) AS avg_ctr,
+                MAX(stat_date)         AS last_date
+            FROM product_funnel_stats
+            WHERE chat_id=$1 AND product_id=$2
+              AND stat_date >= CURRENT_DATE - INTERVAL '30 days'
+            """,
+            chat_id, product_id,
+        )
+        funnel = dict(funnel_row) if funnel_row else {}
+
+        kw_rows = await conn.fetch(
+            """
+            SELECT keyword, position, search_count, stat_date
+            FROM product_search_keywords
+            WHERE chat_id=$1 AND product_id=$2
+            ORDER BY search_count DESC NULLS LAST
+            LIMIT 20
+            """,
+            chat_id, product_id,
+        )
+        keywords = [dict(r) for r in kw_rows]
+
+    return {
+        "card": card,
+        "reviews": reviews,
+        "funnel": funnel,
+        "keywords": keywords,
+    }
 
 
 # ── Аналитика возвратов ────────────────────────────────────────────────────────
