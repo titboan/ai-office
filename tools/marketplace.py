@@ -768,6 +768,24 @@ class WBClient:
         logger.info(f"[WB.get_funnel_stats] {date_from}–{date_to}: {len(results)} записей")
         return results
 
+    async def upload_product_photo(self, nm_id: str, photo_bytes: bytes, filename: str = "photo.jpg") -> bool:
+        """Загрузить фото в карточку WB. nm_id — числовой nmID карточки."""
+        url = "https://content-api.wildberries.ru/content/v3/media/save"
+        headers = {"Authorization": self._token, "X-Nm-Id": str(nm_id)}
+        try:
+            data = aiohttp.FormData()
+            data.add_field("uploadfile", photo_bytes, filename=filename, content_type="image/jpeg")
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, data=data, timeout=_TIMEOUT) as resp:
+                    text = await resp.text()
+                    if resp.status not in (200, 201):
+                        logger.error(f"[WB.upload_photo] HTTP {resp.status}: {text[:200]}")
+                        return False
+                    return True
+        except Exception as e:
+            logger.error(f"[WB.upload_photo] error: {e}")
+            return False
+
     async def get_promotions(self) -> list[dict]:
         """Список активных и предстоящих акций продавца WB."""
         import json as _json

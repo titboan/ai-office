@@ -467,6 +467,10 @@ async def _create_schema() -> None:
             ADD COLUMN IF NOT EXISTS category TEXT
         """)
         await conn.execute("""
+            ALTER TABLE product_mapping
+            ADD COLUMN IF NOT EXISTS infographic_updated_at TIMESTAMPTZ
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS competitor_snapshots (
                 id            SERIAL PRIMARY KEY,
                 keyword       TEXT          NOT NULL,

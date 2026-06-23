@@ -229,7 +229,90 @@ class MaxAgent(BaseAgent):
     # ------------------------------------------------------------------ #
 
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
+        import json as _json
+        try:
+            cmd = _json.loads(task)
+            if isinstance(cmd, dict) and cmd.get("action") == "upload_photo":
+                return await self._upload_infographic(
+                    article=cmd["article"],
+                    marketplace=cmd["marketplace"],
+                    file_id=cmd["file_id"],
+                    name=cmd.get("name", cmd["article"]),
+                )
+        except (ValueError, TypeError, KeyError):
+            pass
         return await self.think(task, chat_id=0, is_task=True)
+
+    async def _upload_infographic(
+        self, article: str, marketplace: str, file_id: str, name: str
+    ) -> str:
+        """Скачать фото из Telegram и загрузить инфографику на маркетплейс."""
+        import aiohttp as _aio
+        from config import config
+        from db import get_pool, get_marketplace_shops
+        from tools.marketplace import WBClient
+
+        chat_id = self._current_chat_id or 0
+        bot_token = config.MARTA_BOT_TOKEN
+        if not bot_token:
+            return "❌ MARTA_BOT_TOKEN не настроен"
+
+        # Скачать из Telegram
+        try:
+            async with _aio.ClientSession() as session:
+                async with session.get(
+                    f"https://api.telegram.org/bot{bot_token}/getFile",
+                    params={"file_id": file_id},
+                ) as r:
+                    data = await r.json()
+                file_path = data["result"]["file_path"]
+                async with session.get(
+                    f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+                ) as r:
+                    photo_bytes = await r.read()
+        except Exception as e:
+            return f"❌ Ошибка скачивания из Telegram: {e}"
+
+        if marketplace == "wb":
+            shops = await get_marketplace_shops(chat_id)
+            wb_shop = next((s for s in shops if s["marketplace"] == "wb"), None)
+            if not wb_shop:
+                return "❌ Магазин WB не найден — добавь токен через /setup"
+
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow("""
+                    SELECT wb_nm_id FROM product_mapping
+                    WHERE chat_id = $1
+                      AND (wb_article = $2 OR display_name ILIKE $3)
+                    LIMIT 1
+                """, chat_id, article, f"%{article}%")
+
+            if not row or not row["wb_nm_id"]:
+                return (
+                    f"❌ nm_id не найден для артикула «{article}».\n"
+                    f"Запусти /sync чтобы обновить маппинг товаров."
+                )
+
+            nm_id = row["wb_nm_id"]
+            wb = WBClient(wb_shop["api_token"])
+            ok = await wb.upload_product_photo(nm_id, photo_bytes)
+            if not ok:
+                return f"❌ WB вернул ошибку при загрузке фото для «{name}»"
+
+            async with pool.acquire() as conn:
+                await conn.execute("""
+                    UPDATE product_mapping
+                    SET infographic_updated_at = NOW()
+                    WHERE chat_id = $1 AND wb_nm_id = $2
+                """, chat_id, nm_id)
+
+            return (
+                f"✅ Инфографика загружена на WB: *{name}*\n"
+                f"Питер отслеживает CTR — результат через 14 дней."
+            )
+
+        return f"❌ Маркетплейс {marketplace} пока не поддерживается для авто-загрузки"
 
     # ------------------------------------------------------------------ #
     #  handle_message — блокируем Claude во время онбординга              #

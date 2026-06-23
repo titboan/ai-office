@@ -896,6 +896,79 @@ class MartaAgent(BaseAgent):
             logger.error(f"[Марта] handle_voice ошибка: {e}")
             await update.message.reply_text(f"⚠️ Ошибка распознавания голоса: {e}")
 
+    async def _handle_infographic_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Обработка inline-кнопок выбора товара для инфографики."""
+        query = update.callback_query
+        await query.answer()
+        chat_id = update.effective_chat.id
+        data = query.data  # "infographic_confirm:0" или "infographic_skip"
+
+        if data == "infographic_skip":
+            await self._redis_set(f"pending_photo_file:{chat_id}", "", ttl=1)
+            await query.edit_message_text("Понял, обрабатываю как обычное фото.")
+            return
+
+        try:
+            idx = int(data.split(":")[1])
+        except (IndexError, ValueError):
+            await query.edit_message_text("Ошибка: неверный формат кнопки.")
+            return
+
+        pending_raw = await self._redis_get(f"pending_infographic:{chat_id}")
+        if not pending_raw:
+            await query.edit_message_text("Сессия истекла — пришли фото ещё раз.")
+            return
+
+        try:
+            items = json.loads(pending_raw)
+        except Exception:
+            await query.edit_message_text("Ошибка данных — пришли фото ещё раз.")
+            return
+
+        if idx >= len(items):
+            await query.edit_message_text("Товар не найден.")
+            return
+
+        item = items[idx]
+        file_id = await self._redis_get(f"pending_photo_file:{chat_id}")
+        if not file_id:
+            await query.edit_message_text("Фото устарело (> 10 мин) — пришли ещё раз.")
+            return
+
+        from task_queue import create_task
+        payload = json.dumps({
+            "action": "upload_photo",
+            "article": item["article"],
+            "marketplace": item["marketplace"],
+            "file_id": file_id,
+            "name": item["name"],
+        }, ensure_ascii=False)
+        await create_task(
+            assigned_agent="max",
+            payload=payload,
+            from_agent="user",
+            chat_id=chat_id,
+            task_type="upload_photo",
+        )
+
+        items.pop(idx)
+        if items:
+            await self._redis_set(
+                f"pending_infographic:{chat_id}",
+                json.dumps(items, ensure_ascii=False),
+                ttl=7 * 86_400,
+            )
+        else:
+            await self._redis_set(f"pending_infographic:{chat_id}", "", ttl=1)
+        await self._redis_set(f"pending_photo_file:{chat_id}", "", ttl=1)
+
+        await query.edit_message_text(
+            f"✅ Передала Максу — загружу на {item['marketplace'].upper()} в ближайшие минуты.\n"
+            f"Через 14 дней Питер покажет CTR до/после."
+        )
+
     async def handle_photo(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -913,6 +986,41 @@ class MartaAgent(BaseAgent):
         )
         caption = update.message.caption or ""
         logger.info(f"[Марта] Фото от @{user_name} (chat={chat_id}), caption={caption!r}")
+
+        # Проверяем: ожидаем ли инфографику для загрузки
+        pending_raw = await self._redis_get(f"pending_infographic:{chat_id}")
+        if pending_raw:
+            try:
+                items = json.loads(pending_raw)
+                if items:
+                    file_id = update.message.photo[-1].file_id
+                    await self._redis_set(f"pending_photo_file:{chat_id}", file_id, ttl=600)
+                    if len(items) == 1:
+                        item = items[0]
+                        kb = InlineKeyboardMarkup([[
+                            InlineKeyboardButton(
+                                f"✅ {item['name']} ({item['marketplace'].upper()})",
+                                callback_data="infographic_confirm:0"
+                            ),
+                            InlineKeyboardButton("❌ Не инфографика", callback_data="infographic_skip"),
+                        ]])
+                        await update.message.reply_text("📸 Загружаем инфографику?", reply_markup=kb)
+                    else:
+                        rows = [
+                            [InlineKeyboardButton(
+                                f"📦 {it['name']} ({it['marketplace'].upper()})",
+                                callback_data=f"infographic_confirm:{i}"
+                            )]
+                            for i, it in enumerate(items)
+                        ]
+                        rows.append([InlineKeyboardButton("❌ Не инфографика", callback_data="infographic_skip")])
+                        await update.message.reply_text(
+                            "📸 Для какого товара эта инфографика?",
+                            reply_markup=InlineKeyboardMarkup(rows)
+                        )
+                    return
+            except Exception as _e:
+                logger.warning(f"[Марта] pending_infographic parse error: {_e}")
 
         try:
             await context.bot.send_chat_action(chat_id=chat_id, action="typing")
@@ -1355,3 +1463,4 @@ class MartaAgent(BaseAgent):
         ))
         self.app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         self.app.add_handler(CallbackQueryHandler(self._handle_image_action, pattern="^img_action:"))
+        self.app.add_handler(CallbackQueryHandler(self._handle_infographic_callback, pattern="^infographic_"))
