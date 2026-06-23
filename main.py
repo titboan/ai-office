@@ -49,7 +49,7 @@ AGENTS: dict[str, tuple] = {
     "peter":  (PeterAgent,  "peter"),
     "elina":  (ElinaAgent,  "elina"),
     "alex":   (AlexAgent,   "alex"),
-    "dan":    (DanAgent,    "dan"),
+    # "dan": (DanAgent, "dan"),  # заморожен: Pollinations.ai слишком медленный, заменить на DALL-E 3 если нужно
     "eva":    (EvaAgent,    "eva"),
     "max":    (MaxAgent,    "max"),
     "tina":   (TinaAgent,   "tina"),
@@ -537,6 +537,96 @@ async def run_all_async() -> None:
                 await asyncio.sleep(60)
 
     asyncio.create_task(_tender_digest_loop())
+
+    async def _stock_alerts_loop():
+        """Ежедневно в STOCK_ALERT_HOUR_UTC — алерты по остаткам < STOCK_ALERT_DAYS_THRESHOLD дней."""
+        from datetime import datetime, timezone, timedelta
+        from db import get_all_active_shops
+
+        while True:
+            try:
+                now    = datetime.now(timezone.utc)
+                hour   = getattr(config, "STOCK_ALERT_HOUR_UTC", 10)
+                target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+                if target <= now:
+                    target += timedelta(days=1)
+                wait_seconds = (target - now).total_seconds()
+                logger.info(f"[stock_alerts] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
+                await asyncio.sleep(wait_seconds)
+
+                if max_agent is None:
+                    continue
+
+                shops = await get_all_active_shops()
+                unique_chats = list({s["chat_id"] for s in shops})
+                for chat_id in unique_chats:
+                    try:
+                        await max_agent._check_stock_alerts(chat_id, deduplicate=True)
+                    except Exception as e:
+                        logger.error(f"[stock_alerts] chat_id={chat_id} ошибка: {e}")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[stock_alerts] критическая ошибка: {e}")
+                await asyncio.sleep(60)
+
+    asyncio.create_task(_stock_alerts_loop())
+
+    async def _competitor_monitor_loop():
+        """Еженедельно в понедельник COMPETITOR_SCAN_HOUR_UTC — снапшот цен конкурентов WB."""
+        from datetime import datetime, timezone, timedelta
+        from db import upsert_competitor_snapshot
+
+        while True:
+            try:
+                now  = datetime.now(timezone.utc)
+                hour = getattr(config, "COMPETITOR_SCAN_HOUR_UTC", 6)
+                # следующий понедельник в нужный час
+                days_until_monday = (7 - now.weekday()) % 7
+                if days_until_monday == 0 and now.hour >= hour:
+                    days_until_monday = 7
+                target = (now + timedelta(days=days_until_monday)).replace(
+                    hour=hour, minute=0, second=0, microsecond=0
+                )
+                wait_seconds = (target - now).total_seconds()
+                logger.info(f"[competitor_monitor] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
+                await asyncio.sleep(wait_seconds)
+
+                from db import get_top_keywords_for_competitors
+                keywords = await get_top_keywords_for_competitors(limit=10)
+                if not keywords:
+                    # fallback — захардкоженные ключи из конфига
+                    keywords = getattr(config, "COMPETITOR_KEYWORDS", [])
+                if not keywords:
+                    logger.info("[competitor_monitor] нет ключевых слов — пропускаем")
+                    continue
+
+                logger.info(f"[competitor_monitor] ключи ({len(keywords)}): {keywords[:3]}…")
+
+                from tools.marketplace import WBClient
+                from datetime import date
+                client = WBClient("")   # публичный API — токен не нужен
+                today  = date.today()
+                all_rows: list[dict] = []
+
+                for kw in keywords:
+                    products = await client.get_competitor_prices(kw)
+                    for p in products:
+                        all_rows.append({**p, "keyword": kw, "marketplace": "wb", "snapshot_date": today})
+                    await asyncio.sleep(3)   # пауза между запросами
+
+                if all_rows:
+                    await upsert_competitor_snapshot(all_rows)
+                    logger.info(f"[competitor_monitor] сохранено {len(all_rows)} строк по {len(keywords)} запросам")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[competitor_monitor] ошибка: {e}")
+                await asyncio.sleep(300)
+
+    asyncio.create_task(_competitor_monitor_loop())
 
     # ── Dashboard API (aiohttp) ───────────────────────────────────────────────
     _CORS_ORIGIN = config.DASHBOARD_URL or "*"
