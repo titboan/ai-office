@@ -4154,6 +4154,191 @@ class MaxAgent(BaseAgent):
         except Exception as e:
             logger.error(f"[Макс/drr_alerts] ошибка: {e}", exc_info=True)
 
+    # ------------------------------------------------------------------ #
+    #  Авто-управление рекламными ставками                                #
+    # ------------------------------------------------------------------ #
+
+    async def _collect_bid_suggestions(self, chat_id: int) -> list[dict]:
+        """Собирает кампании с аномальным ДРР и формирует рекомендации по ставкам."""
+        from db import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT
+                    p.marketplace,
+                    p.campaign_id,
+                    COALESCE(m.display_name, MAX(o.product_name), p.product_id) AS name,
+                    SUM(p.spend)::numeric(12,2)                                 AS spend_7d,
+                    COALESCE(SUM(o.seller_price * o.quantity), 0)::numeric(12,2) AS revenue_7d,
+                    CASE WHEN COALESCE(SUM(o.seller_price * o.quantity), 0) > 0
+                         THEN ROUND(SUM(p.spend) /
+                              SUM(o.seller_price * o.quantity) * 100, 1)
+                         ELSE NULL END AS drr
+                FROM product_adv_stats p
+                LEFT JOIN product_mapping m ON (
+                    m.wb_nm_id = p.product_id OR m.ozon_sku = p.product_id
+                )
+                LEFT JOIN marketplace_orders o ON (
+                    o.chat_id    = p.chat_id
+                    AND o.product_id = p.product_id
+                    AND o.order_date >= NOW() - INTERVAL '7 days'
+                )
+                WHERE p.chat_id = $1
+                  AND p.stat_date >= NOW() - INTERVAL '7 days'
+                  AND p.campaign_id IS NOT NULL
+                GROUP BY p.marketplace, p.campaign_id, p.product_id, m.display_name
+                HAVING SUM(p.spend) > 200
+                ORDER BY drr DESC NULLS LAST
+            """, chat_id)
+
+        suggestions = []
+        seen_campaigns: set[str] = set()
+        for r in rows:
+            cid = r["campaign_id"]
+            if cid in seen_campaigns:
+                continue
+            drr     = float(r["drr"] or 0)
+            spend   = float(r["spend_7d"] or 0)
+            revenue = float(r["revenue_7d"] or 0)
+            # Определяем рекомендацию
+            if drr > 60:
+                direction, delta_pct, reason = "down", 30, f"ДРР {drr:.0f}% — критически высокий"
+            elif drr > 40:
+                direction, delta_pct, reason = "down", 20, f"ДРР {drr:.0f}% — выше нормы"
+            elif 0 < drr < 8 and spend > 500:
+                direction, delta_pct, reason = "up", 15, f"ДРР {drr:.0f}% — низкий, есть запас"
+            else:
+                continue  # норма, не трогаем
+            seen_campaigns.add(cid)
+            suggestions.append({
+                "marketplace":   r["marketplace"],
+                "campaign_id":   cid,
+                "name":          r["name"],
+                "spend_7d":      spend,
+                "revenue_7d":    revenue,
+                "drr":           drr,
+                "direction":     direction,
+                "delta_pct":     delta_pct,
+                "reason":        reason,
+            })
+        return suggestions
+
+    async def cmd_bid_adjust(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """/bid_adjust — рекомендации по рекламным ставкам на основе ДРР."""
+        chat_id = update.effective_user.id
+        lock_key = f"bid_lock:{chat_id}"
+        if await self._redis_get(lock_key):
+            await update.message.reply_text(
+                "⏳ Уже есть активные предложения по ставкам. Ответь на них или подожди 10 минут."
+            )
+            return
+
+        await update.message.reply_text("📊 Анализирую ДРР по кампаниям за 7 дней…")
+        suggestions = await self._collect_bid_suggestions(chat_id)
+        if not suggestions:
+            await update.message.reply_text(
+                "✅ Все ставки выглядят нормально — ДРР в допустимых пределах.\n\n"
+                "Убедись что синхронизирована реклама (/sync_adv)."
+            )
+            return
+
+        await self._redis_set(lock_key, "1", ttl=600)
+
+        for s in suggestions[:8]:
+            arrow  = "📉 Снизить" if s["direction"] == "down" else "📈 Поднять"
+            mp_label = "🟣 WB" if s["marketplace"] == "wb" else "🔵 Ozon"
+            text = (
+                f"{mp_label} <b>{s['name']}</b>\n"
+                f"ДРР за 7д: <b>{s['drr']:.0f}%</b>  "
+                f"(расход {s['spend_7d']:,.0f}₽ / выручка {s['revenue_7d']:,.0f}₽)\n\n"
+                f"💡 {arrow} ставку на <b>{s['delta_pct']}%</b>\n"
+                f"Причина: {s['reason']}"
+            )
+            cid = s["campaign_id"][:20]
+            mp  = s["marketplace"]
+            d   = s["direction"]
+            dp  = s["delta_pct"]
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"✅ {arrow}", callback_data=f"bid:{mp}:{cid}:{d}:{dp}:apply"),
+                InlineKeyboardButton("❌ Пропустить", callback_data=f"bid:{mp}:{cid}:{d}:{dp}:skip"),
+            ]])
+            await self.bot.send_message(
+                chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=keyboard
+            )
+
+    async def _handle_bid_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        query = update.callback_query
+        await query.answer()
+        # Формат: bid:{mp}:{campaign_id}:{direction}:{delta_pct}:{action}
+        parts = query.data.split(":", 5)
+        if len(parts) != 6:
+            return
+        _, mp, campaign_id, direction, delta_str, action = parts
+        chat_id = query.from_user.id
+
+        if action == "skip":
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.edit_message_text(query.message.text + "\n\n⏭️ Пропущено", parse_mode="HTML")
+            return
+
+        # Применяем
+        if mp != "wb":
+            await query.edit_message_text(
+                query.message.text + f"\n\n⚠️ Авто-ставки для {mp.upper()} пока не поддерживаются",
+                parse_mode="HTML",
+            )
+            return
+
+        delta_pct = int(delta_str)
+        from db import get_marketplace_shops
+        from tools.marketplace import WBClient
+        shops = await get_marketplace_shops(chat_id)
+        wb_shop = next((s for s in shops if s["marketplace"] == "wb"), None)
+        if not wb_shop:
+            await query.edit_message_text(
+                query.message.text + "\n\n❌ Магазин WB не найден", parse_mode="HTML"
+            )
+            return
+
+        wb = WBClient(wb_shop["api_token"])
+        info = await wb.get_campaign_cpm(campaign_id)
+        if not info or not info.get("cpm"):
+            await query.edit_message_text(
+                query.message.text
+                + f"\n\n⚠️ Не удалось получить текущую ставку.\n"
+                  f"Измени вручную: кампания <code>{campaign_id}</code>, "
+                  f"{'снизь' if direction == 'down' else 'подними'} на {delta_pct}%",
+                parse_mode="HTML",
+            )
+            return
+
+        current_cpm = info["cpm"]
+        if direction == "down":
+            new_cpm = max(50, int(current_cpm * (1 - delta_pct / 100)))
+        else:
+            new_cpm = int(current_cpm * (1 + delta_pct / 100))
+
+        ok = await wb.update_campaign_cpm(
+            campaign_id, info["type"], info["subject_id"], new_cpm
+        )
+        if ok:
+            await query.edit_message_text(
+                query.message.text
+                + f"\n\n✅ Ставка изменена: {current_cpm} → <b>{new_cpm} ₽</b>",
+                parse_mode="HTML",
+            )
+            logger.info(f"[Макс/bid] chat={chat_id} кампания={campaign_id} {current_cpm}→{new_cpm}")
+        else:
+            await query.edit_message_text(
+                query.message.text
+                + f"\n\n⚠️ API вернул ошибку.\n"
+                  f"Измени вручную: кампания <code>{campaign_id}</code> → {new_cpm} ₽",
+                parse_mode="HTML",
+            )
 
     _MENU_SUBMENUS: dict[str, tuple[str, list]] = {
         "sync": ("🔄 Синхронизация", [
@@ -4546,6 +4731,7 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("cost",          self.cmd_cost_wizard))
         self.app.add_handler(CommandHandler("margin",        self.cmd_margin_check))
         self.app.add_handler(CommandHandler("reprice",       self.cmd_reprice))
+        self.app.add_handler(CommandHandler("bid_adjust",    self.cmd_bid_adjust))
         self.app.add_handler(CommandHandler("add",           self.cmd_add))
         self.app.add_handler(CommandHandler("cancel",        self.cmd_cancel))
         self.app.add_handler(
@@ -4568,6 +4754,9 @@ class MaxAgent(BaseAgent):
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_reprice_callback, pattern=r"^rp:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_bid_callback, pattern=r"^bid:")
         )
 
         self.app.add_handler(

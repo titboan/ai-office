@@ -768,6 +768,60 @@ class WBClient:
         logger.info(f"[WB.get_funnel_stats] {date_from}–{date_to}: {len(results)} записей")
         return results
 
+    async def get_campaign_cpm(self, campaign_id: str) -> dict | None:
+        """Получить тип, subject_id и текущую CPM-ставку кампании.
+        Возвращает {"type": int, "subject_id": int, "cpm": int} или None при ошибке."""
+        import json as _json
+        url = f"https://advert-api.wildberries.ru/adv/v0/advert"
+        headers = {"Authorization": self._token}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url, headers=headers, params={"id": campaign_id}, timeout=_TIMEOUT
+                ) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"[WB.get_campaign_cpm] HTTP {resp.status} for id={campaign_id}")
+                        return None
+                    data = _json.loads(await resp.text())
+            ctype = int(data.get("type") or 0)
+            # Auto (type=8) → unitedParams; Search (type=6) → params
+            params_key = "unitedParams" if ctype == 8 else "params"
+            params_list = data.get(params_key) or []
+            if not params_list:
+                return None
+            p = params_list[0]
+            subj = p.get("subject") or {}
+            subject_id = int(subj.get("id") or p.get("subjectId") or 0)
+            cpm = int(p.get("searchCPM") or p.get("cpm") or 0)
+            return {"type": ctype, "subject_id": subject_id, "cpm": cpm}
+        except Exception as e:
+            logger.error(f"[WB.get_campaign_cpm] error: {e}")
+            return None
+
+    async def update_campaign_cpm(
+        self, campaign_id: str, campaign_type: int, subject_id: int, new_cpm: int
+    ) -> bool:
+        """Установить новую ставку CPM для кампании WB."""
+        url = "https://advert-api.wildberries.ru/adv/v0/cpm"
+        headers = {"Authorization": self._token, "Content-Type": "application/json"}
+        body = {
+            "type": campaign_type,
+            "cpm": new_cpm,
+            "campaignId": int(campaign_id),
+            "param": subject_id,
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=body, timeout=_TIMEOUT) as resp:
+                    text = await resp.text()
+                    if resp.status not in (200, 201):
+                        logger.error(f"[WB.update_campaign_cpm] HTTP {resp.status}: {text[:200]}")
+                        return False
+                    return True
+        except Exception as e:
+            logger.error(f"[WB.update_campaign_cpm] error: {e}")
+            return False
+
     async def upload_product_photo(self, nm_id: str, photo_bytes: bytes, filename: str = "photo.jpg") -> bool:
         """Загрузить фото в карточку WB. nm_id — числовой nmID карточки."""
         url = "https://content-api.wildberries.ru/content/v3/media/save"
