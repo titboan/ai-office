@@ -50,7 +50,7 @@ AGENTS: dict[str, tuple] = {
     "elina":  (ElinaAgent,  "elina"),
     "alex":   (AlexAgent,   "alex"),
     # "dan": (DanAgent, "dan"),  # заморожен: Pollinations.ai слишком медленный, заменить на DALL-E 3 если нужно
-    "eva":    (EvaAgent,    "eva"),
+    # "eva": (EvaAgent, "eva"),  # заморожена: TELETHON_SESSION не получена, email-дайджест не актуален
     "max":    (MaxAgent,    "max"),
     "tina":   (TinaAgent,   "tina"),
 }
@@ -147,53 +147,7 @@ async def run_all_async() -> None:
 
     status_task = asyncio.create_task(asyncio.sleep(0))  # placeholder для graceful shutdown
 
-    # Ищем Еву среди запущенных агентов для scheduled digest
-    eva_agent = next((a for a in started if isinstance(a, EvaAgent)), None)
-
-    async def _scheduled_digest_loop():
-        """Каждый день в 06:30 UTC (09:30 МСК) запускает дайджест для всех пользователей."""
-        from datetime import datetime, timezone, timedelta
-        from db import get_distinct_digest_users
-        while True:
-            try:
-                now = datetime.now(timezone.utc)
-                target = now.replace(hour=6, minute=30, second=0, microsecond=0)
-                if target <= now:
-                    target += timedelta(days=1)
-                wait_seconds = (target - now).total_seconds()
-                logger.info(f"[digest_scheduler] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
-                await asyncio.sleep(wait_seconds)
-
-                if eva_agent is None:
-                    logger.warning("[digest_scheduler] Ева не найдена, пропускаем")
-                    continue
-
-                users = await get_distinct_digest_users()
-                logger.info(f"[digest_scheduler] запуск дайджеста для {len(users)} пользователей")
-                for user_chat_id in users:
-                    # TG-каналы — только если Telethon подключён
-                    if eva_agent._telethon_ready:
-                        try:
-                            await eva_agent.run_digest(user_chat_id, since=None)
-                        except Exception as e:
-                            logger.error(f"[digest_scheduler] tg user={user_chat_id} error: {e}")
-                    # Email-дайджест и сортировка — не зависят от Telethon
-                    try:
-                        await eva_agent.run_email_digest(user_chat_id, since_days=1)
-                    except Exception as e:
-                        logger.error(f"[digest_scheduler] email user={user_chat_id} error: {e}")
-                    try:
-                        await eva_agent.run_sort_emails(user_chat_id, since_days=1)
-                    except Exception as e:
-                        logger.error(f"[digest_scheduler] sort user={user_chat_id} error: {e}")
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"[digest_scheduler] ошибка: {e}")
-                await asyncio.sleep(60)
-
-    digest_task = asyncio.create_task(_scheduled_digest_loop())
-    logger.info("[main] Scheduled digest task запущен (каждый день 06:30 UTC)")
+    # Ева заморожена — digest loop отключён до получения TELETHON_SESSION
 
     max_agent   = next((a for a in started if isinstance(a, MaxAgent)), None)
     peter_agent = next((a for a in started if a.__class__.__name__ == "PeterAgent"), None)
