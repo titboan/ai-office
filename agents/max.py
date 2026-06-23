@@ -3671,7 +3671,10 @@ class MaxAgent(BaseAgent):
         deduplicate=True: пропускает товары, по которым алерт уже отправлялся сегодня (Redis TTL 23 ч).
         """
         from config import config as _cfg
-        threshold = getattr(_cfg, "STOCK_ALERT_DAYS_THRESHOLD", 21)
+        import datetime
+        threshold   = getattr(_cfg, "STOCK_ALERT_DAYS_THRESHOLD", 21)
+        lead_time   = getattr(_cfg, "SUPPLY_LEAD_TIME_DAYS",       21)
+        safety_days = getattr(_cfg, "SUPPLY_SAFETY_STOCK_DAYS",    14)
         try:
             from db import get_pool
             pool = await get_pool()
@@ -3701,6 +3704,7 @@ class MaxAgent(BaseAgent):
                     GROUP BY s.marketplace, s.product_id, m.display_name, m.ozon_sku
                 """, chat_id)
 
+            today = datetime.date.today()
             alerts = []
             for r in rows:
                 stock = int(r["total_stock"] or 0)
@@ -3710,10 +3714,34 @@ class MaxAgent(BaseAgent):
 
                 if stock == 0:
                     severity = "critical"
-                    line = f"{mp_label} <b>{r['name']}</b> — ❌ нет остатков"
+                    if vel > 0:
+                        qty_to_order = int((lead_time + safety_days) * vel)
+                        line = (
+                            f"{mp_label} <b>{r['name']}</b>\n"
+                            f"  ❌ Нет остатков (продажи ~{vel:.1f} шт/день)\n"
+                            f"  🚚 Заказать сейчас: <b>{qty_to_order} шт</b>"
+                        )
+                    else:
+                        line = f"{mp_label} <b>{r['name']}</b> — ❌ нет остатков, продаж нет"
                 elif days_left < threshold:
                     severity = "low"
-                    line = f"{mp_label} <b>{r['name']}</b> — ⚠️ {int(days_left)} дн."
+                    days_to_order = max(0, int(days_left) - lead_time)
+                    stockout_date = today + datetime.timedelta(days=int(days_left))
+                    order_by_date = today + datetime.timedelta(days=days_to_order)
+                    qty_to_order  = int((lead_time + safety_days) * vel) if vel > 0 else 0
+                    urgency = "❗ Заказать сейчас" if days_to_order == 0 else f"🗓 Заказать до {order_by_date.strftime('%d.%m')}"
+                    if qty_to_order > 0:
+                        line = (
+                            f"{mp_label} <b>{r['name']}</b>\n"
+                            f"  📦 Остаток: {stock} шт → ~{int(days_left)} дн.\n"
+                            f"  📊 Продажи: ~{vel:.1f} шт/день · стокаут {stockout_date.strftime('%d.%m')}\n"
+                            f"  {urgency}: <b>{qty_to_order} шт</b>"
+                        )
+                    else:
+                        line = (
+                            f"{mp_label} <b>{r['name']}</b>\n"
+                            f"  📦 Остаток: {stock} шт → ~{int(days_left)} дн. (нет данных о продажах)"
+                        )
                 else:
                     continue
 
@@ -3728,9 +3756,10 @@ class MaxAgent(BaseAgent):
             if not alerts:
                 return
 
-            text = "⚠️ <b>Алерт остатков:</b>\n\n" + "\n".join(alerts[:15])
-            if len(alerts) > 15:
-                text += f"\n…и ещё {len(alerts) - 15} позиций"
+            header = "⚠️ <b>Алерт остатков:</b>\n\n"
+            text = header + "\n\n".join(alerts[:10])
+            if len(alerts) > 10:
+                text += f"\n\n…и ещё {len(alerts) - 10} позиций"
             await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
             logger.info(f"[Макс/stock_alerts] chat={chat_id} алертов: {len(alerts)}")
         except Exception as e:

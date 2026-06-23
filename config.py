@@ -126,6 +126,8 @@ config.DASHBOARD_TOKEN = os.getenv("DASHBOARD_TOKEN", "")     # секретны
 # Алерты остатков
 config.STOCK_ALERT_DAYS_THRESHOLD = 21   # слать алерт если остаток < 21 дня продаж
 config.STOCK_ALERT_HOUR_UTC       = 10   # 10:00 UTC = 13:00 МСК
+config.SUPPLY_LEAD_TIME_DAYS      = 21   # дней от заказа производителю до поставки на склад МП
+config.SUPPLY_SAFETY_STOCK_DAYS   = 14   # страховой буфер после поставки (на непредвиденное)
 
 # Аналитика рентабельности
 config.NET_MARGIN_TAX_RATE = 0.08   # налог УСН "доходы" (повышенная ставка), % от выплаты МП
