@@ -628,6 +628,45 @@ async def run_all_async() -> None:
 
     asyncio.create_task(_competitor_monitor_loop())
 
+    async def _daily_digest_loop():
+        """Ежедневный дайджест от Питера — каждый день в 18:00 UTC (21:00 МСК)."""
+        from datetime import datetime, timezone, timedelta
+        from db import get_all_active_shops
+
+        while True:
+            try:
+                now  = datetime.now(timezone.utc)
+                hour = getattr(config, "DAILY_DIGEST_HOUR_UTC", 18)
+                target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+                if target <= now:
+                    target += timedelta(days=1)
+                wait_seconds = (target - now).total_seconds()
+                logger.info(f"[daily_digest] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
+                await asyncio.sleep(wait_seconds)
+
+                if peter_agent is None:
+                    logger.warning("[daily_digest] Питер не найден, пропускаем")
+                    continue
+
+                shops = await get_all_active_shops()
+                unique_chats = list({s["chat_id"] for s in shops})
+
+                for chat_id in unique_chats:
+                    try:
+                        await peter_agent.run_daily_digest(chat_id)
+                        logger.info(f"[daily_digest] chat_id={chat_id} завершено")
+                    except Exception as e:
+                        logger.error(f"[daily_digest] chat_id={chat_id} ошибка: {e}")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[daily_digest] критическая ошибка: {e}")
+                await asyncio.sleep(60)
+
+    asyncio.create_task(_daily_digest_loop())
+    logger.info("[main] Daily digest task запущен (каждый день 18:00 UTC = 21:00 МСК)")
+
     # ── Dashboard API (aiohttp) ───────────────────────────────────────────────
     _CORS_ORIGIN = config.DASHBOARD_URL or "*"
 

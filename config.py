@@ -131,6 +131,9 @@ config.STOCK_ALERT_HOUR_UTC       = 10   # 10:00 UTC = 13:00 МСК
 config.NET_MARGIN_TAX_RATE = 0.08   # налог УСН "доходы" (повышенная ставка), % от выплаты МП
 config.TARGET_NET_MARGIN_PCT = 50.0 # целевая NET-маржа, % — порог для рекомендованной цены
 
+# Ежедневный дайджест Питера
+config.DAILY_DIGEST_HOUR_UTC = 18   # 18:00 UTC = 21:00 МСК
+
 # Мониторинг цен конкурентов (WB публичный поиск, еженедельно)
 config.COMPETITOR_SCAN_HOUR_UTC = 6  # 06:00 UTC = 09:00 МСК, каждый понедельник
 config.COMPETITOR_KEYWORDS = [       # ниша DoggyDog — ключи для снапшота топ-100 WB
