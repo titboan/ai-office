@@ -91,6 +91,9 @@ async def _create_schema() -> None:
             ALTER TABLE tasks ADD COLUMN IF NOT EXISTS latency_ms INT;
         """)
         await conn.execute("""
+            ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parallel_group INTEGER DEFAULT NULL;
+        """)
+        await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_tasks_agent_status
                 ON tasks (assigned_agent, status, created_at);
         """)

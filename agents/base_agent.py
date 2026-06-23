@@ -98,6 +98,17 @@ def _build_context(prev_results: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
+def _normalize_plan_steps(steps: list[dict]) -> list[dict]:
+    """Добавить поле 'group' если его нет. Обратная совместимость: индекс = группа.
+
+    Шаги с одинаковым group выполняются параллельно.
+    Шаги без group получают уникальные group=index (последовательное выполнение).
+    """
+    if any("group" in s for s in steps):
+        return steps
+    return [{**s, "group": i} for i, s in enumerate(steps)]
+
+
 class BaseAgent(ABC):
     """Базовый класс для всех агентов ИИ-офиса.
 
@@ -821,50 +832,74 @@ class BaseAgent(ABC):
     # ------------------------------------------------------------------ #
 
     async def _advance_chain(self, completed_task) -> None:
-        """После завершения задачи — запустить следующий шаг цепочки."""
+        """После завершения задачи — запустить следующий шаг цепочки.
+
+        Поддерживает параллельные группы: шаги с одинаковым chain_index (group)
+        выполняются одновременно; следующая группа стартует когда все завершены.
+        Атомарный барьер: Redis DECR на ключ chain_barrier:{chain_id}:{group}.
+        """
         from task_queue import enqueue_chain_task, get_chain_results, get_chain_plan
         from tools.notion import append_agent_result, update_project_status
 
         chain_id    = completed_task.chain_id
-        chain_index = completed_task.chain_index
-        chain_total = completed_task.chain_total
+        chain_index = completed_task.chain_index   # номер группы
+        chain_total = completed_task.chain_total   # количество групп
         chat_id     = completed_task.chat_id
+        notion_page_id = getattr(completed_task, "notion_page_id", None)
+        current_result = getattr(completed_task, "result", None)
 
         plan = await get_chain_plan(None, chain_id)
         if not plan:
             logger.error(f"chain_advance | chain_id={chain_id} | plan not found")
             return
 
+        plan_steps = _normalize_plan_steps(plan.get("steps", []))
         next_index = chain_index + 1
 
         logger.info(
             f"chain_advance | chain_id={chain_id[:8]} | "
-            f"completed_index={chain_index} | next_index={next_index} | "
-            f"chain_total={chain_total} | is_final={next_index >= chain_total}"
+            f"group={chain_index} | next_group={next_index} | "
+            f"total_groups={chain_total} | is_final={next_index >= chain_total}"
         )
 
+        # ── Всегда пишем результат текущего агента в Notion ───────────────────
+        # Для параллельных групп каждый агент пишет сразу при завершении —
+        # не ждём когда вся группа закончит.
+        if notion_page_id and current_result:
+            try:
+                await append_agent_result(
+                    token=config.NOTION_TOKEN,
+                    page_id=notion_page_id,
+                    agent_key=self.agent_key,
+                    result=current_result,
+                )
+                logger.debug(f"notion_append | agent={self.agent_key} | page={notion_page_id[:8]}…")
+            except Exception as e:
+                logger.warning(f"notion_append_failed | agent={self.agent_key} | error={e}")
+
+        # ── Параллельный барьер ───────────────────────────────────────────────
+        # parallel_group хранится в задаче и совпадает с chain_index для параллельных шагов.
+        parallel_group = getattr(completed_task, "parallel_group", None)
+        if parallel_group is not None:
+            redis = await self._get_redis()
+            if redis:
+                barrier_key = f"chain_barrier:{chain_id}:{chain_index}"
+                remaining = await redis.decr(barrier_key)
+            else:
+                # Fallback без Redis: считаем из БД (minor race condition возможен)
+                from task_queue import count_incomplete_in_group
+                remaining = await count_incomplete_in_group(chain_id, chain_index)
+            if remaining > 0:
+                logger.info(
+                    f"parallel_wait | chain_id={chain_id[:8]} | "
+                    f"group={chain_index} | remaining={remaining}"
+                )
+                return  # ждём сестринские задачи
+
+        # ── Цепочка завершена ─────────────────────────────────────────────────
         if next_index >= chain_total:
             logger.info(f"chain_done | chain_id={chain_id[:8]} | total={chain_total}")
-            notion_page_id = getattr(completed_task, "notion_page_id", None)
 
-            # Пишем результат последнего агента в Notion
-            last_result = getattr(completed_task, "result", None)
-            if notion_page_id and last_result:
-                try:
-                    await append_agent_result(
-                        token=config.NOTION_TOKEN,
-                        page_id=notion_page_id,
-                        agent_key=self.agent_key,
-                        result=last_result,
-                    )
-                    logger.debug(
-                        f"notion_append | agent={self.agent_key} | "
-                        f"page={notion_page_id[:8]}… | final=True"
-                    )
-                except Exception as e:
-                    logger.warning(f"notion_append_failed | agent={self.agent_key} | error={e}")
-
-            # Обновляем статус страницы
             if notion_page_id:
                 try:
                     await update_project_status(
@@ -878,14 +913,12 @@ class BaseAgent(ABC):
             if chat_id:
                 import re as _re
 
-                # Получаем результаты всех агентов цепочки
                 chain_results = await get_chain_results(None, chain_id)
 
-                # Извлекаем GitHub Pages URL и repo URL из результатов
                 github_pages_url = None
                 github_repo_url = None
                 for r in chain_results:
-                    r_result = getattr(r, "result", None) or ""
+                    r_result = (r.get("result") or "")
                     pages_match = _re.search(r'https://[\w\-]+\.github\.io/[\w\-]+(?:/[\w\-]*)*', r_result)
                     repo_match  = _re.search(r'https://github\.com/[\w\-]+/[\w\-]+', r_result)
                     if pages_match:
@@ -904,7 +937,6 @@ class BaseAgent(ABC):
                     "dan": "Дэн", "tina": "Тина", "digest": "Дайджест",
                 }
 
-                # Формируем строки с кратким выводом каждого агента
                 result_lines = ""
                 if chain_results:
                     for r in chain_results:
@@ -912,7 +944,6 @@ class BaseAgent(ABC):
                         r_result = (r.get("result") or "").strip()
                         emoji = _AGENT_EMOJI.get(agent_k, "🤖")
                         name  = _AGENT_NAME.get(agent_k, agent_k)
-                        # Берём первые 200 символов результата как выжимку
                         excerpt = _re.sub(r"<[^>]+>", "", r_result)[:200].strip()
                         if len(_re.sub(r"<[^>]+>", "", r_result)) > 200:
                             excerpt += "…"
@@ -944,82 +975,100 @@ class BaseAgent(ABC):
                 await self._notify_user(chat_id, final_msg, reply_markup=keyboard)
             return
 
-        next_step  = plan["steps"][next_index]
-        next_agent = next_step["agent"]
+        # ── Переход к следующей группе ────────────────────────────────────────
+        next_steps = [s for s in plan_steps if s.get("group") == next_index]
+        if not next_steps:
+            logger.error(f"chain_advance | chain_id={chain_id[:8]} | no steps for group={next_index}")
+            if chat_id:
+                await self._notify_user(chat_id, "⚠️ Ошибка цепочки: следующий шаг не найден в плане.")
+            return
 
-        # Защита от циклов
-        if next_agent == self.agent_key:
+        is_parallel_next = len(next_steps) > 1
+
+        # Защита от циклов (для однозадачных переходов)
+        if not is_parallel_next and next_steps[0]["agent"] == self.agent_key:
             logger.error(f"chain_loop | chain_id={chain_id} | agent={self.agent_key}")
             if chat_id:
                 await self._notify_user(chat_id, f"⚠️ Ошибка цепочки: цикл на агенте {self.agent_key}")
             return
 
-        # Собираем контекст
-        prev_results = await get_chain_results(None, chain_id)
-        if next_agent == "kevin":
-            # Кевину не нужны длинные исследования — только суть
-            context_parts = []
-            for r in prev_results:
-                agent  = r.get("assigned_agent", "?")
-                result = (r.get("result") or "")[:500]
-                context_parts.append(f"[{agent}]: {result}")
-            context_str = "\n\n".join(context_parts)
-        else:
-            context_str = _build_context(prev_results)
-        full_payload = (
-            f"{next_step['task']}\n\nКонтекст от предыдущих агентов:\n{context_str}"
-            if context_str else next_step["task"]
-        )
-
         # Уведомляем пользователя о прогрессе
         if chat_id:
-            me   = _AGENT_NAMES.get(self.agent_key, self.name)
-            them = _AGENT_NAMES.get(next_agent, next_agent)
+            me = _AGENT_NAMES.get(self.agent_key, self.name)
+            if is_parallel_next:
+                them = " + ".join(_AGENT_NAMES.get(s["agent"], s["agent"]) for s in next_steps)
+            else:
+                them = _AGENT_NAMES.get(next_steps[0]["agent"], next_steps[0]["agent"])
             await self._notify_user(
                 chat_id,
                 f"✅ {me} завершил [{chain_index+1}/{chain_total}]\n➡️ Передаю {them}…",
             )
 
-        # Пишем результат текущего агента в Notion
-        notion_page_id = getattr(completed_task, "notion_page_id", None)
-        current_result = getattr(completed_task, "result", None)
-        if notion_page_id and current_result:
-            try:
-                await append_agent_result(
-                    token=config.NOTION_TOKEN,
-                    page_id=notion_page_id,
-                    agent_key=self.agent_key,
-                    result=current_result,
-                )
-                logger.debug(f"notion_append | agent={self.agent_key} | page={notion_page_id[:8]}…")
-            except Exception as e:
-                logger.warning(f"notion_append_failed | agent={self.agent_key} | error={e}")
+        # Собираем контекст из всех завершённых задач
+        prev_results = await get_chain_results(None, chain_id)
 
-        task_id = await enqueue_chain_task(
-            pool=None,
-            agent_key=next_agent,
-            payload=full_payload,
-            chat_id=chat_id,
-            chain_id=chain_id,
-            chain_index=next_index,
-            chain_total=chain_total,
-            notion_page_id=notion_page_id,
-            parent_task_id=completed_task.id,
-            from_agent=self.agent_key,
-            correlation_id=completed_task.correlation_id,
-            priority=getattr(completed_task, "priority", 0),
-            timeout_seconds=600 if next_agent == "dan" else 300,
-        )
+        # Ставим задачи для каждого шага следующей группы
+        enqueued_ids: list[int] = []
+        for step in next_steps:
+            next_agent = step["agent"]
+            if next_agent == "kevin":
+                context_parts = [
+                    f"[{r.get('assigned_agent','?')}]: {(r.get('result') or '')[:500]}"
+                    for r in prev_results
+                ]
+                context_str = "\n\n".join(context_parts)
+            else:
+                context_str = _build_context(prev_results)
+            full_payload = (
+                f"{step['task']}\n\nКонтекст от предыдущих агентов:\n{context_str}"
+                if context_str else step["task"]
+            )
+            task_id = await enqueue_chain_task(
+                pool=None,
+                agent_key=next_agent,
+                payload=full_payload,
+                chat_id=chat_id,
+                chain_id=chain_id,
+                chain_index=next_index,
+                chain_total=chain_total,
+                parallel_group=next_index if is_parallel_next else None,
+                notion_page_id=notion_page_id,
+                parent_task_id=completed_task.id,
+                from_agent=self.agent_key,
+                correlation_id=completed_task.correlation_id,
+                priority=getattr(completed_task, "priority", 0),
+                timeout_seconds=600 if next_agent == "dan" else 300,
+            )
+            if task_id:
+                enqueued_ids.append(task_id)
+
+        # Устанавливаем Redis-барьер для параллельной следующей группы
+        if is_parallel_next:
+            redis = await self._get_redis()
+            if redis:
+                await redis.set(
+                    f"chain_barrier:{chain_id}:{next_index}",
+                    len(next_steps),
+                    ex=86_400,
+                )
+
         await log_event(
             "CHAIN_ADVANCED",
             task_id=completed_task.id,
             agent_key=self.agent_key,
             chain_id=chain_id,
-            payload={"from_index": chain_index, "to_index": next_index, "next_agent": next_agent, "next_task_id": task_id},
+            payload={
+                "from_group": chain_index,
+                "to_group": next_index,
+                "next_agents": [s["agent"] for s in next_steps],
+                "next_task_ids": enqueued_ids,
+                "parallel": is_parallel_next,
+            },
         )
         logger.info(
             f"chain_advance | chain_id={chain_id[:8]} | "
-            f"from={self.agent_key} | next={next_agent} | [{next_index}/{chain_total-1}] | task_id={task_id}"
+            f"from={self.agent_key} | next={[s['agent'] for s in next_steps]} | "
+            f"[{next_index}/{chain_total-1}] | parallel={is_parallel_next} | tasks={enqueued_ids}"
         )
 
     async def _handle_chain_failure(self, failed_task) -> None:

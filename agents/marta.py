@@ -232,16 +232,21 @@ class MartaAgent(BaseAgent):
         "  - Включай Дэна когда нужны изображения для сайта или лендинга\n"
         "  - Дэн всегда идёт ДО Кевина\n"
         "  - НЕ включай Дэна для задач без визуального контента\n\n"
+        "ПАРАЛЛЕЛЬНЫЕ ГРУППЫ:\n"
+        "Добавляй поле 'group' (int) чтобы запустить агентов одновременно.\n"
+        "Агенты с одинаковым group выполняются параллельно; следующий group стартует когда все готовы.\n"
+        "Пример: kasper(group:0) → elina(group:1) + kevin(group:1) → kevin(group:2 деплой)\n"
+        "Используй параллельность когда задачи независимы (тексты ≠ структура кода).\n\n"
         "ТИПОВЫЕ ЦЕПОЧКИ:\n"
         "  Аналитика магазина / цели по обороту: [peter]\n"
         "  Лендинг/сайт по готовому референсу или макету: [kevin]\n"
-        "  Лендинг/сайт с изображениями: [dan, kevin]\n"
-        "  Лендинг с исследованием рынка: [kasper, kevin]\n"
-        "  Лендинг с исследованием + изображения: [kasper, dan, kevin]\n"
-        "  Технический проект (бот, приложение): [kevin] или [kasper, kevin]\n"
-        "  Контентный проект: [elina] или [kasper, elina]\n"
-        "  Бизнес-исследование внешнего рынка: [kasper, peter]\n"
-        "  Полный проект (исследование + дизайн + разработка): [kasper, dan, kevin]\n\n"
+        "  Лендинг/сайт с изображениями: [dan(group:0), kevin(group:1)]\n"
+        "  Лендинг с исследованием рынка: [kasper(group:0), kevin(group:1)]\n"
+        "  Лендинг: исследование → (тексты + дизайн параллельно) → деплой: [kasper(0), elina(1)+dan(1), kevin(2)]\n"
+        "  Технический проект (бот, приложение): [kevin] или [kasper(0), kevin(1)]\n"
+        "  Контентный проект: [elina] или [kasper(0), elina(1)]\n"
+        "  Бизнес-исследование внешнего рынка: [kasper(0), peter(1)]\n"
+        "  Полный проект (исследование + дизайн + разработка): [kasper(0), dan(1), kevin(2)]\n\n"
         "ПРАВИЛА ДЛЯ needs_project_page:\n"
         "  true  — проект: сайт, бот, исследование рынка, продукт, приложение, контент-пакет\n"
         "  false — разовый вопрос, справка, простая задача\n\n"
@@ -322,11 +327,35 @@ class MartaAgent(BaseAgent):
             logger.info(f"[Марта] Notion проект создан: page_id={page_id[:8]}… title={title!r}")
         return page_id, title
 
+    @staticmethod
+    def _normalize_chain_steps(steps: list[dict]) -> tuple[list[dict], int]:
+        """Нормализовать шаги цепочки: добавить group если нет, вернуть (steps, total_groups).
+
+        Шаги с одинаковым group выполняются параллельно.
+        Шаги без group получают group=index (последовательно, обратная совместимость).
+        """
+        if not any("group" in s for s in steps):
+            normalized = [{**s, "group": i} for i, s in enumerate(steps)]
+        else:
+            normalized = [dict(s) for s in steps]
+            # Шагам без group присваиваем уникальный номер после максимального
+            max_g = max((s.get("group", 0) for s in normalized), default=0)
+            for s in normalized:
+                if "group" not in s:
+                    max_g += 1
+                    s["group"] = max_g
+        total_groups = max(s["group"] for s in normalized) + 1
+        return normalized, total_groups
+
     async def _start_chain(self, plan: dict, user_request: str, chat_id: int) -> None:
-        """Запустить цепочку: enqueue первой задачи + уведомить пользователя."""
+        """Запустить цепочку: enqueue шагов первой группы + настроить Redis-барьер."""
         steps    = plan.get("steps", [])
         chain_id = str(uuid.uuid4())
         resume_page_id = getattr(self, "_resume_notion_page_id", None)
+
+        # Нормализуем шаги: добавляем group-поле
+        steps, total_groups = self._normalize_chain_steps(steps)
+        plan = {**plan, "steps": steps}  # сохраняем нормализованный план
 
         notion_page_id = None
         if plan.get("needs_project_page"):
@@ -341,26 +370,41 @@ class MartaAgent(BaseAgent):
         elif resume_page_id:
             notion_page_id = resume_page_id
 
-        first = steps[0]
+        # Первая группа: все шаги с group=0
+        group0_steps = [s for s in steps if s["group"] == 0]
+        is_parallel_start = len(group0_steps) > 1
         corr_id = str(uuid.uuid4())
-        task_id = await enqueue_chain_task(
-            pool=None,
-            agent_key=first["agent"],
-            payload=first["task"],
-            chat_id=chat_id,
-            chain_id=chain_id,
-            chain_index=0,
-            chain_total=len(steps),
-            chain_plan=plan,
-            notion_page_id=notion_page_id,
-            from_agent="marta",
-            correlation_id=corr_id,
-            priority=_detect_priority(user_request),
-            timeout_seconds=600 if first["agent"] == "dan" else 300,
-        )
+
+        enqueued_ids: list[int] = []
+        for step in group0_steps:
+            task_id = await enqueue_chain_task(
+                pool=None,
+                agent_key=step["agent"],
+                payload=step["task"],
+                chat_id=chat_id,
+                chain_id=chain_id,
+                chain_index=0,
+                chain_total=total_groups,
+                chain_plan=plan,
+                notion_page_id=notion_page_id,
+                from_agent="marta",
+                correlation_id=corr_id,
+                priority=_detect_priority(user_request),
+                timeout_seconds=600 if step["agent"] == "dan" else 300,
+                parallel_group=0 if is_parallel_start else None,
+            )
+            if task_id:
+                enqueued_ids.append(task_id)
+
+        # Redis-барьер для параллельного старта
+        if is_parallel_start:
+            redis = await self._get_redis()
+            if redis:
+                await redis.set(f"chain_barrier:{chain_id}:0", len(group0_steps), ex=86_400)
 
         logger.info(
-            f"chain_start | chain_id={chain_id[:8]} | steps={len(steps)} | task_id={task_id} | corr={corr_id[:8]}"
+            f"chain_start | chain_id={chain_id[:8]} | groups={total_groups} | "
+            f"group0_agents={[s['agent'] for s in group0_steps]} | tasks={enqueued_ids} | corr={corr_id[:8]}"
         )
 
     def _pending_chain_key(self, chat_id: int) -> str:

@@ -31,6 +31,7 @@ class Task:
         self.chain_total     = row.get("chain_total", 1)
         self.chain_plan      = row.get("chain_plan")
         self.notion_page_id  = row.get("notion_page_id")
+        self.parallel_group  = row.get("parallel_group")
 
     def __repr__(self):
         return f"Task(id={self.id}, agent={self.assigned_agent!r}, status={self.status!r}, corr={self.correlation_id[:8]}…)"
@@ -214,6 +215,7 @@ async def enqueue_chain_task(
     correlation_id: str | None = None,
     priority: int = 0,
     timeout_seconds: int = 300,
+    parallel_group: int | None = None,
 ) -> int | None:
     """Создать задачу с chain_* полями. Возвращает task_id или None."""
     import json as _json
@@ -231,31 +233,52 @@ async def enqueue_chain_task(
                     from_agent, chat_id,
                     correlation_id, parent_task_id,
                     priority, timeout_seconds,
-                    chain_id, chain_index, chain_total, chain_plan, notion_page_id
+                    chain_id, chain_index, chain_total, chain_plan, notion_page_id,
+                    parallel_group
                 )
-                VALUES ($1,'general',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13)
+                VALUES ($1,'general',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14)
                 RETURNING id
             """, agent_key, payload,
                 from_agent, chat_id,
                 corr_id, parent_task_id,
                 priority, timeout_seconds,
-                chain_id, chain_index, chain_total, chain_plan_json, notion_page_id)
+                chain_id, chain_index, chain_total, chain_plan_json, notion_page_id,
+                parallel_group)
             task_id = row["id"]
             logger.info(
                 f"[task_queue] chain_enqueue | chain_id={chain_id[:8]} | "
-                f"idx={chain_index}/{chain_total-1} | agent={agent_key!r} | task_id={task_id}"
+                f"grp={chain_index}/{chain_total-1} | agent={agent_key!r} | task_id={task_id}"
+                + (f" | parallel_group={parallel_group}" if parallel_group is not None else "")
             )
             await log_event(
                 "TASK_CREATED",
                 task_id=task_id,
                 agent_key=agent_key,
                 chain_id=chain_id,
-                payload={"chain_index": chain_index, "chain_total": chain_total, "from_agent": from_agent},
+                payload={"chain_index": chain_index, "chain_total": chain_total, "from_agent": from_agent, "parallel_group": parallel_group},
             )
             return task_id
     except Exception as e:
         logger.error(f"[task_queue] enqueue_chain_task error: {e}")
         return None
+
+
+async def count_incomplete_in_group(chain_id: str, group_index: int) -> int:
+    """Количество задач в параллельной группе, ещё не завершённых (Redis-fallback)."""
+    try:
+        db_pool = await get_pool()
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT COUNT(*)::int AS cnt
+                FROM tasks
+                WHERE chain_id = $1
+                  AND chain_index = $2
+                  AND status NOT IN ('completed', 'failed', 'timeout')
+            """, chain_id, group_index)
+            return row["cnt"] if row else 0
+    except Exception as e:
+        logger.error(f"[task_queue] count_incomplete_in_group error: {e}")
+        return 0
 
 
 async def get_chain_results(pool, chain_id: str) -> list[dict]:
