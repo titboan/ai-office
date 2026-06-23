@@ -299,6 +299,59 @@ class BaseAgent(ABC):
         return await self._redis_get(f"summary:{self.agent_key}:{chat_id}")
 
     # ------------------------------------------------------------------ #
+    #  Уточняющие вопросы — пауза перед неоднозначным действием           #
+    # ------------------------------------------------------------------ #
+
+    async def _save_clarification(
+        self,
+        chat_id: int,
+        question: str,
+        original_payload: str,
+    ) -> None:
+        """Сохранить запрос на уточнение в Redis на 24 ч.
+
+        Используется Мартой: она сохраняет state и отправляет вопрос через reply_func сама.
+        """
+        key = f"clarification:{chat_id}"
+        await self._redis_set(key, json.dumps({
+            "agent_key": self.agent_key,
+            "question": question,
+            "original_payload": original_payload,
+        }, ensure_ascii=False), ttl=86_400)
+
+    async def request_clarification(
+        self,
+        chat_id: int,
+        question: str,
+        original_payload: str,
+    ) -> None:
+        """Сохранить вопрос в Redis и отправить пользователю через _notify_user.
+
+        Для агентов, которые спрашивают mid-task (без доступа к reply_func Марты).
+        После ответа пользователя Марта подхватит ответ и поставит задачу повторно:
+        original_payload + ответ пользователя в контексте.
+        """
+        await self._save_clarification(chat_id, question, original_payload)
+        await self._notify_user(chat_id, f"❓ {question}")
+
+    async def _pop_clarification(self, chat_id: int) -> dict | None:
+        """Прочитать и удалить ожидающий уточнения запрос из Redis.
+
+        Возвращает dict с полями: agent_key, question, original_payload.
+        Возвращает None если запроса нет.
+        """
+        key = f"clarification:{chat_id}"
+        raw = await self._redis_get(key)
+        if not raw:
+            return None
+        await self._redis_set(key, "", ttl=1)
+        try:
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------ #
     #  Claude                                                              #
     # ------------------------------------------------------------------ #
 

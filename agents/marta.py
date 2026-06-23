@@ -252,6 +252,12 @@ class MartaAgent(BaseAgent):
         "  - бизнес-анализ, рынок → agent: 'peter'\n"
         "  - планирование, roadmap → agent: 'alex'\n"
         "ВАЖНО: для сайта/лендинга/кода НИКОГДА не указывай elina или других — только kevin.\n\n"
+        "КОГДА НУЖНО УТОЧНЕНИЕ:\n"
+        "Если запрос содержит write-операцию (изменить/обновить/удалить/поставить) без конкретики "
+        "(не указан товар, цена, количество) — верни:\n"
+        '{"clarification_needed": "Уточняющий вопрос"}\n'
+        "Примеры когда уточнять: 'измени цены', 'обнови все товары', 'удали карточки'.\n"
+        "НЕ уточняй для: отчётов, аналитики, поиска, синхронизации, просмотра данных.\n\n"
         "Отвечай ТОЛЬКО валидным JSON без markdown."
     )
 
@@ -265,7 +271,9 @@ class MartaAgent(BaseAgent):
             '{"agent": "kevin", "task": "создай лендинг на основе исследования", "required": true}'
             "]}\n"
             "Если достаточно одного агента — верни:\n"
-            '{"is_chain": false, "agent": "agent_key", "task": "..."}'
+            '{"is_chain": false, "agent": "agent_key", "task": "..."}\n\n'
+            "Если запрос — расплывчатая write-операция без конкретики — верни:\n"
+            '{"clarification_needed": "Короткий уточняющий вопрос"}'
         )
         try:
             response = await self.claude.messages.create(
@@ -458,6 +466,7 @@ class MartaAgent(BaseAgent):
         skip_chain: bool = False,
     ) -> None:
         """Общая логика обработки текста — используется из handle_message и handle_voice."""
+        plan: dict | None = None  # инициализируем чтобы не получить NameError при skip_chain=True
 
         # Обработка кнопок клавиатуры
         _QUICK_ACTIONS = {
@@ -599,6 +608,14 @@ class MartaAgent(BaseAgent):
         # ── Проверяем нужна ли цепочка агентов ───────────────────────────────
         if not skip_chain:
             plan = await self._plan_chain(user_text, chat_id)
+
+            # Агент просит уточнения перед выполнением
+            if plan and plan.get("clarification_needed"):
+                question = plan["clarification_needed"]
+                await self._save_clarification(chat_id, question, user_text)
+                await reply_func(f"❓ {question}")
+                return
+
             if plan and plan.get("is_chain"):
                 _CHAIN_AGENT_EMOJI = {
                     "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
@@ -736,6 +753,33 @@ class MartaAgent(BaseAgent):
             async def reply(text, parse_mode=None, **kw):
                 markup = _kb.to_dict() if _kb else None
                 await _send_rich(self.bot_token, chat_id, text, reply_markup_dict=markup)
+
+            # Проверяем: пользователь отвечает на уточняющий вопрос агента
+            clari = await self._pop_clarification(chat_id)
+            if clari:
+                agent_key = clari.get("agent_key", "marta")
+                question  = clari.get("question", "")
+                orig      = clari.get("original_payload", "")
+                if agent_key == "marta":
+                    # Марта спрашивала сама → переобрабатываем с уточнением
+                    enhanced = f"{orig}\n\n[Уточнение пользователя: {user_text}]"
+                    await reply(f"✅ Продолжаю с учётом уточнения…")
+                    await self._process_text(enhanced, chat_id, reply)
+                else:
+                    # Другой агент (Макс и др.) → повторно ставим задачу с ответом
+                    await enqueue_task(
+                        assigned_agent=agent_key,
+                        payload=f"{orig}\n\n[Ответ на вопрос «{question}»]: {user_text}",
+                        from_agent="user",
+                        chat_id=chat_id,
+                    )
+                    _AGENT_LABEL = {
+                        "max": "🛒 Макс", "peter": "📊 Питер", "kasper": "🔍 Каспер",
+                        "elina": "✍️ Элина", "alex": "🗓️ Алекс", "kevin": "👨‍💻 Кевин",
+                    }
+                    label = _AGENT_LABEL.get(agent_key, agent_key)
+                    await reply(f"✅ Передала ответ {label} — пришлю результат когда готово.")
+                return
 
             if user_text.strip() == "📂 Проекты":
                 await self._cmd_projects(update, context)
