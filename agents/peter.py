@@ -1719,6 +1719,31 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
         total_adv     = sum(float(r["spend"] or 0)   for r in data["adv"])
         drr = round(total_adv / total_revenue * 100, 1) if total_revenue else 0
 
+        # Авто-триггер Peter→Elina: CTR < 1% → ставим задачу Элине
+        low_ctr_names: list[str] = []
+        low_ctr_items = [
+            m for m in adv_data.get("product_metrics", [])
+            if 0 < float(m.get("avg_ctr") or 0) < 1.0
+        ]
+        for m in low_ctr_items[:3]:
+            article = str(m.get("product_id") or m.get("name", "")).strip()
+            if article:
+                try:
+                    await enqueue_task(
+                        assigned_agent="elina",
+                        payload=f"напиши seo для товара {article}",
+                        from_agent="peter",
+                        chat_id=chat_id,
+                    )
+                    low_ctr_names.append(article)
+                except Exception as _e:
+                    logger.warning(f"[Питер/daily_digest] enqueue elina ошибка: {_e}")
+
+        elina_note = (
+            f"\n\n📸 Элина работает над карточками: {', '.join(low_ctr_names)} (низкий CTR)"
+            if low_ctr_names else ""
+        )
+
         prompt = f"""Ежедневный вечерний дайджест магазина. Не более 15 строк.
 
 Период: 7 дней | Выручка: {total_revenue:,.0f} ₽ | Заказов: {total_orders} | ДРР: {drr}%
@@ -1734,7 +1759,7 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
 ⚠️ Срочно (если дефицит стока или критический ДРР — укажи конкретно)
 💡 1-2 главных действия на завтра
 
-Только факты и цифры. Если нет проблем — «Всё в норме»."""
+Только факты и цифры. Если нет проблем — «Всё в норме».{elina_note}"""
 
         try:
             from anthropic import AsyncAnthropic

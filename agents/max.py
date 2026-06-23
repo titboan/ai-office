@@ -4049,15 +4049,25 @@ class MaxAgent(BaseAgent):
             if not alerts:
                 return
 
+            peter = getattr(self, "_peter_agent", None)
+            hint = (
+                "\n\n📊 Питер анализирует ДРР — ответ придёт сейчас"
+                if peter else
+                "\n\n💡 Запроси /drr у Питера для детального анализа"
+            )
             text = (
                 "🔴 <b>Высокий ДРР (&gt; 25%):</b>\n\n"
                 + "\n".join(alerts[:10])
-                + "\n\n💡 Запроси /drr у Питера для детального анализа"
+                + hint
             )
             if len(alerts) > 10:
                 text += f"\n…и ещё {len(alerts) - 10} позиций"
             await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
             logger.info(f"[Макс/drr_alerts] chat={chat_id} алертов: {len(alerts)}")
+
+            if peter is not None:
+                import asyncio as _asyncio
+                _asyncio.create_task(peter.run_drr_for_chat(chat_id, days=7))
         except Exception as e:
             logger.error(f"[Макс/drr_alerts] ошибка: {e}", exc_info=True)
 
