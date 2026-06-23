@@ -54,6 +54,24 @@ export interface DashboardData {
   funnel: FunnelRow[]
 }
 
+export interface TimelineEvent {
+  agent_key: string
+  event_type: string
+  created_at: string
+}
+
+export interface ChainRun {
+  chain_id: string
+  started_at: string
+  duration_sec: number | null
+  status: 'completed' | 'failed' | 'running'
+  events: TimelineEvent[]
+}
+
+export interface TimelineData {
+  chains: ChainRun[]
+}
+
 const API_URL = import.meta.env.VITE_API_URL ?? ''
 
 export async function fetchDashboard(days = 14): Promise<DashboardData> {
@@ -66,6 +84,19 @@ export async function fetchDashboard(days = 14): Promise<DashboardData> {
 
   const tokenParam = urlToken ? `&token=${encodeURIComponent(urlToken)}` : ''
   const res = await fetch(`${API_URL}/api/dashboard?days=${days}${tokenParam}`, { headers })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json()
+}
+
+export async function fetchTimeline(): Promise<TimelineData> {
+  const urlToken = new URLSearchParams(window.location.search).get('token') ?? ''
+  const headers: Record<string, string> = {}
+  if (!urlToken) {
+    const tg = (window as any).Telegram?.WebApp
+    headers['X-Telegram-Init-Data'] = tg?.initData ?? ''
+  }
+  const tokenParam = urlToken ? `?token=${encodeURIComponent(urlToken)}` : ''
+  const res = await fetch(`${API_URL}/api/timeline${tokenParam}`, { headers })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   return res.json()
 }

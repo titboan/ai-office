@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { fetchDashboard, DashboardData } from './api'
+import { fetchDashboard, fetchTimeline, DashboardData, TimelineData } from './api'
 import RevenueChart from './charts/RevenueChart'
 import TopProducts from './charts/TopProducts'
 import DrrGauge from './charts/DrrGauge'
@@ -11,6 +11,7 @@ import NetMarginTable from './charts/NetMarginTable'
 import FunnelChart from './charts/FunnelChart'
 import ReturnsTable from './charts/ReturnsTable'
 import MomChart from './charts/MomChart'
+import ChainTimeline from './charts/ChainTimeline'
 
 type Days = 7 | 14 | 30
 
@@ -19,6 +20,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [days, setDays] = useState<Days>(14)
   const [loading, setLoading] = useState(true)
+  const [timeline, setTimeline] = useState<TimelineData | null>(null)
 
   useEffect(() => {
     const tg = (window as any).Telegram?.WebApp
@@ -27,6 +29,10 @@ export default function App() {
     if (tg?.colorScheme === 'dark') {
       document.documentElement.classList.add('dark')
     }
+  }, [])
+
+  useEffect(() => {
+    fetchTimeline().then(setTimeline).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -141,6 +147,9 @@ export default function App() {
 
           {/* MoM динамика */}
           <MomChart data={data.mom_trends ?? []} />
+
+          {/* Таймлайн цепочек агентов */}
+          {timeline && <ChainTimeline chains={timeline.chains} />}
 
           <div className="text-center text-xs text-gray-400 dark:text-gray-500 pb-2">
             За {data.period_days} дней с {data.date_from}

@@ -700,9 +700,100 @@ async def run_all_async() -> None:
             return web.Response(status=500, text="Internal Error", headers=cors)
         return web.json_response(_to_json_safe({**data, **adv}), headers=cors)
 
+    async def _handle_timeline(request: web.Request) -> web.Response:
+        cors = {"Access-Control-Allow-Origin": _CORS_ORIGIN}
+        if request.method == "OPTIONS":
+            return web.Response(headers={
+                **cors,
+                "Access-Control-Allow-Headers": "X-Telegram-Init-Data",
+                "Access-Control-Allow-Methods": "GET, OPTIONS",
+            })
+        url_token = request.rel_url.query.get("token", "")
+        if url_token and config.DASHBOARD_TOKEN and url_token == config.DASHBOARD_TOKEN:
+            if not config.OWNER_CHAT_ID:
+                return web.Response(status=503, text="OWNER_CHAT_ID not configured", headers=cors)
+            chat_id = config.OWNER_CHAT_ID
+        else:
+            init_data = request.headers.get("X-Telegram-Init-Data", "")
+            parsed = _validate_init_data(init_data, config.MARTA_BOT_TOKEN)
+            if parsed is None:
+                return web.Response(status=401, text="Unauthorized", headers=cors)
+            try:
+                user = _json.loads(parsed.get("user", "{}"))
+                chat_id = int(user["id"])
+            except Exception:
+                return web.Response(status=400, text="Bad Request", headers=cors)
+        try:
+            from db import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    WITH recent_chains AS (
+                        SELECT te.chain_id,
+                               MIN(te.created_at) AS started_at,
+                               MAX(te.created_at) AS last_event_at
+                        FROM task_events te
+                        JOIN tasks t ON te.task_id = t.id
+                        WHERE t.chat_id = $1
+                          AND te.task_id IS NOT NULL
+                          AND te.chain_id IS NOT NULL
+                          AND te.created_at > NOW() - INTERVAL '7 days'
+                        GROUP BY te.chain_id
+                        ORDER BY started_at DESC
+                        LIMIT 15
+                    )
+                    SELECT
+                        te.chain_id,
+                        te.agent_key,
+                        te.event_type,
+                        te.created_at,
+                        rc.started_at         AS chain_started_at,
+                        rc.last_event_at      AS chain_last_event_at,
+                        EXTRACT(EPOCH FROM (rc.last_event_at - rc.started_at))::int AS duration_sec
+                    FROM task_events te
+                    JOIN recent_chains rc ON te.chain_id = rc.chain_id
+                    ORDER BY rc.started_at DESC, te.created_at ASC
+                """, chat_id)
+            chains_map: dict = {}
+            chain_order: list = []
+            for row in rows:
+                cid = row["chain_id"]
+                if cid not in chains_map:
+                    chains_map[cid] = {
+                        "chain_id": cid[:8],
+                        "started_at": row["chain_started_at"].isoformat(),
+                        "duration_sec": row["duration_sec"],
+                        "events": [],
+                    }
+                    chain_order.append(cid)
+                chains_map[cid]["events"].append({
+                    "agent_key": row["agent_key"] or "",
+                    "event_type": row["event_type"],
+                    "created_at": row["created_at"].isoformat(),
+                })
+            result_chains = []
+            for cid in chain_order:
+                chain = chains_map[cid]
+                event_types = {e["event_type"] for e in chain["events"]}
+                created = sum(1 for e in chain["events"] if e["event_type"] == "TASK_CREATED")
+                completed = sum(1 for e in chain["events"] if e["event_type"] == "TASK_COMPLETED")
+                if "TASK_FAILED" in event_types:
+                    chain["status"] = "failed"
+                elif created > 0 and completed >= created:
+                    chain["status"] = "completed"
+                else:
+                    chain["status"] = "running"
+                result_chains.append(chain)
+        except Exception as e:
+            logger.error(f"[timeline] error: {e}", exc_info=True)
+            return web.Response(status=500, text="Internal Error", headers=cors)
+        return web.json_response({"chains": result_chains}, headers=cors)
+
     dash_app = web.Application()
     dash_app.router.add_get("/api/dashboard", _handle_dashboard)
     dash_app.router.add_route("OPTIONS", "/api/dashboard", _handle_dashboard)
+    dash_app.router.add_get("/api/timeline", _handle_timeline)
+    dash_app.router.add_route("OPTIONS", "/api/timeline", _handle_timeline)
     dash_app.router.add_get("/health", lambda r: web.Response(text="ok"))
     dash_runner = web.AppRunner(dash_app)
     await dash_runner.setup()
