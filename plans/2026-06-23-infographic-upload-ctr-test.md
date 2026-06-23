@@ -11,7 +11,7 @@
 
 ## Фазы
 
-### Фаза 1 — Питер: расширенный алерт с брифом [ ]
+### Фаза 1 — Питер: расширенный алерт с брифом [x]
 - `run_daily_digest` и `_check_ctr_for_alert` (или enqueue_elina): при CTR < 1%
   отправить отдельный алерт в Telegram с:
   - Артикул, название, маркетплейс
@@ -20,14 +20,14 @@
   - Инструкция: "Пришли новую инфографику в ответ на это сообщение"
 - Сохранить в Redis: `pending_infographic:{chat_id}` → JSON {article, marketplace, ctr_before, task_message_id}  TTL 7 дней
 
-### Фаза 2 — Марта: приём фото/документа [ ]
+### Фаза 2 — Марта: приём фото/документа [x]
 - В `handle_message` добавить обработку `message.photo` и `message.document`
 - Проверить Redis `pending_infographic:{chat_id}` — если есть:
   - Показать превью и кнопки: [✅ Загрузить для {article} на {marketplace}] [❌ Отмена]
 - Если Redis пустой: "Используй /upload_photo артикул" (fallback)
 - Callback: подтверждение → enqueue задачу Максу с file_id + article + marketplace
 
-### Фаза 3 — Макс: загрузка фото на маркетплейс [ ]
+### Фаза 3 — Макс: загрузка фото на маркетплейс [x]
 - `cmd_upload_product_photo(article, file_id, marketplace, chat_id)`
 - Скачать файл из Telegram через bot.get_file() → bytes
 - WB: `POST https://content-api.wildberries.ru/content/v3/media/save`
