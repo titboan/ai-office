@@ -649,12 +649,47 @@ class PeterAgent(BaseAgent):
             """, chat_id, date_from)
 
         return {
+            abc_rows = await conn.fetch("""
+                SELECT
+                    o.product_id,
+                    COALESCE(m.display_name, MAX(o.product_name)) AS name,
+                    SUM(o.seller_price * o.quantity)::numeric(12,2) AS revenue,
+                    SUM(o.quantity)::int AS qty
+                FROM marketplace_orders o
+                LEFT JOIN product_mapping m ON (
+                    m.wb_article = o.product_id OR m.ozon_sku = o.product_id
+                )
+                WHERE o.chat_id = $1 AND o.order_date >= $2
+                GROUP BY o.product_id, m.display_name
+                ORDER BY revenue DESC
+            """, chat_id, date_from)
+
+        total_rev = sum(float(r["revenue"] or 0) for r in abc_rows)
+        abc_data: list[dict] = []
+        if total_rev > 0:
+            cumulative = 0.0
+            for r in abc_rows:
+                rev = float(r["revenue"] or 0)
+                cumulative += rev
+                cum_pct = cumulative / total_rev * 100
+                abc_data.append({
+                    "name":           r["name"],
+                    "product_id":     r["product_id"],
+                    "revenue":        rev,
+                    "qty":            int(r["qty"] or 0),
+                    "share_pct":      round(rev / total_rev * 100, 1),
+                    "cumulative_pct": round(cum_pct, 1),
+                    "group":          "A" if cum_pct <= 80 else ("B" if cum_pct <= 95 else "C"),
+                })
+
+        return {
             "period_days":     days,
             "date_from":       date_from,
             "trend":           [dict(r) for r in trend],
             "product_metrics": [dict(r) for r in product_metrics],
             "stock_velocity":  [dict(r) for r in stock_velocity],
             "funnel":          [dict(r) for r in funnel],
+            "abc_data":        abc_data,
         }
 
     _PETER_NEXT_REPORT = InlineKeyboardMarkup([[
@@ -1829,50 +1864,14 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
 
         await update.message.reply_text(f"🔤 ABC-анализ за {days} дней…")
 
-        from db import get_pool
-        pool = await get_pool()
-        date_from = (datetime.now(_UTC) - timedelta(days=days)).date()
+        adv = await self._collect_advanced_data(chat_id, days=days)
+        abc_data = adv.get("abc_data", [])
 
-        async with pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT
-                    o.product_id,
-                    COALESCE(m.display_name, MAX(o.product_name)) AS name,
-                    SUM(o.seller_price * o.quantity)::numeric(12,2) AS revenue,
-                    SUM(o.quantity)::int AS qty
-                FROM marketplace_orders o
-                LEFT JOIN product_mapping m ON (
-                    m.wb_article = o.product_id OR m.ozon_sku = o.product_id
-                )
-                WHERE o.chat_id = $1 AND o.order_date >= $2
-                GROUP BY o.product_id, m.display_name
-                ORDER BY revenue DESC
-            """, chat_id, date_from)
-
-        if not rows:
+        if not abc_data:
             await update.message.reply_text("❌ Нет данных о заказах. Запусти /sync у Макса.")
             return
 
-        total_revenue = sum(float(r["revenue"] or 0) for r in rows)
-        if total_revenue == 0:
-            await update.message.reply_text("❌ Нет данных (выручка = 0).")
-            return
-
-        cumulative = 0.0
-        abc_data = []
-        for r in rows:
-            rev = float(r["revenue"] or 0)
-            cumulative += rev
-            cum_pct = cumulative / total_revenue * 100
-            abc_data.append({
-                "name": r["name"],
-                "product_id": r["product_id"],
-                "revenue": rev,
-                "qty": int(r["qty"] or 0),
-                "share_pct": round(rev / total_revenue * 100, 1),
-                "cumulative_pct": round(cum_pct, 1),
-                "group": "A" if cum_pct <= 80 else ("B" if cum_pct <= 95 else "C"),
-            })
+        total_revenue = sum(r["revenue"] for r in abc_data)
 
         prompt = (
             f"ABC-анализ товаров за {days} дней. Общая выручка: {total_revenue:,.0f} ₽.\n\n"

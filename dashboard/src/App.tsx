@@ -11,6 +11,7 @@ import NetMarginTable from './charts/NetMarginTable'
 import FunnelChart from './charts/FunnelChart'
 import ReturnsTable from './charts/ReturnsTable'
 import MomChart from './charts/MomChart'
+import AbcTable from './charts/AbcTable'
 import ChainTimeline from './charts/ChainTimeline'
 
 type Days = 7 | 14 | 30
@@ -144,6 +145,9 @@ export default function App() {
 
           {/* Остатки */}
           <StockTable data={data.stock_velocity} />
+
+          {/* ABC-анализ */}
+          <AbcTable data={data.abc_data ?? []} />
 
           {/* MoM динамика */}
           <MomChart data={data.mom_trends ?? []} />

@@ -28,6 +28,16 @@ export interface ReturnRow {
   returns_count: number; return_amount: number; return_rate: number
 }
 export interface KwRow { keyword: string; position: number; search_count: number; ctr: number }
+export interface AbcRow {
+  product_id: string
+  name: string
+  revenue: number
+  qty: number
+  share_pct: number
+  cumulative_pct: number
+  group: 'A' | 'B' | 'C'
+}
+
 export interface FunnelRow {
   product_id: string; name: string; marketplace: string
   views: number; add_to_cart: number; orders_count: number; buyouts: number
@@ -52,6 +62,7 @@ export interface DashboardData {
   returns_top: ReturnRow[]
   kw_top: KwRow[]
   funnel: FunnelRow[]
+  abc_data: AbcRow[]
 }
 
 export interface TimelineEvent {

@@ -1,0 +1,78 @@
+import { AbcRow } from '../api'
+
+const GROUP_STYLE: Record<string, string> = {
+  A: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
+  B: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400',
+  C: 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
+}
+
+const GROUP_ROW: Record<string, string> = {
+  A: 'bg-green-50/40 dark:bg-green-900/10',
+  B: 'bg-yellow-50/40 dark:bg-yellow-900/10',
+  C: '',
+}
+
+export default function AbcTable({ data }: { data: AbcRow[] }) {
+  if (!data || data.length === 0) return null
+
+  const countA = data.filter(r => r.group === 'A').length
+  const countB = data.filter(r => r.group === 'B').length
+  const countC = data.filter(r => r.group === 'C').length
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-sm font-semibold text-gray-700 dark:text-gray-200">🔤 ABC-анализ</div>
+        <div className="flex gap-1 text-xs">
+          <span className={`px-2 py-0.5 rounded-full font-medium ${GROUP_STYLE.A}`}>A: {countA}</span>
+          <span className={`px-2 py-0.5 rounded-full font-medium ${GROUP_STYLE.B}`}>B: {countB}</span>
+          <span className={`px-2 py-0.5 rounded-full font-medium ${GROUP_STYLE.C}`}>C: {countC}</span>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-gray-400 dark:text-gray-500 border-b border-gray-100 dark:border-gray-700">
+              <th className="text-left py-1 pr-2">Товар</th>
+              <th className="text-right py-1 pr-2">Выручка</th>
+              <th className="text-right py-1 pr-2">Доля</th>
+              <th className="text-right py-1 pr-2">Накоп.</th>
+              <th className="text-center py-1">Гр.</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((row, i) => (
+              <tr
+                key={`${row.product_id}-${i}`}
+                className={`border-b border-gray-50 dark:border-gray-700/50 ${GROUP_ROW[row.group]}`}
+              >
+                <td className="py-1.5 pr-2 max-w-[140px] truncate text-gray-700 dark:text-gray-300">
+                  {row.name || row.product_id}
+                </td>
+                <td className="py-1.5 pr-2 text-right text-gray-600 dark:text-gray-400 tabular-nums">
+                  {(row.revenue / 1000).toFixed(0)}к
+                </td>
+                <td className="py-1.5 pr-2 text-right text-gray-600 dark:text-gray-400 tabular-nums">
+                  {row.share_pct}%
+                </td>
+                <td className="py-1.5 pr-2 text-right text-gray-500 dark:text-gray-500 tabular-nums">
+                  {row.cumulative_pct}%
+                </td>
+                <td className="py-1.5 text-center">
+                  <span className={`px-1.5 py-0.5 rounded font-bold ${GROUP_STYLE[row.group]}`}>
+                    {row.group}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-2 text-xs text-gray-400 dark:text-gray-500">
+        A = 80% выручки · B = 95% · C = остальные
+      </div>
+    </div>
+  )
+}
