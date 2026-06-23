@@ -1246,21 +1246,25 @@ class PeterAgent(BaseAgent):
             velocity_raw = await conn.fetch("""
                 SELECT o.marketplace,
                        CASE WHEN o.marketplace = 'ozon'
-                            THEN COALESCE(mm.ozon_offer_id, o.product_id)
+                            THEN COALESCE(moz.ozon_offer_id, o.product_id)
                             ELSE o.product_id END AS key,
-                       COALESCE(m.display_name, MAX(o.product_name)) AS name,
+                       COALESCE(mwb.display_name, moz.display_name, MAX(o.product_name)) AS name,
                        ROUND(SUM(o.quantity)::numeric / $2, 2) AS daily_rate
                 FROM marketplace_orders o
-                LEFT JOIN product_mapping mm ON mm.ozon_sku = o.product_id
-                LEFT JOIN product_mapping m
-                       ON (o.marketplace = 'wb'   AND m.wb_article    = o.product_id)
-                       OR (o.marketplace = 'ozon' AND m.ozon_sku      = o.product_id)
+                LEFT JOIN LATERAL (
+                    SELECT ozon_offer_id, display_name FROM product_mapping
+                    WHERE ozon_sku = o.product_id LIMIT 1
+                ) moz ON o.marketplace = 'ozon'
+                LEFT JOIN LATERAL (
+                    SELECT display_name FROM product_mapping
+                    WHERE wb_article = o.product_id LIMIT 1
+                ) mwb ON o.marketplace = 'wb'
                 WHERE o.chat_id = $1 AND o.order_date >= $3
                 GROUP BY o.marketplace,
                          CASE WHEN o.marketplace = 'ozon'
-                              THEN COALESCE(mm.ozon_offer_id, o.product_id)
+                              THEN COALESCE(moz.ozon_offer_id, o.product_id)
                               ELSE o.product_id END,
-                         m.display_name
+                         COALESCE(mwb.display_name, moz.display_name)
                 HAVING SUM(o.quantity) > 0
             """, chat_id, days, date_from)
 
@@ -1343,18 +1347,20 @@ class PeterAgent(BaseAgent):
 ДАННЫЕ ПО ОСТАТКАМ И ПРОДАЖАМ (период анализа: {days} дней):
 {json.dumps(supply_data, ensure_ascii=False, indent=2)}
 
-ФОРМАТ ОТВЕТА:
-Для каждого товара: название | площадка | темп продаж/день
-Для каждого кластера: кластер | остаток (шт) | дней осталось | к поставке (шт) | приоритет
+ФОРМАТ ОТВЕТА (мобильный, без широких таблиц):
+
+**Название товара** (Площадка) — X шт/день
+🔴 Кластер А: 50 шт, 3 дн → везти 200 шт
+🟡 Кластер Б: 120 шт, 12 дн → везти 80 шт
+🟢 Кластер В: 400 шт, 40 дн → не нужно
+Итого: 280 шт
 
 ПРАВИЛА:
-- days_left < 7  → 🔴 СРОЧНО (везти немедленно)
-- days_left 7-20 → 🟡 Скоро  (ближайшая поставка)
-- days_left > 20 → 🟢 Норма  (можно не везти)
-- qty_to_send = 0 → пропустить кластер или написать «не нужно»
-- Итого по товару: суммарный объём поставки в штуках
-- В конце: топ-3 самых срочных позиции (товар + кластер)
-- Если данных нет (нет синхронизации) — предупреди и напиши /sync у Макса"""
+- days_left < 7  → 🔴 СРОЧНО
+- days_left 7-20 → 🟡 Скоро
+- days_left > 20 → 🟢 Норма (пропустить если qty_to_send = 0)
+- В конце: топ-3 самых срочных (товар + кластер + сколько шт)
+- Если данных нет — предупреди и напиши /sync у Макса"""
 
         await update.message.reply_text("🤔 Составляю план поставки…")
         try:
