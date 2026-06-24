@@ -813,6 +813,10 @@ class PeterAgent(BaseAgent):
 
         chat_id = getattr(self, "_current_chat_id", None) or 0
 
+        import re as _re
+        _days_match = _re.search(r"за\s+(\d+)\s+дн", task.lower())
+        _days = int(_days_match.group(1)) if _days_match else 14
+
         _seo_audit_kw = (
             "seo аудит", "аудит seo", "seo анализ", "анализ seo",
             "слабые карточки", "карточки переделать", "переделать карточки",
@@ -836,7 +840,7 @@ class PeterAgent(BaseAgent):
                     await self._redis_set(f"seo_audit:{chat_id}", articles_payload, ttl=3600)
             except Exception as e:
                 logger.warning(f"[Питер] handle_task seo_audit: ошибка данных: {e}")
-                prompt = f"Аналитическая задача от {from_agent}: {task}"
+                prompt = ""
         else:
             prompt = ""
 
@@ -851,23 +855,22 @@ class PeterAgent(BaseAgent):
                 )
             except Exception as e:
                 logger.warning(f"[Питер] handle_task supply: ошибка данных: {e}")
-                prompt = f"Аналитическая задача от {from_agent}: {task}"
-        else:
-            prompt = ""
+                prompt = ""
 
         data_str = ""
         if chat_id and not prompt:
             try:
-                data = await self._collect_data(chat_id, days=14)
-                adv_data = await self._collect_advanced_data(chat_id, days=14)
+                data = await self._collect_data(chat_id, days=_days)
+                adv_data = await self._collect_advanced_data(chat_id, days=_days)
                 data_str = (
-                    f"\n\nБАЗОВЫЕ ДАННЫЕ (14 дней):\n"
+                    f"\n\nБАЗОВЫЕ ДАННЫЕ ({_days} дней):\n"
                     f"{json.dumps(data, ensure_ascii=False, default=str, indent=2)}\n\n"
                     f"РАСШИРЕННЫЕ ДАННЫЕ (тренд, CTR/ROAS, остатки):\n"
                     f"{json.dumps(adv_data, ensure_ascii=False, default=str, indent=2)}"
                 )
             except Exception as e:
                 logger.warning(f"[Питер] handle_task: ошибка сбора данных: {e}")
+                data_str = f"\n\n⚠️ Ошибка загрузки данных из БД: {e}\nСообщи пользователю что данные временно недоступны и предложи попробовать позже."
 
         if not prompt:
             prompt = f"Аналитическая задача от {from_agent}: {task}{data_str}"
