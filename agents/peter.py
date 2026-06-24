@@ -511,20 +511,43 @@ class PeterAgent(BaseAgent):
                 LIMIT 10
             """, chat_id, date_from)
 
+            # 11. Эффект инфографики — CTR до/после обновления
+            infographic_ctr = await conn.fetch("""
+                SELECT
+                    COALESCE(m.display_name, m.wb_article) AS name,
+                    m.infographic_updated_at::date          AS updated_at,
+                    ROUND(AVG(CASE WHEN p.stat_date <  m.infographic_updated_at::date
+                                        AND p.stat_date >= (m.infographic_updated_at - INTERVAL '14 days')::date
+                                   THEN p.ctr END)::numeric, 2) AS ctr_before,
+                    ROUND(AVG(CASE WHEN p.stat_date >= m.infographic_updated_at::date
+                                   THEN p.ctr END)::numeric, 2) AS ctr_after,
+                    COUNT(CASE WHEN p.stat_date >= m.infographic_updated_at::date THEN 1 END)::int AS days_after
+                FROM product_mapping m
+                LEFT JOIN product_adv_stats p
+                       ON (p.product_id = m.wb_nm_id::text OR p.product_id = m.ozon_sku)
+                      AND p.chat_id = $1
+                      AND p.stat_date >= (m.infographic_updated_at - INTERVAL '14 days')::date
+                WHERE m.chat_id = $1 AND m.infographic_updated_at IS NOT NULL
+                GROUP BY m.display_name, m.wb_article, m.infographic_updated_at
+                ORDER BY m.infographic_updated_at DESC
+                LIMIT 10
+            """, chat_id)
+
         return {
-            "period_days":  days,
-            "date_from":    date_from,
-            "revenue":      [dict(r) for r in revenue],
-            "top_products": [dict(r) for r in top_products],
-            "margin_wb":    [dict(r) for r in margin_wb],
-            "margin_ozon":  [dict(r) for r in margin_ozon],
-            "net_margin":   [dict(r) for r in net_margin],
-            "adv":          [dict(r) for r in adv],
-            "low_stocks":   [dict(r) for r in low_stocks],
-            "mom_trends":   [dict(r) for r in mom],
-            "returns_top":  [dict(r) for r in returns_top],
-            "kw_top":       [dict(r) for r in kw_top],
-            "regions_wb":   [dict(r) for r in regions_wb],
+            "period_days":      days,
+            "date_from":        date_from,
+            "revenue":          [dict(r) for r in revenue],
+            "top_products":     [dict(r) for r in top_products],
+            "margin_wb":        [dict(r) for r in margin_wb],
+            "margin_ozon":      [dict(r) for r in margin_ozon],
+            "net_margin":       [dict(r) for r in net_margin],
+            "adv":              [dict(r) for r in adv],
+            "low_stocks":       [dict(r) for r in low_stocks],
+            "mom_trends":       [dict(r) for r in mom],
+            "returns_top":      [dict(r) for r in returns_top],
+            "kw_top":           [dict(r) for r in kw_top],
+            "regions_wb":       [dict(r) for r in regions_wb],
+            "infographic_ctr":  [dict(r) for r in infographic_ctr],
         }
 
     async def _collect_advanced_data(self, chat_id: int, days: int = 14) -> dict:
@@ -924,6 +947,13 @@ class PeterAgent(BaseAgent):
                 f"{json.dumps(comp_data, ensure_ascii=False, default=str, indent=2)}"
             )
 
+        infographic_str = ""
+        if data.get("infographic_ctr"):
+            infographic_str = (
+                f"\n\nЭФФЕКТ ИНФОГРАФИКИ (CTR до/после обновления):\n"
+                f"{json.dumps(data['infographic_ctr'], ensure_ascii=False, default=str, indent=2)}"
+            )
+
         prompt = f"""Проанализируй данные магазинов за последние {days} дней.
 {goal_str}
 
@@ -931,7 +961,7 @@ class PeterAgent(BaseAgent):
 {json.dumps(data, ensure_ascii=False, default=str, indent=2)}
 
 РАСШИРЕННЫЕ ДАННЫЕ (тренд, CTR/ROAS по товарам, остатки):
-{json.dumps(adv_data, ensure_ascii=False, default=str, indent=2)}{mom_str}{returns_str}{kw_str}{comp_str}
+{json.dumps(adv_data, ensure_ascii=False, default=str, indent=2)}{mom_str}{returns_str}{kw_str}{comp_str}{infographic_str}
 
 ВАЖНО:
 - Данные по заказам, не по выкупам. Реальная выручка ниже на % возвратов.
@@ -949,6 +979,7 @@ class PeterAgent(BaseAgent):
 - mom_trends — помесячная выручка и заказы за последние 60 дней. Если 2 месяца — посчитай MoM рост: (текущий месяц / предыдущий − 1) × 100%. Выведи одной строкой в блоке отчёта.
 - returns_top — товары с наибольшей суммой возвратов за 30 дней (если есть данные после /sync_returns). Укажи топ-3 по return_amount и возможные причины. Если пусто — данные не синхронизированы (/sync_returns у Макса).
 - kw_top — топ ключевых слов WB по охвату (если есть данные после /sync_keywords). Укажи ключи с лучшей позицией (чем меньше число, тем выше в поиске) и наибольшим search_count. Если пусто — данные не синхронизированы (/sync_keywords у Макса).
+- infographic_ctr — эффект замены инфографики: ctr_before/ctr_after в %. days_after = сколько дней прошло после загрузки. Если ctr_after IS NULL или days_after < 7 — данных ещё недостаточно (накапливается), напиши "CTR ещё накапливается (X дн. из 14)". Если есть оба значения — покажи дельту: было → стало (+X% или −X%). Блок выводить только если список непустой.
 {"- Цель: " + str(goal) + " ₽/день суммарно WB+Ozon." if goal else ""}
 {"- ЦЕНЫ КОНКУРЕНТОВ: median_price — медиана топ-100 товаров WB по ключевому запросу ниши. Сравни свои цены (из product_mapping через adv_data) с медианой. Если цена выше медианы >15% — укажи это как риск; если ниже — возможность поднять." if comp_data else ""}
 
