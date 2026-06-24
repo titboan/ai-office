@@ -1568,56 +1568,55 @@ class MartaAgent(BaseAgent):
         await self._proxy_cmd(update, context, "max", "Обработай новые отзывы на маркетплейсах")
 
     async def cmd_proxy_sync(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "max", "Синхронизируй данные: заказы, остатки, финансы")
+        await self._proxy_cmd(update, context, "max", "__sync__")
 
     async def cmd_proxy_sync_fin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "max", "синхронизируй финансовые отчёты WB и Ozon за 90 дней")
+        await self._proxy_cmd(update, context, "max", "__sync_fin__")
 
     async def cmd_proxy_sync_adv(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "max", "синхронизируй статистику рекламных кампаний WB и Ozon")
+        await self._proxy_cmd(update, context, "max", "__sync_adv__")
 
     async def cmd_proxy_sync_funnel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "max", "синхронизируй воронку конверсии карточек")
+        await self._proxy_cmd(update, context, "max", "__sync_funnel__")
 
     async def cmd_proxy_sync_returns(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "max", "синхронизируй аналитику возвратов WB и Ozon")
+        await self._proxy_cmd(update, context, "max", "__sync_returns__")
 
     async def cmd_proxy_sync_cards(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "max", "синхронизируй контент карточек товаров")
+        await self._proxy_cmd(update, context, "max", "__sync_cards__")
 
     async def cmd_proxy_sync_keywords(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "max", "синхронизируй позиции ключевых слов WB")
+        await self._proxy_cmd(update, context, "max", "__sync_keywords__")
 
     async def cmd_proxy_sync_sku(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "max", "сопоставь артикулы WB и Ozon (sync_sku)")
+        await self._proxy_cmd(update, context, "max", "__sync_sku__")
 
     async def cmd_proxy_questions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "max", "покажи все неотвеченные вопросы покупателей")
+        await self._proxy_cmd(update, context, "max", "__questions__")
 
     async def cmd_proxy_pending(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "max", "покажи отзывы ожидающие модерации")
+        await self._proxy_cmd(update, context, "max", "__pending__")
 
     async def cmd_proxy_products(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "max", "покажи список товаров с маппингом WB и Ozon")
+        await self._proxy_cmd(update, context, "max", "__products__")
 
     async def cmd_proxy_shop_kpi(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "max", "покажи KPI магазина: рейтинг продавца, штрафы, показатели")
+        await self._proxy_cmd(update, context, "max", "__shop_kpi__")
 
     async def cmd_proxy_data_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "max", "покажи статус синхронизации данных: что свежее, что устарело")
+        await self._proxy_cmd(update, context, "max", "__data_status__")
 
     async def cmd_proxy_shops(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "max", "покажи список подключённых магазинов WB и Ozon")
+        await self._proxy_cmd(update, context, "max", "__shops__")
 
     async def cmd_proxy_seo_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "max", "проверь падение позиций ключевых слов (≥10 мест) — SEO-алерты")
+        await self._proxy_cmd(update, context, "max", "__seo_check__")
 
     async def cmd_proxy_bid_adjust(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "max", "рекомендации по рекламным ставкам на основе ДРР — bid_adjust")
+        await self._proxy_cmd(update, context, "max", "__bid_adjust__")
 
     async def cmd_proxy_margin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        args = " ".join(context.args) if context.args else ""
-        await self._proxy_cmd(update, context, "max", f"быстрая проверка маржи по товару {args}".strip())
+        await self._proxy_cmd(update, context, "max", "__margin__")
 
     async def cmd_proxy_apply_prices(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "max", "применить рекомендованные цены от Питера — apply_prices")

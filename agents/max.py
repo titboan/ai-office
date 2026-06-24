@@ -241,6 +241,58 @@ class MaxAgent(BaseAgent):
                 )
         except (ValueError, TypeError, KeyError):
             pass
+        if task.startswith("__"):
+            return await self._dispatch_queue_task(task, self._current_chat_id or 0)
+        return await self.think(task, chat_id=0, is_task=True)
+
+    async def _dispatch_queue_task(self, task: str, chat_id: int) -> str:
+        """Dispatch __keyword__ prefixed tasks coming from Marta proxy."""
+        if task == "__shops__":
+            return await self._shops_text(chat_id)
+        if task == "__products__":
+            return await self._catalog_text(chat_id)
+        if task == "__data_status__":
+            return await self._data_status_text(chat_id)
+        if task == "__shop_kpi__":
+            return await self._shop_kpi_text(chat_id)
+        if task == "__seo_check__":
+            return await self._seo_check_text(chat_id)
+        if task == "__bid_adjust__":
+            return await self._bid_adjust_text(chat_id)
+        if task == "__margin__" or task.startswith("__margin__ "):
+            return await self._margin_check_text(chat_id)
+        if task == "__sync__":
+            await self.sync_marketplace_data(chat_id)
+            return "✅ Данные синхронизированы: заказы, остатки, продажи. Запусти /report у Питера для анализа."
+        if task == "__sync_fin__":
+            res = await self.sync_financial_report(chat_id)
+            return f"✅ Финансовый отчёт: WB {res.get('wb', 0)} зап., Ozon {res.get('ozon', 0)} зап."
+        if task == "__sync_adv__":
+            await self.sync_ad_stats(chat_id)
+            return "✅ Рекламная статистика обновлена в marketplace_adv_stats."
+        if task == "__sync_funnel__":
+            res = await self.sync_funnel(chat_id)
+            return f"✅ Воронка: WB {res.get('wb', 0)} зап., Ozon {res.get('ozon', 0)} зап."
+        if task == "__sync_returns__":
+            res = await self.sync_returns(chat_id)
+            return f"✅ Возвраты: WB {res.get('wb', 0)} зап., Ozon {res.get('ozon', 0)} зап."
+        if task == "__sync_cards__":
+            res = await self.sync_cards(chat_id)
+            return f"✅ Карточки: WB {res.get('wb', 0)} зап., Ozon {res.get('ozon', 0)} зап."
+        if task == "__sync_keywords__":
+            return "⚠️ WB закрыл API ключевых слов (404). Позиции недоступны — следи вручную в WB Analytics."
+        if task == "__sync_sku__":
+            return "🔄 /sync_sku требует мастера настройки — запусти напрямую у Макса."
+        if task == "__questions__":
+            return (
+                "💬 Вопросы покупателей: кнопки одобрения пока работают только в чате Макса.\n"
+                "Временно: используй /questions напрямую у Макса (Phase 2 — выйдет через Марту)."
+            )
+        if task == "__pending__":
+            return (
+                "⏳ Отзывы на модерации: кнопки одобрения пока работают только в чате Макса.\n"
+                "Временно: используй /pending напрямую у Макса (Phase 2 — выйдет через Марту)."
+            )
         return await self.think(task, chat_id=0, is_task=True)
 
     async def _upload_infographic(
@@ -2012,10 +2064,7 @@ class MaxAgent(BaseAgent):
             return [dict(r) | {"date_old": str(date_old), "date_new": str(date_new)}
                     for r in rows]
 
-    async def cmd_seo_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/seo_check — алерт при падении позиций ключевых слов WB."""
-        chat_id = update.effective_user.id
-        await update.message.reply_text("🔍 Проверяю позиции ключевых слов…")
+    async def _seo_check_text(self, chat_id: int) -> str:
         from db import get_pool
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -2023,23 +2072,15 @@ class MaxAgent(BaseAgent):
                 "SELECT COUNT(*) FROM product_search_keywords WHERE chat_id=$1", chat_id
             )
         if not cnt:
-            await update.message.reply_text(
+            return (
                 "⚠️ <b>Нет данных о позициях</b>\n\n"
                 "WB закрыл API ключевых слов (404). Данные появятся после возобновления.\n"
-                "Следи за позициями вручную в WB Analytics.",
-                parse_mode="HTML",
+                "Следи за позициями вручную в WB Analytics."
             )
-            return
         drops = await self._check_seo_drops(chat_id)
         threshold = getattr(config, "SEO_POSITION_DROP_THRESHOLD", 10)
         if not drops:
-            await update.message.reply_text(
-                f"✅ <b>Позиции стабильны</b>\n\n"
-                f"Падений ≥{threshold} мест не обнаружено.\n"
-                f"Данные: {drops[0]['date_old'] if drops else '—'} → сейчас",
-                parse_mode="HTML",
-            )
-            return
+            return f"✅ <b>Позиции стабильны</b>\n\nПадений ≥{threshold} мест не обнаружено."
         lines = [f"📉 <b>Падения позиций WB (≥{threshold} мест)</b>\n"]
         for d in drops[:20]:
             lines.append(
@@ -2049,7 +2090,13 @@ class MaxAgent(BaseAgent):
         if len(drops) > 20:
             lines.append(f"\n…и ещё {len(drops) - 20} ключевых слов")
         lines.append(f"\n<i>Сравнение: {drops[0]['date_old']} → {drops[0]['date_new']}</i>")
-        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        return "\n".join(lines)
+
+    async def cmd_seo_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/seo_check — алерт при падении позиций ключевых слов WB."""
+        await update.message.reply_text("🔍 Проверяю позиции ключевых слов…")
+        text = await self._seo_check_text(update.effective_user.id)
+        await update.message.reply_text(text, parse_mode="HTML")
 
     async def cmd_apply_prices(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/apply_prices — показать рекомендованные цены от Питера и применить."""
@@ -2296,30 +2343,32 @@ class MaxAgent(BaseAgent):
 
         return results
 
+    async def _shop_kpi_text(self, chat_id: int) -> str:
+        results = await self.sync_shop_kpi(chat_id)
+        if not results:
+            return "⚠️ Данные KPI недоступны (магазины не подключены или API не поддерживается)."
+        lines = ["<b>Рейтинг продавца</b>"]
+        for mp, kpi in results.items():
+            label = "🟣 WB" if mp == "wb" else "🔵 Ozon"
+            rating = kpi.get("rating") or 0
+            ret    = kpi.get("return_pct") or 0
+            cancel = kpi.get("cancellation_pct") or 0
+            penalty = kpi.get("penalty_count") or 0
+            lines.append(
+                f"\n{label}\n"
+                f"⭐ Рейтинг: <b>{rating:.1f}</b>\n"
+                f"↩️ Возвраты: {ret:.1f}%\n"
+                f"🚫 Отмены: {cancel:.1f}%\n"
+                f"⚠️ Штрафы: {penalty}"
+            )
+        return "\n".join(lines)
+
     async def cmd_shop_kpi(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/shop_kpi — рейтинг и KPI продавца на маркетплейсах."""
         chat_id = update.effective_user.id
         await update.message.reply_text("📊 Получаю рейтинг продавца…")
         try:
-            results = await self.sync_shop_kpi(chat_id)
-            if not results:
-                await update.message.reply_text("⚠️ Данные KPI недоступны (магазины не подключены или API не поддерживается).")
-                return
-            lines = ["<b>Рейтинг продавца</b>"]
-            for mp, kpi in results.items():
-                label = "🟣 WB" if mp == "wb" else "🔵 Ozon"
-                rating = kpi.get("rating") or 0
-                ret    = kpi.get("return_pct") or 0
-                cancel = kpi.get("cancellation_pct") or 0
-                penalty = kpi.get("penalty_count") or 0
-                lines.append(
-                    f"\n{label}\n"
-                    f"⭐ Рейтинг: <b>{rating:.1f}</b>\n"
-                    f"↩️ Возвраты: {ret:.1f}%\n"
-                    f"🚫 Отмены: {cancel:.1f}%\n"
-                    f"⚠️ Штрафы: {penalty}"
-                )
-            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+            await update.message.reply_text(await self._shop_kpi_text(chat_id), parse_mode="HTML")
         except Exception as e:
             logger.error(f"[Макс/shop_kpi] {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
@@ -2946,15 +2995,11 @@ class MaxAgent(BaseAgent):
         label = shop_name or _MP_LABELS.get(mp, mp)
         await update.message.reply_text(f"✅ Магазин <b>{label}</b> подключён.", parse_mode="HTML")
 
-    async def cmd_shops(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        from telegram import Chat
-        if update.effective_chat and update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
-            logger.debug(f"[max:handler] cmd_shops вызван из группы — текст: {update.message.text[:50] if update.message and update.message.text else '?'}")
+    async def _shops_text(self, chat_id: int) -> str:
         from db import get_marketplace_shops
-        shops = await get_marketplace_shops(update.effective_user.id)
+        shops = await get_marketplace_shops(chat_id)
         if not shops:
-            await update.message.reply_text("Магазинов нет. Используй /start чтобы подключить.")
-            return
+            return "Магазинов нет. Используй /start чтобы подключить."
         lines = ["🛒 <b>Ваши магазины:</b>\n"]
         for s in shops:
             mp_label = _MP_LABELS.get(s["marketplace"], s["marketplace"])
@@ -2963,7 +3008,15 @@ class MaxAgent(BaseAgent):
             lines.append(f"• <b>{name}</b> ({mp_label}{client}) — ID {s['id']}")
         lines.append("\nДобавить: /add_shop ozon &lt;token&gt; &lt;client_id&gt; [название]")
         lines.append("Реклама Ozon: /set_performance &lt;client_id&gt; &lt;perf_id&gt; &lt;perf_secret&gt;")
-        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        return "\n".join(lines)
+
+    async def cmd_shops(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from telegram import Chat
+        if update.effective_chat and update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
+            logger.debug(f"[max:handler] cmd_shops вызван из группы — текст: {update.message.text[:50] if update.message and update.message.text else '?'}")
+        await update.message.reply_text(
+            await self._shops_text(update.effective_user.id), parse_mode="HTML"
+        )
 
     async def cmd_set_performance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/set_performance <ozon_client_id> <perf_client_id> <perf_secret> — привязать Ozon Performance credentials к магазину."""
@@ -4748,6 +4801,24 @@ class MaxAgent(BaseAgent):
 
         return len(suggestions[:8])
 
+    async def _bid_adjust_text(self, chat_id: int) -> str:
+        suggestions = await self._collect_bid_suggestions(chat_id)
+        if not suggestions:
+            return (
+                "✅ Все ставки выглядят нормально — ДРР в допустимых пределах.\n\n"
+                "Убедись что синхронизирована реклама (/sync_adv)."
+            )
+        lines = ["🎯 <b>Рекомендации по ставкам</b>\n"]
+        for s in suggestions[:8]:
+            arrow = "📉 Снизить" if s["direction"] == "down" else "📈 Поднять"
+            mp_label = "🟣 WB" if s["marketplace"] == "wb" else "🔵 Ozon"
+            lines.append(
+                f"• {mp_label} <b>{s['name']}</b> — ДРР {s['drr']:.0f}%: {arrow} ставку на {s['delta_pct']}%\n"
+                f"  {s['reason']}"
+            )
+        lines.append("\n<i>Для применения: /bid_adjust (кнопки выйдут через Марту в Phase 2).</i>")
+        return "\n".join(lines)
+
     async def cmd_bid_adjust(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -4882,51 +4953,53 @@ class MaxAgent(BaseAgent):
         """/help — справочник всех команд."""
         await update.message.reply_text(_HELP_TEXT, parse_mode="HTML")
 
+    async def _data_status_text(self, chat_id: int) -> str:
+        from db import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT 'Заказы'        AS label, COUNT(*)          AS cnt,
+                       MAX(created_at) AS last_ts
+                FROM marketplace_orders WHERE chat_id = $1
+                UNION ALL
+                SELECT 'Остатки',       COUNT(*), MAX(created_at)
+                FROM marketplace_stocks WHERE chat_id = $1
+                UNION ALL
+                SELECT 'Отзывы',        COUNT(*), MAX(created_at)
+                FROM marketplace_reviews WHERE chat_id = $1
+                UNION ALL
+                SELECT 'Реклама',       COUNT(*), MAX(stat_date)
+                FROM marketplace_adv_stats WHERE chat_id = $1
+                UNION ALL
+                SELECT 'Финотчёт',      COUNT(*), MAX(report_date)
+                FROM marketplace_financial_report WHERE chat_id = $1
+                UNION ALL
+                SELECT 'Воронка',       COUNT(*), MAX(stat_date)
+                FROM product_funnel_stats WHERE chat_id = $1
+            """, chat_id, chat_id, chat_id, chat_id, chat_id, chat_id)
+        now = datetime.now(_UTC)
+        lines = ["<b>📊 Состояние данных</b>\n"]
+        for r in rows:
+            last = r["last_ts"]
+            if last is None:
+                age = "нет данных"
+            else:
+                if hasattr(last, "tzinfo") and last.tzinfo is None:
+                    last = last.replace(tzinfo=_UTC)
+                delta = now - last
+                if delta.days > 0:
+                    age = f"{delta.days}д назад"
+                else:
+                    hours = delta.seconds // 3600
+                    age = f"{hours}ч назад" if hours else "только что"
+            lines.append(f"• {r['label']}: <b>{r['cnt']}</b> записей — {age}")
+        return "\n".join(lines)
+
     async def _send_data_status(self, chat_id: int, msg) -> None:
         """Отправить состояние данных в msg (Message или query.message)."""
         try:
-            from db import get_pool
-            pool = await get_pool()
-            async with pool.acquire() as conn:
-                rows = await conn.fetch("""
-                    SELECT 'Заказы'        AS label, COUNT(*)          AS cnt,
-                           MAX(created_at) AS last_ts
-                    FROM marketplace_orders WHERE chat_id = $1
-                    UNION ALL
-                    SELECT 'Остатки',       COUNT(*), MAX(created_at)
-                    FROM marketplace_stocks WHERE chat_id = $1
-                    UNION ALL
-                    SELECT 'Отзывы',        COUNT(*), MAX(created_at)
-                    FROM marketplace_reviews WHERE chat_id = $1
-                    UNION ALL
-                    SELECT 'Реклама',       COUNT(*), MAX(stat_date)
-                    FROM marketplace_adv_stats WHERE chat_id = $1
-                    UNION ALL
-                    SELECT 'Финотчёт',      COUNT(*), MAX(report_date)
-                    FROM marketplace_financial_report WHERE chat_id = $1
-                    UNION ALL
-                    SELECT 'Воронка',       COUNT(*), MAX(stat_date)
-                    FROM product_funnel_stats WHERE chat_id = $1
-                """, chat_id, chat_id, chat_id, chat_id, chat_id, chat_id)
-
-            now = datetime.now(_UTC)
-            lines = ["<b>📊 Состояние данных</b>\n"]
-            for r in rows:
-                last = r["last_ts"]
-                if last is None:
-                    age = "нет данных"
-                else:
-                    if hasattr(last, "tzinfo") and last.tzinfo is None:
-                        last = last.replace(tzinfo=_UTC)
-                    delta = now - last
-                    if delta.days > 0:
-                        age = f"{delta.days}д назад"
-                    else:
-                        hours = delta.seconds // 3600
-                        age = f"{hours}ч назад" if hours else "только что"
-                lines.append(f"• {r['label']}: <b>{r['cnt']}</b> записей — {age}")
-
-            await msg.reply_text("\n".join(lines), parse_mode="HTML")
+            text = await self._data_status_text(chat_id)
+            await msg.reply_text(text, parse_mode="HTML")
         except Exception as e:
             logger.error(f"[Макс/data_status] ошибка: {e}", exc_info=True)
             await msg.reply_text(f"❌ Ошибка получения статуса: {e}")
