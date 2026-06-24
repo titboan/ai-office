@@ -8,7 +8,7 @@
 
 1. **Один Python процесс**, пока это возможно — никаких микросервисов без реальной необходимости.
 2. **Postgres — источник истины.** Все задачи, состояния, результаты — только там.
-3. **Notion — пользовательский интерфейс и knowledge base.** Не транзакционный backend.
+3. **Telegram — основной и единственный UI.** Notion удалён (июнь 2026): не использовался, лишняя зависимость.
 4. **Каждый агент ничего не знает о других агентах напрямую.** Все взаимодействия через очередь задач.
 5. **Человек подтверждает потенциально опасные действия** — деплой, PR, write-запросы WB/Ozon API.
 6. **Простота важнее модных AI-фреймворков.** Никаких LangGraph, CrewAI, Celery, DSPy.
@@ -152,7 +152,7 @@
 
 | Команда | Описание |
 |---------|----------|
-| `/research <тема>` | Исследовать тему через Tavily, сохранить в Notion Research |
+| `/research <тема>` | Исследовать тему через Tavily |
 | Свободный текст | Веб-поиск + анализ |
 
 ### ✍️ Элина (`@elina_bot`)
@@ -162,7 +162,7 @@
 | `/write <задание>` | Написать текст: описание товара, SEO, пост |
 | `/seo <артикул>` | SEO-оптимизация карточки товара |
 | `/post <тема>` | Пост для маркетплейса или соцсетей |
-| Свободный текст | Копирайтинг, Notion Content |
+| Свободный текст | Копирайтинг |
 
 ### 🗓️ Алекс (`@alex_bot`)
 
@@ -170,7 +170,7 @@
 |---------|----------|
 | `/remind <время> <текст>` | Установить напоминание (ntfy.sh push на телефон) |
 | `/testpush` | Проверить push-уведомления |
-| Свободный текст | Планирование, задачи в Notion |
+| Свободный текст | Планирование, напоминания |
 
 ### 🏛️ Тина (`@tina_bot`)
 
@@ -200,7 +200,7 @@
 | 18:05 UTC (21:05 МСК) | Марта | Дайджест выполненных задач за день: агенты, ошибки |
 | Пн 10:00 МСК | Питер | Еженедельный аудит магазина за 30 дней |
 | 08:00 МСК | Тина | Дайджест новых тендеров по фильтрам |
-| каждую минуту | Марта | Обновление статуса офиса в Notion |
+| каждую минуту | Марта | Мониторинг статуса очереди задач |
 
 ---
 
@@ -225,19 +225,18 @@
               Notion страница проекта (создаётся сразу)
                         │
                         ▼
-       Agent[0] (напр. Дэн: create_repo → generate_image → design_system)
+       Agent[0] (напр. Кевин: create_repo → generate_image → design_system)
                         │ completed → _advance_chain()
                         ▼
-       Agent[1] (напр. Кевин: использует ассеты Дэна → HTML → Pages)
+       Agent[1] (напр. Кевин: HTML → Pages)
                         │ completed → _advance_chain()
                         ▼
-       Финал → резюме + кнопки [🌐 Открыть сайт] [📋 Notion]
+       Финал → резюме + кнопки [🌐 Открыть сайт]
 
 Postgres Tasks Queue
   ├── queued → acknowledged → running → completed/failed/timeout
   ├── priority (0/10/20), correlation_id, retry_count, remind_at
   ├── chain_id, chain_index, chain_total, chain_plan (JSONB)
-  ├── notion_page_id — прокидывается через всю цепочку
   └── SELECT FOR UPDATE SKIP LOCKED (без race conditions)
 
 Worker Agents (asyncio, поллинг каждые 2 сек по agent_key)
@@ -280,7 +279,7 @@ CTR < 1% (дайджест Питера)
 - Correlation ID сквозной через всю цепочку
 - Structured logging
 - Приоритеты, `remind_at`, ntfy.sh push, Groq Whisper голос
-- Claude Vision, цепочки с подтверждением, Notion интеграция
+- Claude Vision, цепочки с подтверждением
 - Макс: полный цикл WB+Ozon (отзывы, заказы, остатки, реклама, инфографика)
 - Питер: NET-маржа, ДРР, ROAS, ABC, воронка, план поставок, SEO-аудит, CTR инфографики
 - Dashboard React Mini App в Telegram (15 компонентов)
@@ -323,6 +322,33 @@ CTR < 1% (дайджест Питера)
 
 **Что уже готово:** `chat_id` = tenant ID, все данные изолированы по `chat_id`, `shop_id` разделяет данные между магазинами. Архитектура правильная.
 
+**Межагентная коммуникация — Марта как единственный UI (нужно до SaaS):**
+
+Сейчас каждый агент — отдельный Telegram-бот со своими командами. Клиент вынужден знать о Максе, Питере, Элине и т.д. Это неприемлемо для SaaS.
+
+Правильная архитектура: **Марта = единственная точка входа.** Остальные агенты — headless workers без публичного бота.
+
+```
+Клиент → Мартин бот (единственный)
+    │
+    ├── /sync, /report, /reviews → enqueue_task() → Макс/Питер (воркер)
+    │       воркер шлёт результат через notify_chat_id → Мартин бот → клиенту
+    │
+    └── свободный текст → Марта роутит → агент выполняет → ответ через Мартин бот
+```
+
+Что это меняет:
+- Агенты теряют `handle_message` / `CommandHandler` / `self.bot.send_message`
+- Вместо этого: `await self.notify_chat_id(chat_id, text)` — отправка через shared bot instance
+- ConversationHandlers (wizard /add_shop, /cost, /reprice) регистрируются на Мартиному App
+
+Сложность: 2–3 дня. Триггер: первый внешний клиент.
+До тех пор: Борис знает все боты, мульти-бот приемлем для личного использования.
+
+- [ ] Вынести `send_message` агентов в `BaseAgent.notify(chat_id, text, bot=marta_bot)`
+- [ ] Перенести ConversationHandlers Макса в Мартину App
+- [ ] Убрать отдельные токены (оставить только `MARTA_BOT_TOKEN`)
+
 **Ozon Performance API — per-client credentials (нужно до SaaS):**
 - [ ] Перенести `OZON_PERFORMANCE_CLIENT_ID` / `OZON_PERFORMANCE_CLIENT_SECRET` из env vars в `marketplace_shops` (или отдельную таблицу `shop_credentials`)
 - [ ] `/add_shop ozon` расширить: принимать Performance credentials опционально
@@ -357,10 +383,6 @@ telegram.error.Conflict: terminated by other getUpdates request
 ### ⚠️ WB /adv/v1/promotion/adverts → 404
 
 Эндпоинт недоступен с октября 2025. Названия рекламных кампаний вносить вручную в таблицу `wb_campaigns`.
-
-### ⚠️ Notion Unclosed connection
-
-Периодически в логах `Unclosed connection` от Notion клиента. Некритично.
 
 ### ⚠️ Дэн заморожен
 
@@ -417,7 +439,6 @@ ai-office/
 ├── tools/
 │   ├── marketplace.py      # WBClient, OzonClient, OzonPerformanceClient
 │   ├── search.py           # Tavily
-│   ├── notion.py           # API, update_status_page
 │   ├── github.py           # create_repo, create_file, create_pr, enable_pages
 │   ├── ntfy.py             # send_push
 │   └── gosplan_api.py      # ГосПлан API клиент
@@ -460,15 +481,6 @@ TAVILY_API_KEY=
 GROQ_API_KEY=
 GITHUB_TOKEN=
 GITHUB_USERNAME=
-
-NOTION_TOKEN=
-NOTION_PARENT_PAGE_ID=
-NOTION_PROJECTS_DB=
-NOTION_TASKS_DB=
-NOTION_IDEAS_DB=
-NOTION_RESEARCH_DB=
-NOTION_CONTENT_DB=
-NOTION_STATUS_PAGE_ID=
 
 NTFY_TOPIC=
 
