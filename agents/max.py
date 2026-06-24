@@ -1939,18 +1939,16 @@ class MaxAgent(BaseAgent):
         lines.append(f"\n<i>Сравнение: {drops[0]['date_old']} → {drops[0]['date_new']}</i>")
         await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
-    async def cmd_sync_returns(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/sync_returns — синхронизация аналитики возвратов WB + Ozon."""
-        chat_id = update.effective_user.id
-        await update.message.reply_text("📦 Синхронизирую аналитику возвратов…")
+    async def sync_returns(self, chat_id: int, days: int = 30) -> dict:
+        """Синхронизация аналитики возвратов WB + Ozon. Возвращает {mp: count}."""
         from db import get_marketplace_shops, upsert_returns_analytics
         from tools.marketplace import WBClient, OzonClient
-        from datetime import date as _date, timedelta as _td
+        from datetime import date as _date, timedelta as _td, date as _dt_date
 
         shops = await get_marketplace_shops(chat_id)
         date_to   = _date.today().strftime("%Y-%m-%d")
-        date_from = (_date.today() - _td(days=30)).strftime("%Y-%m-%d")
-        totals = {}
+        date_from = (_date.today() - _td(days=days)).strftime("%Y-%m-%d")
+        totals: dict = {}
 
         for shop in shops:
             mp = shop["marketplace"]
@@ -1971,7 +1969,6 @@ class MaxAgent(BaseAgent):
                 for r in returns:
                     stat_date = r.get("stat_date") or date_to
                     try:
-                        from datetime import date as _dt_date
                         if isinstance(stat_date, str):
                             stat_date = _dt_date.fromisoformat(stat_date[:10])
                     except Exception:
@@ -1990,9 +1987,19 @@ class MaxAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[Макс/sync_returns] {mp}: {e}", exc_info=True)
 
+        return totals
+
+    async def cmd_sync_returns(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/sync_returns — синхронизация аналитики возвратов WB + Ozon."""
+        chat_id = update.effective_user.id
+        await update.message.reply_text("📦 Синхронизирую аналитику возвратов…")
+        totals = await self.sync_returns(chat_id)
         if not totals:
             await update.message.reply_text("⚠️ Данные о возвратах не получены.")
         else:
+            from datetime import date as _date, timedelta as _td
+            date_to   = _date.today().strftime("%Y-%m-%d")
+            date_from = (_date.today() - _td(days=30)).strftime("%Y-%m-%d")
             lines = ["✅ Возвраты синхронизированы"]
             for mp, cnt in totals.items():
                 label = "🟣 WB" if mp == "wb" else "🔵 Ozon"

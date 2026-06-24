@@ -665,6 +665,103 @@ async def run_all_async() -> None:
     asyncio.create_task(_daily_digest_loop())
     logger.info("[main] Daily digest task запущен (каждый день 18:00 UTC = 21:00 МСК)")
 
+    async def _funnel_sync_loop():
+        """Воронка конверсии — ежедневно в 02:30 UTC."""
+        from datetime import datetime, timezone, timedelta
+        from db import get_all_active_shops
+
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                target = now.replace(hour=2, minute=30, second=0, microsecond=0)
+                if target <= now:
+                    target += timedelta(days=1)
+                await asyncio.sleep((target - now).total_seconds())
+
+                if max_agent is None:
+                    continue
+                shops = await get_all_active_shops()
+                for chat_id in _unique_chats(shops):
+                    try:
+                        await max_agent.sync_funnel(chat_id)
+                        logger.info(f"[funnel_sync] chat_id={chat_id} завершено")
+                    except Exception as e:
+                        logger.error(f"[funnel_sync] chat_id={chat_id} ошибка: {e}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[funnel_sync] критическая ошибка: {e}")
+                await asyncio.sleep(60)
+
+    asyncio.create_task(_funnel_sync_loop())
+    logger.info("[main] Funnel sync task запущен (ежедневно 02:30 UTC)")
+
+    async def _returns_sync_loop():
+        """Аналитика возвратов — еженедельно в субботу 02:00 UTC."""
+        from datetime import datetime, timezone, timedelta
+        from db import get_all_active_shops
+
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                # weekday(): 5 = суббота
+                days_until_saturday = (5 - now.weekday()) % 7
+                if days_until_saturday == 0 and now.hour >= 2:
+                    days_until_saturday = 7
+                target = (now + timedelta(days=days_until_saturday)).replace(
+                    hour=2, minute=0, second=0, microsecond=0
+                )
+                await asyncio.sleep((target - now).total_seconds())
+
+                if max_agent is None:
+                    continue
+                shops = await get_all_active_shops()
+                for chat_id in _unique_chats(shops):
+                    try:
+                        await max_agent.sync_returns(chat_id)
+                        logger.info(f"[returns_sync] chat_id={chat_id} завершено")
+                    except Exception as e:
+                        logger.error(f"[returns_sync] chat_id={chat_id} ошибка: {e}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[returns_sync] критическая ошибка: {e}")
+                await asyncio.sleep(60)
+
+    asyncio.create_task(_returns_sync_loop())
+    logger.info("[main] Returns sync task запущен (еженедельно сб 02:00 UTC)")
+
+    async def _kpi_sync_loop():
+        """KPI продавца (рейтинг, штрафы) — ежедневно в 02:00 UTC."""
+        from datetime import datetime, timezone, timedelta
+        from db import get_all_active_shops
+
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                target = now.replace(hour=2, minute=0, second=0, microsecond=0)
+                if target <= now:
+                    target += timedelta(days=1)
+                await asyncio.sleep((target - now).total_seconds())
+
+                if max_agent is None:
+                    continue
+                shops = await get_all_active_shops()
+                for chat_id in _unique_chats(shops):
+                    try:
+                        await max_agent.sync_shop_kpi(chat_id)
+                        logger.info(f"[kpi_sync] chat_id={chat_id} завершено")
+                    except Exception as e:
+                        logger.error(f"[kpi_sync] chat_id={chat_id} ошибка: {e}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[kpi_sync] критическая ошибка: {e}")
+                await asyncio.sleep(60)
+
+    asyncio.create_task(_kpi_sync_loop())
+    logger.info("[main] KPI sync task запущен (ежедневно 02:00 UTC)")
+
     # ── Dashboard API (aiohttp) ───────────────────────────────────────────────
     _CORS_ORIGIN = config.DASHBOARD_URL or "*"
 
