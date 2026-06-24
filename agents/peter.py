@@ -907,6 +907,23 @@ class PeterAgent(BaseAgent):
         except Exception:
             pass
 
+        # Сохраняем рекомендованные цены в БД для Макса (/apply_prices)
+        recs = [
+            {
+                "display_name":          r["product_name"],
+                "recommended_price_wb":  r.get("recommended_price_wb"),
+                "recommended_price_ozon": r.get("recommended_price_ozon"),
+            }
+            for r in data.get("net_margin", [])
+            if r.get("recommended_price_wb") or r.get("recommended_price_ozon")
+        ]
+        if recs:
+            try:
+                from db import save_price_recommendations
+                await save_price_recommendations(chat_id, recs)
+            except Exception as e:
+                logger.warning(f"[Питер/report] save_price_recommendations: {e}")
+
         total_revenue = sum(float(r["revenue"] or 0) for r in data["revenue"])
         avg_per_day = round(total_revenue / days, 0) if days else 0
 

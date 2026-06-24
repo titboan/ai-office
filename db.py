@@ -475,6 +475,11 @@ async def _create_schema() -> None:
             ADD COLUMN IF NOT EXISTS infographic_updated_at TIMESTAMPTZ
         """)
         await conn.execute("""
+            ALTER TABLE product_mapping
+            ADD COLUMN IF NOT EXISTS recommended_price_wb   NUMERIC(10,2),
+            ADD COLUMN IF NOT EXISTS recommended_price_ozon NUMERIC(10,2)
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS competitor_snapshots (
                 id            SERIAL PRIMARY KEY,
                 keyword       TEXT          NOT NULL,
@@ -1719,6 +1724,71 @@ async def upsert_competitor_snapshot(rows: list[dict]) -> None:
                 )
                 for r in rows
             ],
+        )
+
+
+async def save_price_recommendations(chat_id: int, items: list[dict]) -> None:
+    """Сохранить рекомендованные цены от Питера в product_mapping.
+
+    items: [{"display_name": str, "recommended_price_wb": float|None,
+              "recommended_price_ozon": float|None}]
+    Сопоставление идёт по display_name / wb_article.
+    """
+    if not items:
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        for item in items:
+            name = item.get("display_name") or item.get("product_name") or ""
+            rec_wb   = item.get("recommended_price_wb")
+            rec_ozon = item.get("recommended_price_ozon")
+            if rec_wb is None and rec_ozon is None:
+                continue
+            await conn.execute(
+                """
+                UPDATE product_mapping
+                   SET recommended_price_wb   = COALESCE($3, recommended_price_wb),
+                       recommended_price_ozon = COALESCE($4, recommended_price_ozon)
+                 WHERE chat_id = $1
+                   AND (display_name = $2 OR wb_article = $2)
+                """,
+                chat_id, name, rec_wb, rec_ozon,
+            )
+
+
+async def get_price_recommendations(chat_id: int) -> list[dict]:
+    """Товары с ненулевыми рекомендациями цен от Питера."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                COALESCE(display_name, wb_article, ozon_sku) AS name,
+                wb_article,
+                ozon_sku,
+                wb_nm_id,
+                wb_price,
+                ozon_price,
+                recommended_price_wb,
+                recommended_price_ozon
+            FROM product_mapping
+            WHERE chat_id = $1
+              AND (recommended_price_wb IS NOT NULL OR recommended_price_ozon IS NOT NULL)
+            ORDER BY name
+            """,
+            chat_id,
+        )
+    return [dict(r) for r in rows]
+
+
+async def clear_price_recommendations(chat_id: int, marketplace: str) -> None:
+    """Обнулить рекомендации после успешного применения цен."""
+    pool = await get_pool()
+    col = "recommended_price_wb" if marketplace == "wb" else "recommended_price_ozon"
+    async with pool.acquire() as conn:
+        await conn.execute(
+            f"UPDATE product_mapping SET {col} = NULL WHERE chat_id = $1",
+            chat_id,
         )
 
 

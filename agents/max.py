@@ -1939,6 +1939,130 @@ class MaxAgent(BaseAgent):
         lines.append(f"\n<i>Сравнение: {drops[0]['date_old']} → {drops[0]['date_new']}</i>")
         await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
+    async def cmd_apply_prices(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/apply_prices — показать рекомендованные цены от Питера и применить."""
+        chat_id = update.effective_user.id
+        from db import get_price_recommendations
+        recs = await get_price_recommendations(chat_id)
+        if not recs:
+            await update.message.reply_text(
+                "ℹ️ <b>Нет рекомендаций цен</b>\n\n"
+                "Запусти <code>/report</code> у Питера — он посчитает целевые цены "
+                "для достижения нужной маржи.",
+                parse_mode="HTML",
+            )
+            return
+
+        lines = ["💰 <b>Рекомендованные цены от Питера</b>\n"]
+        has_wb = any(r["recommended_price_wb"] for r in recs)
+        has_ozon = any(r["recommended_price_ozon"] for r in recs)
+
+        for r in recs:
+            name = r["name"] or r["wb_article"] or r["ozon_sku"] or "?"
+            parts = [f"<b>{name}</b>"]
+            if r["recommended_price_wb"]:
+                cur = f"{r['wb_price']:,.0f}₽" if r["wb_price"] else "?"
+                parts.append(f"WB: {cur} → <b>{r['recommended_price_wb']:,.0f}₽</b>")
+            if r["recommended_price_ozon"]:
+                cur = f"{r['ozon_price']:,.0f}₽" if r["ozon_price"] else "?"
+                parts.append(f"Ozon: {cur} → <b>{r['recommended_price_ozon']:,.0f}₽</b>")
+            lines.append("• " + " | ".join(parts))
+
+        lines.append("\nВыбери действие:")
+
+        buttons = []
+        if has_wb:
+            buttons.append(InlineKeyboardButton("✅ Применить WB", callback_data="price_apply:wb"))
+        if has_ozon:
+            buttons.append(InlineKeyboardButton("✅ Применить Ozon", callback_data="price_apply:ozon"))
+        if has_wb and has_ozon:
+            buttons.append(InlineKeyboardButton("✅ Применить всё", callback_data="price_apply:all"))
+        buttons.append(InlineKeyboardButton("❌ Отмена", callback_data="price_apply:cancel"))
+
+        keyboard = InlineKeyboardMarkup([buttons[:2], buttons[2:]] if len(buttons) > 2 else [buttons])
+        await update.message.reply_text(
+            "\n".join(lines), parse_mode="HTML", reply_markup=keyboard
+        )
+
+    async def _handle_price_apply_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        query = update.callback_query
+        await query.answer()
+        chat_id = update.effective_user.id
+        action = query.data.split(":", 1)[1]  # wb | ozon | all | cancel
+
+        if action == "cancel":
+            await query.edit_message_text("❌ Отменено.")
+            return
+
+        from db import get_price_recommendations, get_marketplace_shops, get_pool, clear_price_recommendations
+        from tools.marketplace import WBClient, OzonClient
+
+        recs = await get_price_recommendations(chat_id)
+        shops = await get_marketplace_shops(chat_id)
+        pool = await get_pool()
+
+        results = []
+
+        if action in ("wb", "all"):
+            wb_items = [
+                {"nm_id": r["wb_nm_id"], "price": int(r["recommended_price_wb"])}
+                for r in recs
+                if r["recommended_price_wb"] and r["wb_nm_id"]
+            ]
+            wb_shops = [s for s in shops if s["marketplace"] == "wb"]
+            for shop in wb_shops:
+                try:
+                    client = WBClient(shop["api_token"])
+                    res = await client.update_prices(wb_items)
+                    ok = res.get("success")
+                    results.append(f"WB: {'✅' if ok else '❌'} {len(wb_items)} товаров")
+                except Exception as e:
+                    results.append(f"WB: ❌ {e}")
+            if wb_items:
+                await clear_price_recommendations(chat_id, "wb")
+                # Обновляем wb_price в product_mapping
+                async with pool.acquire() as conn:
+                    for item in wb_items:
+                        await conn.execute(
+                            "UPDATE product_mapping SET wb_price=$1, prices_updated_at=NOW() "
+                            "WHERE chat_id=$2 AND wb_nm_id=$3",
+                            float(item["price"]), chat_id, str(item["nm_id"]),
+                        )
+
+        if action in ("ozon", "all"):
+            ozon_items = [
+                {"offer_id": r["ozon_sku"], "price": r["recommended_price_ozon"]}
+                for r in recs
+                if r["recommended_price_ozon"] and r["ozon_sku"]
+            ]
+            ozon_shops = [s for s in shops if s["marketplace"] == "ozon"]
+            for shop in ozon_shops:
+                try:
+                    client = OzonClient(shop["api_token"], shop.get("client_id", ""))
+                    res = await client.update_prices(ozon_items)
+                    ok = res.get("success")
+                    results.append(f"Ozon: {'✅' if ok else '❌'} {len(ozon_items)} товаров")
+                except Exception as e:
+                    results.append(f"Ozon: ❌ {e}")
+            if ozon_items:
+                await clear_price_recommendations(chat_id, "ozon")
+                async with pool.acquire() as conn:
+                    for item in ozon_items:
+                        await conn.execute(
+                            "UPDATE product_mapping SET ozon_price=$1, prices_updated_at=NOW() "
+                            "WHERE chat_id=$2 AND ozon_sku=$3",
+                            float(item["price"]), chat_id, item["offer_id"],
+                        )
+
+        if not results:
+            await query.edit_message_text("⚠️ Нет товаров для обновления (не хватает данных маппинга).")
+            return
+
+        text = "💰 <b>Цены обновлены</b>\n\n" + "\n".join(results)
+        await query.edit_message_text(text, parse_mode="HTML")
+
     async def sync_returns(self, chat_id: int, days: int = 30) -> dict:
         """Синхронизация аналитики возвратов WB + Ozon. Возвращает {mp: count}."""
         from db import get_marketplace_shops, upsert_returns_analytics
@@ -4909,6 +5033,7 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("cost",          self.cmd_cost_wizard))
         self.app.add_handler(CommandHandler("margin",        self.cmd_margin_check))
         self.app.add_handler(CommandHandler("reprice",       self.cmd_reprice))
+        self.app.add_handler(CommandHandler("apply_prices",  self.cmd_apply_prices))
         self.app.add_handler(CommandHandler("bid_adjust",    self.cmd_bid_adjust))
         self.app.add_handler(CommandHandler("add",           self.cmd_add))
         self.app.add_handler(CommandHandler("cancel",        self.cmd_cancel))
@@ -4929,6 +5054,9 @@ class MaxAgent(BaseAgent):
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_catalog_cost_callback, pattern=r"^costpick:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_price_apply_callback, pattern=r"^price_apply:")
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_reprice_callback, pattern=r"^rp:")
