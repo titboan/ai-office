@@ -163,6 +163,7 @@ async def run_all_async() -> None:
 
     max_agent   = next((a for a in started if isinstance(a, MaxAgent)), None)
     peter_agent = next((a for a in started if a.__class__.__name__ == "PeterAgent"), None)
+    marta_agent = next((a for a in started if isinstance(a, MartaAgent)), None)
     if max_agent is not None and peter_agent is not None:
         max_agent._peter_agent = peter_agent
 
@@ -664,6 +665,37 @@ async def run_all_async() -> None:
 
     asyncio.create_task(_daily_digest_loop())
     logger.info("[main] Daily digest task запущен (каждый день 18:00 UTC = 21:00 МСК)")
+
+    async def _marta_digest_loop():
+        """Дайджест задач от Марты — каждый день в 18:05 UTC (21:05 МСК)."""
+        from datetime import datetime, timezone, timedelta
+        from db import get_all_active_shops
+
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                target = now.replace(hour=18, minute=5, second=0, microsecond=0)
+                if target <= now:
+                    target += timedelta(days=1)
+                await asyncio.sleep((target - now).total_seconds())
+
+                if marta_agent is None:
+                    continue
+                shops = await get_all_active_shops()
+                for chat_id in _unique_chats(shops):
+                    try:
+                        await marta_agent.send_daily_digest(chat_id)
+                        logger.info(f"[marta_digest] chat_id={chat_id} отправлено")
+                    except Exception as e:
+                        logger.error(f"[marta_digest] chat_id={chat_id} ошибка: {e}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[marta_digest] критическая ошибка: {e}")
+                await asyncio.sleep(60)
+
+    asyncio.create_task(_marta_digest_loop())
+    logger.info("[main] Marta digest task запущен (18:05 UTC = 21:05 МСК)")
 
     async def _funnel_sync_loop():
         """Воронка конверсии — ежедневно в 02:30 UTC."""

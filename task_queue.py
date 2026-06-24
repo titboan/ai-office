@@ -420,6 +420,41 @@ async def get_recent_tasks(limit: int = 10) -> list[dict]:
         return []
 
 
+async def get_daily_task_summary(hours: int = 24) -> dict:
+    """Статистика задач за последние N часов для ежедневного дайджеста Марты."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    assigned_agent,
+                    status,
+                    COUNT(*)        AS cnt,
+                    MAX(error_message) FILTER (WHERE status IN ('failed','timeout')) AS last_error
+                FROM tasks
+                WHERE created_at >= NOW() - ($1 * INTERVAL '1 hour')
+                GROUP BY assigned_agent, status
+                ORDER BY assigned_agent, status
+                """,
+                hours,
+            )
+            stats: dict[str, dict] = {}
+            for r in rows:
+                agent = r["assigned_agent"]
+                if agent not in stats:
+                    stats[agent] = {"completed": 0, "failed": 0, "timeout": 0, "queued": 0, "running": 0, "errors": []}
+                status = r["status"]
+                if status in stats[agent]:
+                    stats[agent][status] = int(r["cnt"])
+                if r["last_error"]:
+                    stats[agent]["errors"].append(r["last_error"][:120])
+            return stats
+    except Exception as e:
+        logger.error(f"[task_queue] get_daily_task_summary error: {e}")
+        return {}
+
+
 async def cancel_task(task_id: int) -> bool:
     """Отменить задачу если она ещё в статусе queued."""
     try:
