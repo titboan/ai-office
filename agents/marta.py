@@ -1409,10 +1409,16 @@ class MartaAgent(BaseAgent):
         ),
     }
 
+    _MARTA_MENU_BACK = InlineKeyboardMarkup([[
+        InlineKeyboardButton("◀️ Назад", callback_data="mmenu:back"),
+    ]])
+
+    _MARTA_MENU_HEADER = "🏢 <b>AI Office — Быстрое меню</b>\n\nВыбери раздел:"
+
     async def cmd_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/menu — быстрое меню всех команд AI Office."""
         await update.message.reply_text(
-            "🏢 <b>AI Office — Быстрое меню</b>\n\nВыбери раздел:",
+            self._MARTA_MENU_HEADER,
             parse_mode="HTML",
             reply_markup=self._MARTA_MENU_KEYBOARD,
         )
@@ -1420,12 +1426,19 @@ class MartaAgent(BaseAgent):
     async def _handle_marta_menu_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """Inline-кнопки меню Марты (mmenu:*)."""
+        """Inline-кнопки меню Марты (mmenu:*). Редактирует то же сообщение — не плодит новые."""
         query = update.callback_query
         await query.answer()
         section = query.data.split(":", 1)[1] if ":" in query.data else ""
+        if section == "back":
+            await query.edit_message_text(
+                self._MARTA_MENU_HEADER,
+                parse_mode="HTML",
+                reply_markup=self._MARTA_MENU_KEYBOARD,
+            )
+            return
         text = self._MARTA_MENU_SECTIONS.get(section, "❓ Раздел не найден")
-        await query.message.reply_text(text, parse_mode="HTML")
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=self._MARTA_MENU_BACK)
 
     def _bot_commands(self) -> list:
         from telegram import BotCommand
