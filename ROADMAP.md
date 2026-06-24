@@ -1,6 +1,6 @@
 # 🏢 AI Office — Документация проекта
 
-> Последнее обновление: 2026-06-14
+> Последнее обновление: 2026-06-24
 
 ---
 
@@ -10,7 +10,7 @@
 2. **Postgres — источник истины.** Все задачи, состояния, результаты — только там.
 3. **Notion — пользовательский интерфейс и knowledge base.** Не транзакционный backend.
 4. **Каждый агент ничего не знает о других агентах напрямую.** Все взаимодействия через очередь задач.
-5. **Человек подтверждает потенциально опасные действия** — деплой, PR, внешние write-API.
+5. **Человек подтверждает потенциально опасные действия** — деплой, PR, write-запросы WB/Ozon API.
 6. **Простота важнее модных AI-фреймворков.** Никаких LangGraph, CrewAI, Celery, DSPy.
 7. **Эволюция, не переписывание.** Каждое изменение — минимальный фикс поверх работающего.
 8. **Telegram — основной канал управления.** Реальные данные живут в Postgres и Notion.
@@ -25,24 +25,182 @@
 **Деплой:** Railway (один сервис, все агенты в одном процессе)
 **Статус:** 🟢 Работает в продакшне
 
-Интерактивная схема архитектуры: [`docs/index.html`](docs/index.html)
-
 ---
 
 ## Команда агентов
 
-| Агент | Роль | agent_key | Инструменты |
-|-------|------|-----------|-------------|
-| 👩‍💼 Марта | Координатор, планировщик цепочек | marta | Task queue, chain planner, /status, /history, /cancel, /projects, кнопки, Claude Vision |
-| 👨‍💻 Кевин | Разработчик, код, сайты | kevin | GitHub API (репо, файлы, PR, Pages), tool_use agentic loop |
-| 🔍 Каспер | Исследователь, поиск | kasper | Tavily поиск, Notion Research |
-| 📊 Питер | Бизнес-аналитик, маркетплейсы | peter | PostgreSQL (заказы, остатки, реклама), Notion Research DB |
-| ✍️ Элина | Копирайтер, тексты | elina | Notion Content |
-| 🗓️ Алекс | Планировщик, напоминания | alex | Notion Tasks, ntfy.sh (iOS push), /testpush |
-| 🎨 Дэн | Дизайнер, изображения | dan | Pollinations.ai, GitHub API (изображения), Notion дизайн-система |
-| 📰 Ева | Сводка каналов + email-дайджест | eva | Telethon MTProto (ждёт API credentials), Email IMAP, Notion Content |
-| 🛒 Макс | Менеджер маркетплейсов WB+Ozon | max | WB Feedbacks API, Ozon Seller API, Ozon Performance API, PostgreSQL |
-| 🏛️ Тина | Тендерный агент 44-ФЗ | tina | ГосПлан API v2, Tavily, PostgreSQL (ждёт деплой) |
+| Агент | Роль | agent_key | Статус |
+|-------|------|-----------|--------|
+| 👩‍💼 Марта | Координатор, планировщик цепочек | marta | ✅ Активна |
+| 👨‍💻 Кевин | Разработчик, код, сайты | kevin | ✅ Активен |
+| 🔍 Каспер | Исследователь, поиск | kasper | ✅ Активен |
+| 📊 Питер | Бизнес-аналитик, маркетплейсы | peter | ✅ Активен |
+| ✍️ Элина | Копирайтер, тексты | elina | ✅ Активна |
+| 🗓️ Алекс | Планировщик, напоминания | alex | ✅ Активен |
+| 🎨 Дэн | Дизайнер, изображения | dan | ❄️ Заморожен (Pollinations.ai медленный) |
+| 📰 Ева | Сводка каналов | eva | ❄️ Заморожена (ждёт TELETHON_SESSION) |
+| 🛒 Макс | Менеджер маркетплейсов WB+Ozon | max | ✅ Активен |
+| 🏛️ Тина | Тендерный агент 44-ФЗ | tina | ✅ Активна (TINA_BOT_TOKEN добавлен) |
+
+---
+
+## Telegram-команды
+
+### 👩‍💼 Марта (`@marta_bot`)
+
+Главная точка входа. Любое текстовое сообщение → Марта роутит задачу или строит цепочку.
+
+| Команда | Описание |
+|---------|----------|
+| `/start` | Приветствие, главное меню |
+| `/status` | Активные задачи в очереди |
+| `/history` | Последние выполненные задачи |
+| `/cancel` | Отменить задачу в очереди |
+| `/delegate <агент> <задача>` | Делегировать напрямую |
+| `/report` | Прокси → Питер `/report` |
+| `/reviews` | Прокси → Макс `/reviews` |
+| `/sync` | Прокси → Макс `/sync` |
+| `/research <тема>` | Прокси → Каспер |
+| `/write <текст>` | Прокси → Элина |
+| `/remind <время> <текст>` | Прокси → Алекс |
+
+### 📊 Питер (`@peter_bot`)
+
+| Команда | Описание |
+|---------|----------|
+| `/report [цель=N] [период=14]` | Полный аналитический отчёт: NET-маржа, ДРР, ROAS, ABC, воронка, CTR инфографики |
+| `/audit` | 30-дневный аудит магазина: здоровье, SWOT, KPI |
+| `/drr [период=7]` | Анализ доли рекламных расходов |
+| `/funnel [период=14]` | Воронка конверсии WB+Ozon |
+| `/supply [период=14]` | План поставки: сколько и куда везти |
+| `/returns [период=30]` | Анализ возвратов по товарам |
+| `/abc [период=30]` | ABC-анализ товаров по вкладу в выручку |
+| `/seo_audit` | SEO-аудит карточек: CTR, позиции, приоритеты |
+| `/analyze <вопрос>` | Свободный аналитический запрос с данными из БД |
+| `/menu` | Быстрые кнопки-переходы |
+
+### 🛒 Макс (`@max_bot`)
+
+**Синхронизация данных**
+
+| Команда | Описание |
+|---------|----------|
+| `/sync` | Синхронизация заказов, остатков, продаж |
+| `/sync_fin` | Финансовый отчёт WB+Ozon за 90 дней |
+| `/sync_adv` | Статистика рекламных кампаний |
+| `/sync_funnel` | Воронка конверсии (клики, заказы, выкупы) |
+| `/sync_returns` | Аналитика возвратов за 30 дней |
+| `/sync_promotions` | Акции и скидки WB+Ozon |
+| `/sync_cards` | Контент карточек товаров |
+| `/sync_keywords` | Позиции ключевых слов WB |
+| `/sync_sku` | Сопоставление артикулов WB↔Ozon |
+
+**Отзывы и вопросы**
+
+| Команда | Описание |
+|---------|----------|
+| `/reviews` | Показать ожидающие ответа отзывы |
+| `/questions` | Показать все неотвеченные вопросы из БД |
+| `/pending` | Список ожидающих модерации |
+
+**Управление товарами и ценами**
+
+| Команда | Описание |
+|---------|----------|
+| `/products` | Список товаров с маппингом WB↔Ozon |
+| `/map` | Ручное сопоставление артикулов |
+| `/cost` | Мастер ввода себестоимости товаров |
+| `/margin` | Быстрая проверка маржи по товару |
+| `/reprice` | Рекомендации по ценообразованию |
+| `/apply_prices` | Применить рекомендованные цены от Питера (с подтверждением) |
+
+**Реклама**
+
+| Команда | Описание |
+|---------|----------|
+| `/bid_adjust` | Ручные рекомендации по ставкам на основе ДРР |
+| `/seo_check` | Проверка падения позиций ключевых слов (≥10 мест) |
+
+**Аналитика**
+
+| Команда | Описание |
+|---------|----------|
+| `/shop_kpi` | KPI магазина: рейтинг, штрафы, показатели |
+| `/data_status` | Статус синхронизации данных (что свежее, что устарело) |
+| `/shops` | Список подключённых магазинов |
+| `/dashboard` | Открыть дашборд в Telegram Mini App |
+
+**Настройка**
+
+| Команда | Описание |
+|---------|----------|
+| `/add_shop` | Подключить новый магазин WB или Ozon |
+| `/add` | Добавить товар в каталог вручную |
+| `/start` | Онбординг / главное меню с кнопками |
+| `/cancel` | Прервать текущий сценарий |
+
+### 👨‍💻 Кевин (`@kevin_bot`)
+
+| Команда | Описание |
+|---------|----------|
+| `/code <задача>` | Написать код или решить задачу разработки |
+| `/plan <идея>` | Спланировать фичу или проект |
+| `/roadmap` | Обзор текущего ROADMAP проекта |
+| Свободный текст | Agentic loop с GitHub tools: создать репо, файлы, PR, Pages |
+
+### 🔍 Каспер (`@kasper_bot`)
+
+| Команда | Описание |
+|---------|----------|
+| `/research <тема>` | Исследовать тему через Tavily, сохранить в Notion Research |
+| Свободный текст | Веб-поиск + анализ |
+
+### ✍️ Элина (`@elina_bot`)
+
+| Команда | Описание |
+|---------|----------|
+| `/write <задание>` | Написать текст: описание товара, SEO, пост |
+| `/seo <артикул>` | SEO-оптимизация карточки товара |
+| `/post <тема>` | Пост для маркетплейса или соцсетей |
+| Свободный текст | Копирайтинг, Notion Content |
+
+### 🗓️ Алекс (`@alex_bot`)
+
+| Команда | Описание |
+|---------|----------|
+| `/remind <время> <текст>` | Установить напоминание (ntfy.sh push на телефон) |
+| `/testpush` | Проверить push-уведомления |
+| Свободный текст | Планирование, задачи в Notion |
+
+### 🏛️ Тина (`@tina_bot`)
+
+| Команда | Описание |
+|---------|----------|
+| `/tenders` | Дайджест тендеров по заданным фильтрам |
+| `/tender <ID>` | Детали конкретного тендера |
+| `/tenders_report` | Аналитический отчёт по тендерам |
+| `/reset_checked` | Сбросить список просмотренных тендеров |
+| `/reset_orders` | Сбросить историю |
+| Свободный текст | Поиск и анализ тендеров 44-ФЗ |
+
+---
+
+## Автоматические фоновые задачи
+
+| Время (UTC) | Агент | Задача |
+|-------------|-------|--------|
+| 09:00 МСК / 14:00 МСК / 20:00 МСК | Макс | Обработка новых отзывов WB+Ozon |
+| каждые 15 мин | Макс | Мониторинг новых вопросов WB+Ozon (повтор уведомления при пропуске) |
+| 03:00 UTC | Макс | Синхронизация рекламной статистики (WB + Ozon Performance) |
+| 03:30 UTC | Макс | Авто-анализ рекламных ставок — отправляет предложения с кнопками |
+| 02:00 UTC ежедневно | Макс | Синхронизация KPI магазина (рейтинг, штрафы) |
+| 02:30 UTC ежедневно | Макс | Синхронизация воронки конверсии |
+| 02:00 UTC сб | Макс | Синхронизация аналитики возвратов |
+| 18:00 UTC (21:00 МСК) | Питер | Ежедневный дайджест продаж за 7 дней |
+| 18:05 UTC (21:05 МСК) | Марта | Дайджест выполненных задач за день: агенты, ошибки |
+| Пн 10:00 МСК | Питер | Еженедельный аудит магазина за 30 дней |
+| 08:00 МСК | Тина | Дайджест новых тендеров по фильтрам |
+| каждую минуту | Марта | Обновление статуса офиса в Notion |
 
 ---
 
@@ -86,160 +244,104 @@ Worker Agents (asyncio, поллинг каждые 2 сек по agent_key)
       │
       ▼
 Claude API → результат в tasks.result → уведомление пользователю
+```
 
-Фоновые задачи:
-  ├── Макс — отзывы WB+Ozon: 09:00 / 14:00 / 20:00 МСК
-  ├── Макс — мониторинг негативных отзывов: каждые 15 мин
-  ├── Макс — синхронизация рекламы: 03:00 UTC
-  ├── Питер — еженедельный аудит: понедельник 10:00 МСК
-  ├── Ева — email-дайджест + сортировка почты: 09:30 МСК (нужен EVA_BOT_TOKEN + EMAIL_APP_PASS)
-  ├── Ева — дайджест каналов: 09:30 МСК (заблокировано: ждёт TELETHON_SESSION)
-  ├── Тина — дайджест тендеров: 08:00 МСК (ждёт деплой)
-  └── Марта — ежедневный дайджест: 21:00 МСК (запланировано Phase 8)
+---
+
+## Ключевые петли автоматизации (Макс)
+
+```
+Питер /report
+  → рекомендованная цена сохраняется в product_mapping
+  → Макс /apply_prices → кнопки [Применить WB] [Применить Ozon] [Всё] [Отмена]
+  → WB/Ozon API update_prices
+
+CTR < 1% (дайджест Питера)
+  → Redis pending_infographic:{chat_id}
+  → Марта ждёт фото
+  → Макс загружает инфографику на WB/Ozon
+  → product_mapping.infographic_updated_at = NOW()
+  → через 14 дней Питер показывает CTR до/после в /report
+
+ДРР выходит за пределы (авто 03:30 UTC или ручной /bid_adjust)
+  → кнопки [✅ Снизить ставку] [❌ Пропустить]
+  → WBClient.update_campaign_cpm()
 ```
 
 ---
 
 ## Что работает
 
-### ✅ Phase 1 — Core
+### ✅ Phase 1–7 (выполнено)
 
 - 10 агентов в одном asyncio event loop (PTB 22.7)
 - Postgres task queue, worker loop, retry, таймауты
-- `_on_polling_error` → `os._exit(0)` при Conflict
 - Redis история диалогов с автосжатием (Haiku summary при ≥15 сообщений)
+- Correlation ID сквозной через всю цепочку
+- Structured logging
+- Приоритеты, `remind_at`, ntfy.sh push, Groq Whisper голос
+- Claude Vision, цепочки с подтверждением, Notion интеграция
+- Макс: полный цикл WB+Ozon (отзывы, заказы, остатки, реклама, инфографика)
+- Питер: NET-маржа, ДРР, ROAS, ABC, воронка, план поставок, SEO-аудит, CTR инфографики
+- Dashboard React Mini App в Telegram (15 компонентов)
+- Тина задеплоена: тендеры 44-ФЗ через ГосПлан API
 
-### ✅ Phase 2 — Observability
+### ✅ Phase 8 — Автоматизация замкнутого цикла (июнь 2026)
 
-- `correlation_id` сквозной через всю цепочку
-- Structured logging (loguru)
-- `/status`, `/history`, `/cancel`, кнопки у Марты
-
-### ✅ Phase 3 — Коммуникация и память
-
-- Приоритеты 0/10/20, `_detect_priority()`
-- `remind_at`, ntfy.sh → iOS push, `/testpush`
-- Groq Whisper → транскрипция голосовых
-- Claude Vision: структура из референса, кнопки без подписи, Redis pending_image
-
-### ✅ Phase 4 — Оптимизация токенов
-
-- `is_task=True` — история не грузится при задачах (−40–60%)
-- Лимиты: payload 4000, история 1000, контекст 2000 символов
-- Логирование: `tokens | agent=X | input=Y | output=Z`
-
-### ✅ Phase 5 — Межагентная коммуникация (цепочки)
-
-- JSON план, кнопка подтверждения со списком шагов
-- Контекст через `tasks.result` в Postgres
-- Финал: резюме + кнопки [Открыть сайт] [Notion]
-- Защита от циклов через `from_agent`
-
-### ✅ Phase 6 — Notion + Projects
-
-- Реестр проектов: таблица `projects`, `/projects`, "продолжи проект X"
-- Статус офиса в Notion — каждую минуту
-- Notion интеграция:
-
-| База | Кто пишет | Когда |
-|------|-----------|-------|
-| Research | Каспер | Ответ > 2000 символов |
-| Research | Питер | Каждый бизнес-анализ |
-| Research | Дэн | Дизайн-система проекта |
-| Content | Элина | Каждая задача |
-| Tasks | Алекс | Каждая задача + напоминания |
-| Projects | Марта | Создание страницы проекта |
-| Страница проекта | Все агенты цепочки | Toggle H2 секции |
-| Статус офиса | Фоновая задача | Каждую минуту |
-
-### ✅ Phase 6.5 — Новые агенты (дизайн и медиа)
-
-- [x] Дэн — дизайнер (Pollinations.ai, цепочки Дэн→Кевин, Каспер→Дэн→Кевин)
-- [ ] Ева — дайджест Telegram каналов (ждёт `TELETHON_SESSION`)
-- [ ] Тина — тендерный агент 44-ФЗ (ждёт деплой + `TINA_BOT_TOKEN`)
-
-### ✅ Phase 6.6 — Маркетплейсы и форматирование (июнь 2026)
-
-- [x] Макс — полная интеграция WB+Ozon (отзывы, заказы, остатки, реклама)
-- [x] Питер — реальные данные из PostgreSQL (рентабельность, ДРР, SWOT)
-- [x] HTML-форматирование во всех агентах (parse_mode="HTML" + fallback везде)
-- [x] /help-команды для всех агентов, регистрация в Telegram UI
-- [x] Аналитика: воронка, финотчёты, возвраты, снимки истории, акции, KPI
-
-### ✅ Phase 7 — Единый диспетчер (июнь 2026)
-
-- [x] Марта — единственная точка входа. `/help` показывает возможности всей команды
-- [x] Proxy-команды у Марты: `/report`, `/reviews`, `/sync`, `/research`, `/write`, `/remind`
-- [x] Уведомление "⏳ Передала задачу X" при одиночном делегировании
-- [x] Chain result consolidation: финальное сообщение включает краткие выводы каждого агента
-- [x] HTML-форматирование: исправлен base_agent.handle_message, marta._process_text
-- [x] HTML правила добавлены в промпты Марты, Кевина, Дэна
-- [x] Dashboard MiniApp — React + aiohttp, HMAC-аутентификация, графики продаж
+- [x] Ежедневный дайджест Марты — задачи, ошибки, 21:05 МСК
+- [x] Ежедневный дайджест Питера — продажи за 7 дней, 21:00 МСК
+- [x] Управление ценами — Питер сохраняет рекомендации, Макс `/apply_prices` с кнопками
+- [x] Авто-анализ ставок — каждую ночь 03:30 UTC, уведомление с кнопками
+- [x] Авто-синхронизация воронки / возвратов / KPI по расписанию
+- [x] SEO-алерты `/seo_check` — падение позиций ≥10 мест
+- [x] CTR до/после инфографики в `/report`
+- [x] Повторная нотификация пропущенных вопросов (Redis TTL 2ч) + `/questions`
 
 ---
 
 ## Дорожная карта
 
-### 🔵 Phase 6 — Незакрытое
+### 🔵 Ближайшее
 
-- [x] **Execution Trace** — таблица `task_events` в Postgres.
-  Логировать: TASK_CREATED, TASK_STARTED, TOOL_CALLED, TOOL_FAILED, CHAIN_ADVANCED, TASK_COMPLETED, TASK_FAILED.
-  Хелпер `log_event(task_id, event_type, payload)` в `base_agent.py`.
-  Даёт: таймлайн цепочки, дебаг где сломалось, база для анализа промптов.
-  Вдохновлено Hermes Agent и OpenAI Agents SDK Tracing — без DSPy/GEPA.
+- [ ] **Кевин: `get_ci_status(repo)`** — статус GitHub Actions из API
+- [ ] **Ева: Telegram-каналы** — заблокировано: ждёт `TELETHON_SESSION`
+- [ ] **Ева: email-дайджест** — добавить `EVA_BOT_TOKEN + EMAIL_APP_PASS`
+- [ ] **Дэн: замена Pollinations.ai → Replicate/Flux** — $0.003/img, ~5 сек
 
-- [x] **Cost Tracking** — `estimated_cost` и `latency_ms` в БД.
-  Сейчас только логирование токенов — стоимость не считается.
-  Отчёт от Питера по запросу.
-
-- [ ] **Деплой Евы (email-дайджест + сортировка)** — добавить `EVA_BOT_TOKEN`, `EMAIL_USER`, `EMAIL_APP_PASS` → `/email_digest 1d` и `/sort_emails 1d` работают без Telethon; автозапуск 09:30 МСК
-- [ ] **Деплой Евы (Telegram-каналы)** — заблокировано: my.telegram.org выдаёт ERROR при создании API-приложения; нужен `TELEGRAM_API_ID` + `TELEGRAM_API_HASH` → `TELETHON_SESSION`
-
-- [ ] **Деплой Тины** — добавить `TINA_BOT_TOKEN` в Railway, проверить `/tenders`.
-
-### ⚪ Phase 8 — AI Operating System
+### ⚪ Phase 9 — AI Operating System
 
 - [ ] Persistent company context — профиль компании в system prompt всех агентов
 - [ ] Механизм уточнений — агент задаёт вопрос, ждёт ответа, продолжает
-- [ ] Approval Gates по уровням риска:
-  - 0 (исследование, тексты, изображения) — без подтверждения
-  - 1 (создание репо) — опционально
-  - 2 (push в main, деплой) — обязательно
-  - 3 (внешние API с расходами) — обязательно
-- [ ] UI таймлайна цепочки (на базе task_events из Phase 6)
+- [ ] Approval Gates по уровням риска
 - [ ] Autonomous workflow: задача → план → код → тесты → PR → деплой
-- [ ] **Ежедневный дайджест Марты** — фоновая задача 21:00 МСК.
-  `get_recent_tasks(limit=50)` → краткий отчёт в TG: сколько задач / кто / что / ошибки.
-- [ ] State machine для цепочек — когда появятся параллельные ветки
-
-### ⚪ Phase 9 — Финансовая автоматизация
-
-- [ ] Деплой Евы (email-дайджест) — `EVA_BOT_TOKEN + EMAIL_APP_PASS`
-- [ ] Деплой Тины (тендеры) — `TINA_BOT_TOKEN + GOSPLAN_API_KEY`
-- [ ] Cost Tracking дашборд у Питера — расходы API по агентам за период
-- [ ] Автосинхронизация WB кампаний когда вернут API
 
 ---
 
-## Планируемые таблицы (Phase 6)
+## Известные проблемы
 
-### task_events — execution trace
+### ⚠️ Conflict при деплое — это нормально
 
-```sql
-task_events
-├── id          BIGSERIAL PRIMARY KEY
-├── task_id     BIGINT          -- ссылка на tasks.id
-├── chain_id    TEXT            -- группировка событий цепочки
-├── agent_key   TEXT
-├── event_type  TEXT            -- TASK_CREATED / TASK_STARTED / TOOL_CALLED /
-│                               -- TOOL_FAILED / CHAIN_ADVANCED /
-│                               -- TASK_COMPLETED / TASK_FAILED
-├── payload     JSONB           -- инструмент, ошибка, длина результата и т.д.
-└── created_at  TIMESTAMPTZ DEFAULT NOW()
-
-INDEX: idx_task_events_chain ON task_events(chain_id, created_at)
-INDEX: idx_task_events_task  ON task_events(task_id, created_at)
+При rolling restart Railway появляется:
 ```
+telegram.error.Conflict: terminated by other getUpdates request
+```
+Обработано через `_on_polling_error` → `os._exit(0)`. Само проходит за 30–60 сек.
+
+### ⚠️ WB /adv/v1/promotion/adverts → 404
+
+Эндпоинт недоступен с октября 2025. Названия рекламных кампаний вносить вручную в таблицу `wb_campaigns`.
+
+### ⚠️ Notion Unclosed connection
+
+Периодически в логах `Unclosed connection` от Notion клиента. Некритично.
+
+### ⚠️ Дэн заморожен
+
+Pollinations.ai генерирует 30–120 сек. Замена: Replicate/Flux (~$0.003/img).
+
+### ⚠️ Ева ждёт TELETHON_SESSION
+
+Агент запускается, но дайджест каналов не работает без сессии Telethon.
 
 ---
 
@@ -250,7 +352,7 @@ INDEX: idx_task_events_task  ON task_events(task_id, created_at)
 | Python | 3.11 |
 | python-telegram-bot | 22.7 |
 | anthropic (AsyncAnthropic) | 0.104.1 |
-| Claude модель (основная) | claude-sonnet-4-6 |
+| Claude (основной) | claude-sonnet-4-6 |
 | Claude Opus (планирование цепочек) | claude-opus-4-8 |
 | Claude Haiku (summary) | claude-haiku-4-5-20251001 |
 | asyncpg | 0.29.0 |
@@ -259,9 +361,6 @@ INDEX: idx_task_events_task  ON task_events(task_id, created_at)
 | aiohttp | 3.13.5 |
 | loguru | 0.7.3 |
 | groq | latest |
-| python-dotenv | 1.2.2 |
-| ntfy.sh | HTTP API |
-| Pollinations.ai | HTTP API (бесплатно) |
 | ГосПлан API | v2 (бесплатно до 01.08.2026) |
 
 ---
@@ -271,113 +370,39 @@ INDEX: idx_task_events_task  ON task_events(task_id, created_at)
 ```
 ai-office/
 ├── CLAUDE.md               # Навигация для Claude Code сессий
-├── ROADMAP.md              # Этот файл — стратегический документ
+├── ROADMAP.md              # Этот файл — документация
 ├── main.py                 # Точка входа, asyncio, фоновые задачи
 ├── config.py               # env переменные + CONSTANTS
-├── task_queue.py           # enqueue_task, enqueue_chain_task, get_next_task, mark_*
+├── db.py                   # Схема БД, CRUD-функции
+├── task_queue.py           # enqueue_task, get_next_task, get_daily_task_summary
 ├── agents/
 │   ├── base_agent.py       # think, _worker_loop, _notify_user, _advance_chain
-│   ├── marta.py            # _process_text, _plan_chain, handle_photo, chain confirm
-│   ├── kevin.py            # GITHUB_TOOLS, agentic loop, max_tokens=16000
-│   ├── dan.py              # DESIGN_TOOLS, Pollinations, GitHub images
+│   ├── marta.py            # router, chain planner, send_daily_digest
+│   ├── kevin.py            # GITHUB_TOOLS, agentic loop
+│   ├── dan.py              # DESIGN_TOOLS, Pollinations (заморожен)
 │   ├── kasper.py           # Tavily, Notion Research
-│   ├── peter.py            # PostgreSQL данные, рентабельность, ДРР
+│   ├── peter.py            # PostgreSQL аналитика, рекомендации цен
 │   ├── elina.py            # Notion Content
 │   ├── alex.py             # Notion Tasks, ntfy.sh
-│   ├── eva.py              # Telethon, digest_channels, Notion Content
-│   ├── max.py              # WB+Ozon API, отзывы, заказы, реклама
-│   └── tina.py             # ГосПлан API, tender_opportunities
+│   ├── eva.py              # Telethon (заморожена)
+│   ├── max.py              # WB+Ozon полный цикл
+│   └── tina.py             # ГосПлан API, тендеры
 ├── tools/
+│   ├── marketplace.py      # WBClient, OzonClient, OzonPerformanceClient
 │   ├── search.py           # Tavily
-│   ├── notion.py           # API, _markdown_to_blocks, update_status_page
-│   ├── github.py           # create_repo, create_file, create_branch, create_pr, enable_pages
+│   ├── notion.py           # API, update_status_page
+│   ├── github.py           # create_repo, create_file, create_pr, enable_pages
 │   ├── ntfy.py             # send_push
 │   └── gosplan_api.py      # ГосПлан API клиент
 ├── utils/
-│   └── tg_format.py        # HTML-форматирование для Telegram
-├── docs/
-│   └── index.html          # Интерактивная визуализация архитектуры
+│   ├── tg_format.py        # HTML-форматирование
+│   └── tg_rich.py          # Rich Messages, send_rich_or_fallback
 ├── plans/                  # Технические планы фич
+│   └── archive/            # Завершённые планы
 ├── retrospectives/         # Рефлексии сессий
 ├── ai-clone/feedback/      # Накопленные правила работы
-├── .claude/skills/         # SKILL.md для Claude Code
-├── requirements.txt
-├── Dockerfile
-└── railway.toml
+└── .claude/skills/         # SKILL.md для Claude Code
 ```
-
----
-
-## Известные проблемы
-
-> Честная фиксация — что сырое или работает с оговорками.
-
-### ⚠️ Conflict при деплое — это нормально
-
-При rolling restart Railway старый инстанс ещё жив, новый уже стартовал:
-```
-telegram.error.Conflict: terminated by other getUpdates request
-```
-Обработано через `_on_polling_error` → `os._exit(0)`. Само проходит за 30–60 сек. Не паниковать.
-
-### ⚠️ WB /adv/v1/promotion/adverts → 404
-
-Эндпоинт недоступен с октября 2025. Названия рекламных кампаний вносить вручную в таблицу `wb_campaigns`. Автосинхронизация названий не работает.
-
-### ⚠️ Notion Unclosed connection
-
-Периодически в логах появляется `Unclosed connection` от Notion клиента. Некритично, мониторим. Задачи и данные не теряются.
-
-### ⚠️ Дэн (Pollinations.ai) — медленный
-
-Генерация одного изображения 30–120 сек. Лендинг с 6 картинками = 5–7 минут. `timeout_seconds = 600`.
-Альтернатива если станет критично — Replicate/Flux (~$0.003/img), замена URL в `_generate_image`.
-
-### ⚠️ Кевин и max_tokens
-
-`max_tokens = 16000` — потолок sonnet-4. Очень большой лендинг может обрезаться. Симптом: `stop_reason='max_tokens'` в логах. Решение: разбивать на несколько `create_file`.
-
-### ⚠️ Ева ждёт TELETHON_SESSION
-
-Агент зарегистрирован и запускается, но дайджест не работает без сессии Telethon. Нужен второй номер телефона для авторизации.
-
-### ⚠️ Тина ждёт деплой
-
-Код готов, нужно добавить `TINA_BOT_TOKEN` в Railway и проверить `/tenders` через Telegram.
-
----
-
-## Антипаттерны (не делать)
-
-- ❌ LangGraph / CrewAI / MetaGPT — оверинжиниринг для соло
-- ❌ Celery / RabbitMQ / Kafka — не нужно на этом масштабе
-- ❌ DSPy / GEPA для авто-улучшения промптов — для исследователей, не для соло
-- ❌ Kubernetes / микросервисы — преждевременно
-- ❌ Notion как transactional backend
-- ❌ Переписывать с нуля — только эволюция
-- ❌ DAG-style dependencies — цепочки линейные
-- ❌ DALL-E 3 для Дэна — Pollinations.ai бесплатно, для прототипов достаточно
-- ❌ Ева/Тина в отдельные Railway сервисы — лишние расходы
-- ❌ Дробить Кевина на классы — преждевременная абстракция
-- ❌ git add . или git add -A — только поимённо
-- ❌ railway up без явной команды Бориса — продакшн с живыми заказами
-
----
-
-## Источники вдохновения
-
-**Hermes Agent (Nous Research)** — self-improving агент с learning loop и скиллами.
-Взята идея execution traces для отладки цепочек.
-Код не переиспользуется — разная философия (один агент vs команда ролей).
-
-**OpenClaw** — паттерн MEMORY.md: агент сам ведёт ежедневный дневник своей работы.
-В нашем случае — Марта пишет вечерний дайджест в Notion (Phase 6, не реализовано).
-
-**OpenAI Agents SDK** — встроенный Tracing подтверждает правильность нашего подхода
-к execution traces через task_events.
-
-**Pocket Flow** — 100-строчный LLM фреймворк. Доказывает что вся оркестрация агентов
-не требует тысяч строк. Наша архитектура лаконичнее большинства фреймворков.
 
 ---
 
@@ -396,13 +421,13 @@ ALEX_BOT_TOKEN=
 DEN_BOT_TOKEN=
 EVA_BOT_TOKEN=
 MAX_BOT_TOKEN=
-TINA_BOT_TOKEN=          # добавить в Railway для активации Тины
+TINA_BOT_TOKEN=
 
 OFFICE_GROUP_ID=
-PARTNERS_GROUP_ID=        # группа для сводок Макса
+PARTNERS_GROUP_ID=        # группа для уведомлений Макса
 
-DATABASE_URL=             # Railway: Add Plugin → PostgreSQL
-REDIS_URL=                # Railway: Add Plugin → Redis
+DATABASE_URL=
+REDIS_URL=
 
 TAVILY_API_KEY=
 GROQ_API_KEY=
@@ -416,29 +441,36 @@ NOTION_TASKS_DB=
 NOTION_IDEAS_DB=
 NOTION_RESEARCH_DB=
 NOTION_CONTENT_DB=
-NOTION_STATUS_PAGE_ID=   # ID страницы "Статус офиса" (фиксированный)
+NOTION_STATUS_PAGE_ID=
 
 NTFY_TOPIC=
-
-# WB + Ozon (Макс)
-WB_API_TOKEN=
-OZON_API_KEY=
-OZON_CLIENT_ID=
 
 # Ева — Telethon (дайджест каналов)
 TELEGRAM_API_ID=
 TELEGRAM_API_HASH=
-TELETHON_SESSION=         # добавить для активации Евы
+TELETHON_SESSION=         # разморозить Еву
 
 # Тина — тендеры
 GOSPLAN_API_KEY=          # опционально до 01.08.2026
 TENDER_REGION_CODE=       # напр. 23 для Краснодарского края
 TENDER_MIN_NMCK=
 TENDER_MAX_NMCK=
-TENDER_SCAN_HOUR_UTC=     # час дайджеста тендеров по UTC
+TENDER_SCAN_HOUR_UTC=
 
 CLAUDE_MODEL=claude-sonnet-4-6
 CLAUDE_OPUS_MODEL=claude-opus-4-8
 CLAUDE_HAIKU_MODEL=claude-haiku-4-5-20251001
 PORT=8080
 ```
+
+---
+
+## Антипаттерны (не делать)
+
+- ❌ LangGraph / CrewAI / MetaGPT — оверинжиниринг для соло
+- ❌ Celery / RabbitMQ / Kafka — не нужно на этом масштабе
+- ❌ Kubernetes / микросервисы — преждевременно
+- ❌ Notion как transactional backend
+- ❌ Переписывать с нуля — только эволюция
+- ❌ git add . или git add -A — только поимённо
+- ❌ railway up без явной команды Бориса — продакшн с живыми заказами
