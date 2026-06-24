@@ -813,6 +813,13 @@ class PeterAgent(BaseAgent):
 
         chat_id = getattr(self, "_current_chat_id", None) or 0
 
+        # Dispatch коротких команд из proxy Марты (вида "__order__ [args]")
+        if task.startswith("__order__"):
+            import re as _re_ord
+            _m = _re_ord.search(r"(\d+)", task)
+            _days_ord = int(_m.group(1)) if _m else 30
+            return await self._order_analysis(chat_id, _days_ord)
+
         import re as _re
         _days_match = _re.search(r"за\s+(\d+)\s+дн", task.lower())
         _days = int(_days_match.group(1)) if _days_match else 14
@@ -1639,6 +1646,16 @@ class PeterAgent(BaseAgent):
             )
             return
 
+        answer = await self._order_analysis(chat_id, days, data)
+        await self._send_answer(answer, update=update)
+
+    async def _order_analysis(self, chat_id: int, days: int, data: list[dict] | None = None) -> str:
+        """Сформировать рекомендацию по заказу у поставщика. Возвращает текст ответа."""
+        if data is None:
+            data = await self._collect_order_advice_data(chat_id, days=days)
+        if not data:
+            return "❌ Нет данных по остаткам. Запусти /sync у Макса для синхронизации."
+
         lead = config.SUPPLY_LEAD_TIME_DAYS
         safety = config.SUPPLY_SAFETY_STOCK_DAYS
 
@@ -1680,7 +1697,6 @@ class PeterAgent(BaseAgent):
 - Три горизонта: 30/60/90 дней — это сколько дней продаж надо обеспечить (не срок поставки)
 - Если нет данных по стокам — предупреди что нужен /sync у Макса"""
 
-        await update.message.reply_text("🤔 Формирую рекомендацию…")
         try:
             from anthropic import AsyncAnthropic
             client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -1690,13 +1706,10 @@ class PeterAgent(BaseAgent):
                 system=PETER_SYSTEM,
                 messages=[{"role": "user", "content": prompt}],
             )
-            answer = resp.content[0].text
+            return resp.content[0].text
         except Exception as e:
             logger.error(f"[Питер/order] ошибка Claude: {e}", exc_info=True)
-            await update.message.reply_text(f"❌ Ошибка анализа: {e}")
-            return
-
-        await self._send_answer(answer, update=update)
+            return f"❌ Ошибка анализа: {e}"
 
     async def _collect_seo_audit_data(self, chat_id: int, days: int = 30) -> list[dict]:
         """Воронка + контент карточек + SEO-проблемы для каждого товара."""

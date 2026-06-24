@@ -1310,13 +1310,47 @@ class MartaAgent(BaseAgent):
             BotCommand("start", "Главное меню и помощь"),
             BotCommand("status", "Состояние офиса и активные задачи"),
             BotCommand("history", "Последние 10 задач"),
-            BotCommand("report", "📊 Отчёт по продажам (Питер)"),
-            BotCommand("reviews", "⭐ Обработать отзывы (Макс)"),
-            BotCommand("sync", "🔄 Синхронизировать данные (Макс)"),
-            BotCommand("research", "🔍 Исследование темы (Каспер)"),
-            BotCommand("write", "✍️ Написать текст (Элина)"),
-            BotCommand("remind", "⏰ Установить напоминание (Алекс)"),
-            BotCommand("delegate", "Передать задачу агенту"),
+            # ── Питер ─────────────────────────────────────────────────────
+            BotCommand("report", "📊 Отчёт по продажам"),
+            BotCommand("order", "📬 Заказать ли у поставщика (30/60/90 дней)"),
+            BotCommand("supply", "🚚 План поставки по складам"),
+            BotCommand("drr", "💸 Доля рекламных расходов"),
+            BotCommand("abc", "🔠 ABC-анализ товаров"),
+            BotCommand("funnel", "🔽 Воронка конверсии"),
+            BotCommand("returns", "↩️ Анализ возвратов"),
+            BotCommand("audit", "🔍 30-дневный аудит магазина"),
+            BotCommand("seo_audit", "🔤 SEO-аудит карточек"),
+            BotCommand("analyze", "🧠 Произвольный бизнес-анализ"),
+            # ── Макс ──────────────────────────────────────────────────────
+            BotCommand("sync", "🔄 Синхронизировать данные"),
+            BotCommand("sync_fin", "💰 Финансовый отчёт за 90 дней"),
+            BotCommand("sync_adv", "📣 Статистика рекламы"),
+            BotCommand("sync_funnel", "🔽 Синхронизация воронки"),
+            BotCommand("sync_returns", "↩️ Синхронизация возвратов"),
+            BotCommand("sync_cards", "🃏 Контент карточек"),
+            BotCommand("sync_keywords", "🔑 Позиции ключевых слов"),
+            BotCommand("reviews", "⭐ Обработать отзывы"),
+            BotCommand("questions", "❓ Вопросы покупателей"),
+            BotCommand("pending", "⏳ Ожидают модерации"),
+            BotCommand("products", "📦 Список товаров"),
+            BotCommand("shop_kpi", "📊 KPI магазина"),
+            BotCommand("data_status", "🗂️ Статус данных"),
+            BotCommand("shops", "🏪 Мои магазины"),
+            BotCommand("seo_check", "🔻 Падение позиций ключей"),
+            BotCommand("bid_adjust", "🎯 Рекомендации по ставкам"),
+            BotCommand("margin", "📐 Проверить маржу товара"),
+            BotCommand("apply_prices", "✅ Применить рекомендованные цены"),
+            # ── Другие агенты ─────────────────────────────────────────────
+            BotCommand("code", "👨‍💻 Кевин: написать код"),
+            BotCommand("plan", "📋 Кевин: спланировать фичу"),
+            BotCommand("write", "✍️ Элина: написать текст"),
+            BotCommand("post", "📝 Элина: написать пост"),
+            BotCommand("research", "🔍 Каспер: исследовать тему"),
+            BotCommand("remind", "⏰ Алекс: напоминание"),
+            BotCommand("tenders", "🏛️ Тина: дайджест тендеров"),
+            BotCommand("tenders_report", "📑 Тина: аналитика тендеров"),
+            # ── Служебные ─────────────────────────────────────────────────
+            BotCommand("delegate", "Передать задачу конкретному агенту"),
             BotCommand("cancel", "Отменить задачу из очереди"),
             BotCommand("reset", "Очистить историю диалога"),
         ]
@@ -1336,7 +1370,7 @@ class MartaAgent(BaseAgent):
         chat_id = update.effective_chat.id
         args_text = " ".join(context.args) if context.args else ""
         task = args_text or default_task
-        task_id, _ = await enqueue_task(
+        await enqueue_task(
             assigned_agent=agent_key,
             payload=task,
             from_agent="marta",
@@ -1346,6 +1380,7 @@ class MartaAgent(BaseAgent):
         _AGENT_LABEL = {
             "peter": "📊 Питер", "max": "🛒 Макс", "kasper": "🔍 Каспер",
             "elina": "✍️ Элина", "alex": "🗓️ Алекс", "kevin": "👨‍💻 Кевин",
+            "tina": "🏛️ Тина",
         }
         label = _AGENT_LABEL.get(agent_key, agent_key)
         await _send_rich(
@@ -1355,8 +1390,42 @@ class MartaAgent(BaseAgent):
             reply_to_message_id=update.message.message_id,
         )
 
+    # ── Питер ────────────────────────────────────────────────────────────────
+
     async def cmd_proxy_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "peter", "Дай сводный отчёт по продажам WB и Ozon за последние 7 дней")
+
+    async def cmd_proxy_order(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        args = " ".join(context.args) if context.args else ""
+        await self._proxy_cmd(update, context, "peter", f"__order__ {args}".strip())
+
+    async def cmd_proxy_supply(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "peter", "план поставки по складам и регионам")
+
+    async def cmd_proxy_drr(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        args = " ".join(context.args) if context.args else ""
+        period = args if args else "за 30 дней"
+        await self._proxy_cmd(update, context, "peter", f"анализ доли рекламных расходов ДРР {period}")
+
+    async def cmd_proxy_abc(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "peter", "ABC-анализ товаров по вкладу в выручку за 30 дней")
+
+    async def cmd_proxy_funnel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "peter", "воронка конверсии карточек: просмотры, корзина, заказы, выкупы")
+
+    async def cmd_proxy_returns(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "peter", "анализ возвратов по товарам за 30 дней: ставка и причины")
+
+    async def cmd_proxy_audit(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "peter", "аудит магазина за 30 дней: здоровье показателей, SWOT, KPI")
+
+    async def cmd_proxy_seo_audit(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "peter", "seo аудит карточек: CTR, позиции, приоритеты улучшений")
+
+    async def cmd_proxy_analyze(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "peter", "Проведи произвольный бизнес-анализ по данным маркетплейсов")
+
+    # ── Макс ─────────────────────────────────────────────────────────────────
 
     async def cmd_proxy_reviews(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "max", "Обработай новые отзывы на маркетплейсах")
@@ -1364,14 +1433,101 @@ class MartaAgent(BaseAgent):
     async def cmd_proxy_sync(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "max", "Синхронизируй данные: заказы, остатки, финансы")
 
-    async def cmd_proxy_research(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "kasper", "Исследуй тему")
+    async def cmd_proxy_sync_fin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "синхронизируй финансовые отчёты WB и Ozon за 90 дней")
+
+    async def cmd_proxy_sync_adv(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "синхронизируй статистику рекламных кампаний WB и Ozon")
+
+    async def cmd_proxy_sync_funnel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "синхронизируй воронку конверсии карточек")
+
+    async def cmd_proxy_sync_returns(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "синхронизируй аналитику возвратов WB и Ozon")
+
+    async def cmd_proxy_sync_cards(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "синхронизируй контент карточек товаров")
+
+    async def cmd_proxy_sync_keywords(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "синхронизируй позиции ключевых слов WB")
+
+    async def cmd_proxy_sync_sku(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "сопоставь артикулы WB и Ozon (sync_sku)")
+
+    async def cmd_proxy_questions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "покажи все неотвеченные вопросы покупателей")
+
+    async def cmd_proxy_pending(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "покажи отзывы ожидающие модерации")
+
+    async def cmd_proxy_products(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "покажи список товаров с маппингом WB и Ozon")
+
+    async def cmd_proxy_shop_kpi(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "покажи KPI магазина: рейтинг продавца, штрафы, показатели")
+
+    async def cmd_proxy_data_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "покажи статус синхронизации данных: что свежее, что устарело")
+
+    async def cmd_proxy_shops(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "покажи список подключённых магазинов WB и Ozon")
+
+    async def cmd_proxy_seo_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "проверь падение позиций ключевых слов (≥10 мест) — SEO-алерты")
+
+    async def cmd_proxy_bid_adjust(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "рекомендации по рекламным ставкам на основе ДРР — bid_adjust")
+
+    async def cmd_proxy_margin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        args = " ".join(context.args) if context.args else ""
+        await self._proxy_cmd(update, context, "max", f"быстрая проверка маржи по товару {args}".strip())
+
+    async def cmd_proxy_apply_prices(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "применить рекомендованные цены от Питера — apply_prices")
+
+    # ── Кевин ────────────────────────────────────────────────────────────────
+
+    async def cmd_proxy_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        args = " ".join(context.args) if context.args else ""
+        await self._proxy_cmd(update, context, "kevin", f"Напиши код: {args}" if args else "Реши задачу разработки")
+
+    async def cmd_proxy_plan(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        args = " ".join(context.args) if context.args else ""
+        await self._proxy_cmd(update, context, "kevin", f"Составь план реализации: {args}" if args else "Составь план реализации фичи")
+
+    # ── Элина ────────────────────────────────────────────────────────────────
 
     async def cmd_proxy_write(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "elina", "Напиши текст")
 
+    async def cmd_proxy_post(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        args = " ".join(context.args) if context.args else ""
+        await self._proxy_cmd(update, context, "elina", f"Напиши пост на тему: {args}" if args else "Напиши пост для маркетплейса или соцсетей")
+
+    async def cmd_proxy_seo_elina(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        args = " ".join(context.args) if context.args else ""
+        await self._proxy_cmd(update, context, "elina", f"SEO-оптимизация карточки товара: {args}" if args else "SEO-оптимизация карточки товара")
+
+    # ── Алекс ────────────────────────────────────────────────────────────────
+
     async def cmd_proxy_remind(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "alex", "Установи напоминание")
+
+    async def cmd_proxy_testpush(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "alex", "testpush")
+
+    # ── Каспер ───────────────────────────────────────────────────────────────
+
+    async def cmd_proxy_research(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "kasper", "Исследуй тему")
+
+    # ── Тина ─────────────────────────────────────────────────────────────────
+
+    async def cmd_proxy_tenders(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "tina", "tenders")
+
+    async def cmd_proxy_tenders_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "tina", "tenders_report")
 
     async def send_daily_digest(self, chat_id: int) -> None:
         """Ежедневный дайджест задач — отправляется в 21:00 МСК (18:00 UTC)."""
@@ -1432,13 +1588,49 @@ class MartaAgent(BaseAgent):
         self.app.add_handler(CommandHandler("status", self.cmd_status))
         self.app.add_handler(CommandHandler("cancel", self.cmd_cancel))
         self.app.add_handler(CommandHandler("history", self.cmd_history))
-        # Proxy-команды — ярлыки для других агентов
+        # ── Proxy-команды Питера ─────────────────────────────────────────
         self.app.add_handler(CommandHandler("report", self.cmd_proxy_report))
+        self.app.add_handler(CommandHandler("order", self.cmd_proxy_order))
+        self.app.add_handler(CommandHandler("supply", self.cmd_proxy_supply))
+        self.app.add_handler(CommandHandler("drr", self.cmd_proxy_drr))
+        self.app.add_handler(CommandHandler("abc", self.cmd_proxy_abc))
+        self.app.add_handler(CommandHandler("funnel", self.cmd_proxy_funnel))
+        self.app.add_handler(CommandHandler("returns", self.cmd_proxy_returns))
+        self.app.add_handler(CommandHandler("audit", self.cmd_proxy_audit))
+        self.app.add_handler(CommandHandler("seo_audit", self.cmd_proxy_seo_audit))
+        self.app.add_handler(CommandHandler("analyze", self.cmd_proxy_analyze))
+        # ── Proxy-команды Макса ──────────────────────────────────────────
         self.app.add_handler(CommandHandler("reviews", self.cmd_proxy_reviews))
         self.app.add_handler(CommandHandler("sync", self.cmd_proxy_sync))
-        self.app.add_handler(CommandHandler("research", self.cmd_proxy_research))
+        self.app.add_handler(CommandHandler("sync_fin", self.cmd_proxy_sync_fin))
+        self.app.add_handler(CommandHandler("sync_adv", self.cmd_proxy_sync_adv))
+        self.app.add_handler(CommandHandler("sync_funnel", self.cmd_proxy_sync_funnel))
+        self.app.add_handler(CommandHandler("sync_returns", self.cmd_proxy_sync_returns))
+        self.app.add_handler(CommandHandler("sync_cards", self.cmd_proxy_sync_cards))
+        self.app.add_handler(CommandHandler("sync_keywords", self.cmd_proxy_sync_keywords))
+        self.app.add_handler(CommandHandler("sync_sku", self.cmd_proxy_sync_sku))
+        self.app.add_handler(CommandHandler("questions", self.cmd_proxy_questions))
+        self.app.add_handler(CommandHandler("pending", self.cmd_proxy_pending))
+        self.app.add_handler(CommandHandler("products", self.cmd_proxy_products))
+        self.app.add_handler(CommandHandler("shop_kpi", self.cmd_proxy_shop_kpi))
+        self.app.add_handler(CommandHandler("data_status", self.cmd_proxy_data_status))
+        self.app.add_handler(CommandHandler("shops", self.cmd_proxy_shops))
+        self.app.add_handler(CommandHandler("seo_check", self.cmd_proxy_seo_check))
+        self.app.add_handler(CommandHandler("bid_adjust", self.cmd_proxy_bid_adjust))
+        self.app.add_handler(CommandHandler("margin", self.cmd_proxy_margin))
+        self.app.add_handler(CommandHandler("apply_prices", self.cmd_proxy_apply_prices))
+        # ── Proxy-команды других агентов ─────────────────────────────────
+        self.app.add_handler(CommandHandler("code", self.cmd_proxy_code))
+        self.app.add_handler(CommandHandler("plan", self.cmd_proxy_plan))
         self.app.add_handler(CommandHandler("write", self.cmd_proxy_write))
+        self.app.add_handler(CommandHandler("post", self.cmd_proxy_post))
+        self.app.add_handler(CommandHandler("seo", self.cmd_proxy_seo_elina))
+        self.app.add_handler(CommandHandler("research", self.cmd_proxy_research))
         self.app.add_handler(CommandHandler("remind", self.cmd_proxy_remind))
+        self.app.add_handler(CommandHandler("testpush", self.cmd_proxy_testpush))
+        self.app.add_handler(CommandHandler("tenders", self.cmd_proxy_tenders))
+        self.app.add_handler(CommandHandler("tenders_report", self.cmd_proxy_tenders_report))
+        # ── Callbacks Марты ──────────────────────────────────────────────
         self.app.add_handler(CallbackQueryHandler(
             self._handle_chain_callback,
             pattern="^chain_(confirm|cancel)$",
