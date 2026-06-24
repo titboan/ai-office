@@ -4524,31 +4524,29 @@ class MaxAgent(BaseAgent):
             })
         return suggestions
 
-    async def cmd_bid_adjust(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
-        """/bid_adjust — рекомендации по рекламным ставкам на основе ДРР."""
-        chat_id = update.effective_user.id
+    async def auto_bid_suggest(self, chat_id: int) -> int:
+        """Автоматический анализ ставок — вызывается планировщиком.
+
+        Отправляет предложения с кнопками подтверждения.
+        Возвращает количество отправленных предложений.
+        """
         lock_key = f"bid_lock:{chat_id}"
         if await self._redis_get(lock_key):
-            await update.message.reply_text(
-                "⏳ Уже есть активные предложения по ставкам. Ответь на них или подожди 10 минут."
-            )
-            return
+            return 0
 
-        await update.message.reply_text("📊 Анализирую ДРР по кампаниям за 7 дней…")
         suggestions = await self._collect_bid_suggestions(chat_id)
         if not suggestions:
-            await update.message.reply_text(
-                "✅ Все ставки выглядят нормально — ДРР в допустимых пределах.\n\n"
-                "Убедись что синхронизирована реклама (/sync_adv)."
-            )
-            return
+            return 0
 
         await self._redis_set(lock_key, "1", ttl=600)
+        await self.bot.send_message(
+            chat_id=chat_id,
+            text="🤖 <b>Авто-анализ ставок</b>\nПо данным за 7 дней есть предложения по корректировке:",
+            parse_mode="HTML",
+        )
 
         for s in suggestions[:8]:
-            arrow  = "📉 Снизить" if s["direction"] == "down" else "📈 Поднять"
+            arrow    = "📉 Снизить" if s["direction"] == "down" else "📈 Поднять"
             mp_label = "🟣 WB" if s["marketplace"] == "wb" else "🔵 Ozon"
             text = (
                 f"{mp_label} <b>{s['name']}</b>\n"
@@ -4567,6 +4565,28 @@ class MaxAgent(BaseAgent):
             ]])
             await self.bot.send_message(
                 chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=keyboard
+            )
+
+        return len(suggestions[:8])
+
+    async def cmd_bid_adjust(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """/bid_adjust — рекомендации по рекламным ставкам на основе ДРР."""
+        chat_id = update.effective_user.id
+        lock_key = f"bid_lock:{chat_id}"
+        if await self._redis_get(lock_key):
+            await update.message.reply_text(
+                "⏳ Уже есть активные предложения по ставкам. Ответь на них или подожди 10 минут."
+            )
+            return
+
+        await update.message.reply_text("📊 Анализирую ДРР по кампаниям за 7 дней…")
+        sent = await self.auto_bid_suggest(chat_id)
+        if not sent:
+            await update.message.reply_text(
+                "✅ Все ставки выглядят нормально — ДРР в допустимых пределах.\n\n"
+                "Убедись что синхронизирована реклама (/sync_adv)."
             )
 
     async def _handle_bid_callback(

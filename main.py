@@ -794,6 +794,38 @@ async def run_all_async() -> None:
     asyncio.create_task(_kpi_sync_loop())
     logger.info("[main] KPI sync task запущен (ежедневно 02:00 UTC)")
 
+    async def _auto_bid_loop():
+        """Авто-анализ ставок — ежедневно в 03:30 UTC (после синка рекламы в 03:00)."""
+        from datetime import datetime, timezone, timedelta
+        from db import get_all_active_shops
+
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                target = now.replace(hour=3, minute=30, second=0, microsecond=0)
+                if target <= now:
+                    target += timedelta(days=1)
+                await asyncio.sleep((target - now).total_seconds())
+
+                if max_agent is None:
+                    continue
+                shops = await get_all_active_shops()
+                for chat_id in _unique_chats(shops):
+                    try:
+                        sent = await max_agent.auto_bid_suggest(chat_id)
+                        if sent:
+                            logger.info(f"[auto_bid] chat_id={chat_id} отправлено {sent} предложений")
+                    except Exception as e:
+                        logger.error(f"[auto_bid] chat_id={chat_id} ошибка: {e}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[auto_bid] критическая ошибка: {e}")
+                await asyncio.sleep(60)
+
+    asyncio.create_task(_auto_bid_loop())
+    logger.info("[main] Auto bid task запущен (ежедневно 03:30 UTC)")
+
     # ── Dashboard API (aiohttp) ───────────────────────────────────────────────
     _CORS_ORIGIN = config.DASHBOARD_URL or "*"
 
