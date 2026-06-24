@@ -1493,6 +1493,211 @@ class PeterAgent(BaseAgent):
             update=update,
         )
 
+    async def _collect_order_advice_data(self, chat_id: int, days: int = 30) -> list[dict]:
+        """Суммарный сток по товару (все склады) + темп продаж → совет заказывать или нет."""
+        from db import get_pool
+        pool = await get_pool()
+        date_from = (datetime.now(_UTC) - timedelta(days=days)).date()
+
+        async with pool.acquire() as conn:
+            # Суммарный сток по каждому товару (все склады суммируем)
+            stock_rows = await conn.fetch("""
+                SELECT s.marketplace, s.product_id,
+                       COALESCE(m.display_name, MAX(s.product_name)) AS name,
+                       MAX(m.category)                                AS category,
+                       MAX(c.cost)::numeric(10,2)                     AS unit_cost,
+                       SUM(s.stock)::int                              AS total_stock
+                FROM marketplace_stocks s
+                LEFT JOIN product_mapping m
+                       ON (s.marketplace = 'wb'   AND m.wb_article    = s.product_id)
+                       OR (s.marketplace = 'ozon' AND m.ozon_offer_id = s.product_id)
+                LEFT JOIN product_costs c
+                       ON c.mapping_id = m.id AND c.marketplace = s.marketplace
+                WHERE s.chat_id = $1
+                GROUP BY s.marketplace, s.product_id, m.display_name
+            """, chat_id)
+
+            # Темп продаж за период
+            velocity_rows = await conn.fetch("""
+                SELECT o.marketplace,
+                       CASE WHEN o.marketplace = 'ozon'
+                            THEN COALESCE(mm.ozon_offer_id, o.product_id)
+                            ELSE o.product_id END                         AS key,
+                       COALESCE(mwb.display_name, moz.display_name,
+                                MAX(o.product_name))                      AS name,
+                       ROUND(SUM(o.quantity)::numeric / $2, 2)            AS daily_rate,
+                       SUM(o.quantity)::int                               AS total_qty
+                FROM marketplace_orders o
+                LEFT JOIN LATERAL (
+                    SELECT ozon_offer_id, display_name FROM product_mapping
+                    WHERE ozon_sku = o.product_id LIMIT 1
+                ) moz ON o.marketplace = 'ozon'
+                LEFT JOIN LATERAL (
+                    SELECT display_name FROM product_mapping
+                    WHERE wb_article = o.product_id LIMIT 1
+                ) mwb ON o.marketplace = 'wb'
+                WHERE o.chat_id = $1 AND o.order_date >= $3
+                GROUP BY o.marketplace,
+                         CASE WHEN o.marketplace = 'ozon'
+                              THEN COALESCE(moz.ozon_offer_id, o.product_id)
+                              ELSE o.product_id END,
+                         COALESCE(mwb.display_name, moz.display_name)
+                HAVING SUM(o.quantity) > 0
+            """, chat_id, days, date_from)
+
+        velocity: dict[tuple, float] = {
+            (r["marketplace"], r["key"]): float(r["daily_rate"]) for r in velocity_rows
+        }
+        vel_names: dict[tuple, str] = {
+            (r["marketplace"], r["key"]): r["name"] or r["key"] for r in velocity_rows
+        }
+
+        lead = config.SUPPLY_LEAD_TIME_DAYS      # 21 день
+        safety = config.SUPPLY_SAFETY_STOCK_DAYS  # 14 дней
+        order_point = lead + safety               # 35 дней — порог "заказывать"
+
+        result = []
+        for row in stock_rows:
+            mp = row["marketplace"]
+            pid = row["product_id"]
+            key = (mp, pid)
+            name = vel_names.get(key) or row["name"] or pid
+            dr = velocity.get(key, 0.0)
+            stock = row["total_stock"] or 0
+            unit_cost = float(row["unit_cost"] or 0)
+
+            days_left = round(stock / dr, 1) if dr > 0 else 999
+
+            # Статус: насколько срочно заказывать
+            if dr == 0:
+                status = "no_sales"       # нет продаж — не анализируем
+            elif days_left < lead:
+                status = "critical"       # 🔴 уже опаздываем — товар кончится до прихода партии
+            elif days_left < order_point:
+                status = "order_now"      # 🟡 пора заказывать
+            else:
+                status = "ok"             # 🟢 запас есть
+
+            # Сколько заказать для 3 горизонтов (с учётом текущего стока)
+            def qty_for(target_days: int) -> int:
+                return max(0, round(target_days * dr - stock))
+
+            result.append({
+                "name":       name,
+                "marketplace": mp,
+                "total_stock": stock,
+                "daily_rate":  round(dr, 2),
+                "days_left":   days_left,
+                "lead_days":   lead,
+                "safety_days": safety,
+                "order_point": order_point,
+                "status":      status,
+                "unit_cost":   unit_cost,
+                "qty_30d":  qty_for(30),
+                "qty_60d":  qty_for(60),
+                "qty_90d":  qty_for(90),
+                "cost_30d": round(qty_for(30) * unit_cost) if unit_cost else None,
+                "cost_60d": round(qty_for(60) * unit_cost) if unit_cost else None,
+                "cost_90d": round(qty_for(90) * unit_cost) if unit_cost else None,
+            })
+
+        # Сортируем: сначала критичные, потом по days_left
+        _order = {"critical": 0, "order_now": 1, "ok": 2, "no_sales": 3}
+        result.sort(key=lambda x: (_order.get(x["status"], 9), x["days_left"]))
+        return result
+
+    async def cmd_order(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """/order [период=30] — совет заказывать ли у поставщика, три горизонта (30/60/90 дней)."""
+        chat_id = update.effective_user.id
+        days = 30
+        for tok in (context.args or []):
+            if tok.startswith("период="):
+                try:
+                    days = int(tok.split("=", 1)[1])
+                except ValueError:
+                    pass
+            elif tok.isdigit():
+                days = int(tok)
+
+        await update.message.reply_text(
+            f"📬 Анализирую остатки и темп продаж за {days} дней…\n"
+            f"Срок поставки: {config.SUPPLY_LEAD_TIME_DAYS} дн + {config.SUPPLY_SAFETY_STOCK_DAYS} дн буфер"
+        )
+
+        try:
+            data = await self._collect_order_advice_data(chat_id, days=days)
+        except Exception as e:
+            logger.error(f"[Питер/order] ошибка данных: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+            return
+
+        if not data:
+            await update.message.reply_text(
+                "❌ Нет данных по остаткам. Запусти /sync у Макса для синхронизации."
+            )
+            return
+
+        lead = config.SUPPLY_LEAD_TIME_DAYS
+        safety = config.SUPPLY_SAFETY_STOCK_DAYS
+
+        prompt = f"""Дай рекомендацию: заказывать ли товар у поставщика.
+
+ПЕРИОД АНАЛИЗА: {days} дней продаж
+СРОК ПОСТАВКИ: {lead} дней от заказа до склада МП + {safety} дней страховой буфер
+ПОРОГ ЗАКАЗА: если осталось < {lead + safety} дней — заказывать
+
+ДАННЫЕ ПО ТОВАРАМ:
+{json.dumps(data, ensure_ascii=False, default=str, indent=2)}
+
+ФОРМАТ (мобильный, Rich Markdown):
+
+# 📬 Заказ у поставщика
+
+## 🔴 Заказать немедленно
+*(status=critical: товар закончится раньше чем придёт партия)*
+**`Название`** (WB/Ozon) — осталось X дн, X шт/день
+→ 30 дней: **X шт** (~X₽) | 60 дней: **X шт** | 90 дней: **X шт**
+
+## 🟡 Заказать сейчас
+*(status=order_now: запас < {lead + safety} дней)*
+**`Название`** — осталось X дн, X шт/день
+→ 30 дней: **X шт** (~X₽) | 60 дней: **X шт** | 90 дней: **X шт**
+
+## 🟢 Пока не нужно
+*(status=ok: запас > {lead + safety} дней)*
+`Название` — осталось X дн *(следующий заказ через ~X дн)*
+
+---
+
+> **Итого к заказу прямо сейчас:** X позиций, ~X шт, ~X₽ (если есть себестоимость)
+
+ПРАВИЛА:
+- Если cost_30d/60d/90d = null — себестоимость не задана, показывай только штуки
+- Если daily_rate = 0 (status=no_sales) — пропусти товар, упомяни одной строкой в конце
+- Если qty_30d = 0 — текущего стока хватает на 30 дней без дозаказа, можно указать это
+- Три горизонта: 30/60/90 дней — это сколько дней продаж надо обеспечить (не срок поставки)
+- Если нет данных по стокам — предупреди что нужен /sync у Макса"""
+
+        await update.message.reply_text("🤔 Формирую рекомендацию…")
+        try:
+            from anthropic import AsyncAnthropic
+            client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+            resp = await client.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=3000,
+                system=PETER_SYSTEM,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            answer = resp.content[0].text
+        except Exception as e:
+            logger.error(f"[Питер/order] ошибка Claude: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка анализа: {e}")
+            return
+
+        await self._send_answer(answer, update=update)
+
     async def _collect_seo_audit_data(self, chat_id: int, days: int = 30) -> list[dict]:
         """Воронка + контент карточек + SEO-проблемы для каждого товара."""
         from db import get_pool
@@ -2105,6 +2310,9 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
         ],
         [
             InlineKeyboardButton("📦 Поставки", callback_data="pmenu:supply"),
+            InlineKeyboardButton("📬 Заказ",    callback_data="pmenu:order"),
+        ],
+        [
             InlineKeyboardButton("🔤 ABC",      callback_data="pmenu:abc"),
         ],
         [
@@ -2148,6 +2356,14 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
             "Расчёт: текущие остатки по складам ÷ темп продаж = дней осталось.\n\n"
             "/supply — запустить (период 14 дней)\n"
             "/supply период=30 — за 30 дней"
+        ),
+        "order": (
+            "📬 <b>Заказ у поставщика</b>\n\n"
+            "Стоит ли сейчас заказывать товар у поставщика?\n"
+            "Три горизонта: на 30 / 60 / 90 дней продаж.\n"
+            f"Срок поставки: {config.SUPPLY_LEAD_TIME_DAYS} дн + {config.SUPPLY_SAFETY_STOCK_DAYS} дн буфер.\n\n"
+            "/order — запустить (анализ за 30 дней)\n"
+            "/order период=14 — за 14 дней"
         ),
         "analyze": (
             "💬 <b>Произвольный анализ</b>\n\n"
@@ -2194,6 +2410,7 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
             BotCommand("abc",       "ABC-анализ: какие товары дают 80% выручки"),
             BotCommand("returns",   "Анализ возвратов: причины, топ-товары, тренд"),
             BotCommand("supply",  "План поставок по регионам и кластерам"),
+            BotCommand("order",   "Заказать ли у поставщика — 30/60/90 дней"),
             BotCommand("analyze", "Произвольный бизнес-анализ"),
             BotCommand("reset",   "Очистить историю диалога"),
         ]
@@ -2209,6 +2426,7 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
         self.app.add_handler(CommandHandler("abc",        self.cmd_abc))
         self.app.add_handler(CommandHandler("returns",    self.cmd_returns))
         self.app.add_handler(CommandHandler("supply",  self.cmd_supply))
+        self.app.add_handler(CommandHandler("order",   self.cmd_order))
         self.app.add_handler(
             CallbackQueryHandler(self._handle_returns_elina_callback, pattern=r"^returns_elina:")
         )
