@@ -989,7 +989,22 @@ class MaxAgent(BaseAgent):
                         question_text=q.get("question_text"),
                         created_at=created,
                     )
+                    notif_key = f"q_notified:{mp}:{q['question_id']}"
                     if not is_new:
+                        # Уже в БД — повторить нотификацию если pending и не отправляли в последние 2ч
+                        if not await self._redis_get(notif_key):
+                            from db import get_pending_questions as _gpq
+                            pending_db = await _gpq(chat_id)
+                            pending_q = next(
+                                (p for p in pending_db if p["question_id"] == q["question_id"]), None
+                            )
+                            if pending_q:
+                                await self._redis_set(notif_key, "1", ttl=7200)
+                                q["question_text"] = pending_q.get("question_text") or q.get("question_text", "")
+                                await self._notify_pending_question(
+                                    chat_id, shop, q, pending_q.get("generated_answer", "")
+                                )
+                                stats["pending"] += 1
                         continue
 
                     stats["found"] += 1
@@ -1008,6 +1023,7 @@ class MaxAgent(BaseAgent):
                         status="pending_approval",
                         generated_answer=answer,
                     )
+                    await self._redis_set(notif_key, "1", ttl=7200)
                     await self._notify_pending_question(chat_id, shop, q, answer)
                     stats["pending"] += 1
                 except Exception as e:
@@ -1036,6 +1052,37 @@ class MaxAgent(BaseAgent):
         ]])
         target = config.PARTNERS_GROUP_ID if config.PARTNERS_GROUP_ID else chat_id
         await self._notify_user(target, text, reply_markup=keyboard)
+
+    async def cmd_questions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/questions — показать и повторно отправить все неотвеченные вопросы из БД."""
+        chat_id = update.effective_user.id
+        from db import get_pending_questions, get_marketplace_shops
+        pending = await get_pending_questions(chat_id)
+        if not pending:
+            await update.message.reply_text(
+                "✅ Неотвеченных вопросов нет.\n\n"
+                "Если ожидаешь вопрос — проверь синхронизацию: /sync"
+            )
+            return
+
+        await update.message.reply_text(
+            f"❓ <b>{len(pending)} неотвеченных вопросов</b> — повторно отправляю…",
+            parse_mode="HTML",
+        )
+        shops = await get_marketplace_shops(chat_id)
+        for q in pending:
+            mp = q["marketplace"]
+            shop = next((s for s in shops if s["marketplace"] == mp), None)
+            if not shop:
+                continue
+            notif_key = f"q_notified:{mp}:{q['question_id']}"
+            await self._redis_set(notif_key, "1", ttl=7200)
+            await self._notify_pending_question(
+                chat_id, shop,
+                {"question_id": q["question_id"], "question_text": q.get("question_text"),
+                 "product_name": q.get("product_name"), "created_at": q.get("created_at")},
+                q.get("generated_answer", ""),
+            )
 
     async def sync_marketplace_data(self, chat_id: int) -> None:
         """Синхронизировать остатки, продажи и заказы для всех магазинов пользователя."""
@@ -5054,6 +5101,7 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("margin",        self.cmd_margin_check))
         self.app.add_handler(CommandHandler("reprice",       self.cmd_reprice))
         self.app.add_handler(CommandHandler("apply_prices",  self.cmd_apply_prices))
+        self.app.add_handler(CommandHandler("questions",     self.cmd_questions))
         self.app.add_handler(CommandHandler("bid_adjust",    self.cmd_bid_adjust))
         self.app.add_handler(CommandHandler("add",           self.cmd_add))
         self.app.add_handler(CommandHandler("cancel",        self.cmd_cancel))
