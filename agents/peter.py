@@ -224,36 +224,48 @@ class PeterAgent(BaseAgent):
 
     async def _collect_data(self, chat_id: int, days: int = 14) -> dict:
         """Собрать базовый аналитический срез из БД за последние N дней."""
-        from db import get_pool
+        from db import get_pool, get_marketplace_shops
         pool = await get_pool()
         date_from = (datetime.now(_UTC) - timedelta(days=days)).date()
 
+        # Определяем магазины: если несколько Ozon — нужна разбивка по shop_id
+        all_shops = await get_marketplace_shops(chat_id)
+        ozon_shops = [s for s in all_shops if s["marketplace"] == "ozon"]
+        multi_ozon = len(ozon_shops) > 1
+
         async with pool.acquire() as conn:
 
-            # 1. Оборот по площадкам
+            # 1. Оборот по площадкам (с разбивкой по магазину при мульти-Ozon)
             revenue = await conn.fetch("""
-                SELECT marketplace,
-                       SUM(seller_price * quantity)::numeric(12,2) AS revenue,
+                SELECT o.marketplace,
+                       o.shop_id,
+                       COALESCE(ms.shop_name, o.marketplace) AS shop_name,
+                       SUM(o.seller_price * o.quantity)::numeric(12,2) AS revenue,
                        COUNT(*)                              AS orders,
-                       COUNT(DISTINCT product_id)           AS skus
-                FROM marketplace_orders
-                WHERE chat_id = $1 AND order_date >= $2
-                GROUP BY marketplace
+                       COUNT(DISTINCT o.product_id)         AS skus
+                FROM marketplace_orders o
+                LEFT JOIN marketplace_shops ms ON ms.id = o.shop_id
+                WHERE o.chat_id = $1 AND o.order_date >= $2
+                GROUP BY o.marketplace, o.shop_id, ms.shop_name
             """, chat_id, date_from)
 
             # 2. Топ-10 товаров по обороту — с display_name и category из реестра
             top_products = await conn.fetch("""
-                SELECT o.marketplace, o.product_id,
+                SELECT o.marketplace,
+                       o.shop_id,
+                       COALESCE(ms.shop_name, o.marketplace) AS shop_name,
+                       o.product_id,
                        COALESCE(m.display_name, MAX(o.product_name)) AS product_name,
                        MAX(m.category)                               AS category,
                        SUM(o.seller_price * o.quantity)::numeric(12,2)      AS revenue,
                        SUM(o.quantity)                                AS qty
                 FROM marketplace_orders o
+                LEFT JOIN marketplace_shops ms ON ms.id = o.shop_id
                 LEFT JOIN product_mapping m
                        ON m.wb_article = o.product_id
                        OR m.ozon_sku   = o.product_id
                 WHERE o.chat_id = $1 AND o.order_date >= $2
-                GROUP BY o.marketplace, o.product_id, m.display_name
+                GROUP BY o.marketplace, o.shop_id, ms.shop_name, o.product_id, m.display_name
                 ORDER BY revenue DESC
                 LIMIT 10
             """, chat_id, date_from)
@@ -282,10 +294,12 @@ class PeterAgent(BaseAgent):
                 ORDER BY op_profit DESC
             """, chat_id, date_from)
 
-            # 4. Рентабельность Ozon (комиссия ~10%, логистика ~80₽/заказ)
+            # 4. Рентабельность Ozon — с разбивкой по магазину при мульти-Ozon
             margin_ozon = await conn.fetch("""
                 SELECT
                     o.product_id,
+                    o.shop_id,
+                    COALESCE(ms.shop_name, 'Ozon') AS shop_name,
                     COALESCE(m.display_name, MAX(o.product_name)) AS product_name,
                     SUM(o.seller_price * o.quantity)::numeric(12,2)      AS revenue,
                     SUM(o.quantity)                               AS qty,
@@ -299,10 +313,11 @@ class PeterAgent(BaseAgent):
                               ) / SUM(o.seller_price * o.quantity) * 100, 1)
                     ELSE 0 END                                    AS profitability
                 FROM marketplace_orders o
+                LEFT JOIN marketplace_shops ms ON ms.id = o.shop_id
                 JOIN product_mapping m ON m.ozon_sku = o.product_id
                 JOIN product_costs c   ON c.mapping_id = m.id AND c.marketplace = 'ozon'
                 WHERE o.chat_id = $1 AND o.marketplace = 'ozon' AND o.order_date >= $2
-                GROUP BY o.product_id, m.display_name
+                GROUP BY o.product_id, o.shop_id, ms.shop_name, m.display_name
                 ORDER BY op_profit DESC
             """, chat_id, date_from)
 
@@ -534,6 +549,8 @@ class PeterAgent(BaseAgent):
         return {
             "period_days":      days,
             "date_from":        date_from,
+            "multi_ozon":       multi_ozon,
+            "ozon_shops":       [{"id": s["id"], "name": s.get("shop_name") or "Ozon"} for s in ozon_shops],
             "revenue":          [dict(r) for r in revenue],
             "top_products":     [dict(r) for r in top_products],
             "margin_wb":        [dict(r) for r in margin_wb],
@@ -997,6 +1014,7 @@ class PeterAgent(BaseAgent):
 - КРИТИЧНО: data["adv"] — это суммарный рекламный расход по площадке (ВСЕ товары вместе). При анализе конкретного товара (КБ50, ТГ100 и т.д.) строку "Реклама" и ДРР считай ТОЛЬКО из product_metrics[товар].adv_spend. Никогда не подставляй data["adv"].spend как расход отдельного товара.
 - stock_velocity.days_left — дней осталось стока при текущем темпе продаж. 999 = нет продаж.
 - Если margin_ozon пустой — Ozon-заказы есть, но маппинг SKU не позволил посчитать маржу.
+- multi_ozon=True означает несколько магазинов Ozon. В revenue и margin_ozon есть поле shop_name — используй его вместо «Ozon» при мульти-Ozon, показывай каждый магазин отдельной строкой. В net_margin данные Ozon суммированы по всем магазинам — укажи это в отчёте.
 - mom_trends — помесячная выручка и заказы за последние 60 дней. Если 2 месяца — посчитай MoM рост: (текущий месяц / предыдущий − 1) × 100%. Выведи одной строкой в блоке отчёта.
 - returns_top — товары с наибольшей суммой возвратов за 30 дней (если есть данные после /sync_returns). Укажи топ-3 по return_amount и возможные причины. Если пусто — данные не синхронизированы (/sync_returns у Макса).
 - kw_top — топ ключевых слов WB по охвату (если есть данные после /sync_keywords). Укажи ключи с лучшей позицией (чем меньше число, тем выше в поиске) и наибольшим search_count. Если пусто — данные не синхронизированы (/sync_keywords у Макса).

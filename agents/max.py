@@ -1238,7 +1238,7 @@ class MaxAgent(BaseAgent):
                             order_id=o["order_id"], product_id=o.get("product_id"),
                             product_name=o.get("product_name"), quantity=o.get("quantity", 1),
                             order_date=order_date, seller_price=o.get("seller_price"),
-                            region=o.get("region", ""),
+                            region=o.get("region", ""), shop_id=shop["id"],
                         )
                         if is_new:
                             new_count += 1
@@ -1268,12 +1268,13 @@ class MaxAgent(BaseAgent):
                         )
                         new_count = 0
                         for row in analytics_rows:
-                            order_id = f"ozon_analytics_{row['product_id']}_{df_str}"
+                            order_id = f"ozon_analytics_{shop['id']}_{row['product_id']}_{df_str}"
                             is_new = await save_order(
                                 chat_id=chat_id, marketplace="ozon",
                                 order_id=order_id, product_id=row.get("product_id"),
                                 product_name=row.get("product_name"), quantity=row.get("quantity", 1),
                                 order_date=order_date, seller_price=row.get("seller_price"),
+                                shop_id=shop["id"],
                             )
                             if is_new:
                                 new_count += 1
