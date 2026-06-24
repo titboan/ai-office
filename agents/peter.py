@@ -779,6 +779,32 @@ class PeterAgent(BaseAgent):
                     reply_markup=after_markup,
                 )
 
+    async def handle_message(
+        self,
+        update: "Update",
+        context: "ContextTypes.DEFAULT_TYPE",
+        *,
+        override_text: str | None = None,
+    ) -> None:
+        """Прямые сообщения → handle_task (данные из БД, без симуляции tool_use)."""
+        if not update.message:
+            return
+        user_text = override_text or (update.message.text or "")
+        if not user_text:
+            return
+        chat_id = update.effective_chat.id
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+        await update.message.reply_text("📊 Анализирую…")
+        self._current_chat_id = chat_id
+        try:
+            result = await self.handle_task(user_text, from_agent="user")
+        finally:
+            self._current_chat_id = None
+        await _send_rich(
+            self.bot_token, chat_id, result,
+            reply_to_message_id=update.message.message_id,
+        )
+
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
         logger.info(f"[Питер] Задача от {from_agent}: {task!r}")
 
