@@ -19,10 +19,10 @@
 
 ## Фаза 1: Региональная аналитика заказов
 
-- [ ] **1.1** `tools/marketplace.py` — добавить `"region": item.get("oblastMarkingCode") or item.get("regionName", "")` в маппинг WB orders (≈строка 262)
-- [ ] **1.2** `db.py` — `ALTER TABLE marketplace_orders ADD COLUMN IF NOT EXISTS region TEXT DEFAULT ''` в `_create_schema()`, обновить `save_order()` с параметром `region`
-- [ ] **1.3** `agents/max.py` — передавать `region=o.get("region", "")` в `save_order()` при WB синке
-- [ ] **1.4** `agents/peter.py` — добавить запрос в `_collect_data()`:
+- [x] **1.1** `tools/marketplace.py` — добавить `"region": item.get("oblastMarkingCode") or item.get("regionName", "")` в маппинг WB orders (≈строка 262)
+- [x] **1.2** `db.py` — `ALTER TABLE marketplace_orders ADD COLUMN IF NOT EXISTS region TEXT DEFAULT ''` в `_create_schema()`, обновить `save_order()` с параметром `region`
+- [x] **1.3** `agents/max.py` — передавать `region=o.get("region", "")` в `save_order()` при WB синке
+- [x] **1.4** `agents/peter.py` — добавить запрос в `_collect_data()`:
   ```sql
   SELECT region, COUNT(*) AS orders_cnt, SUM(seller_price * quantity) AS revenue
   FROM marketplace_orders

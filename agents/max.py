@@ -1128,6 +1128,7 @@ class MaxAgent(BaseAgent):
                             order_id=o["order_id"], product_id=o.get("product_id"),
                             product_name=o.get("product_name"), quantity=o.get("quantity", 1),
                             order_date=order_date, seller_price=o.get("seller_price"),
+                            region=o.get("region", ""),
                         )
                         if is_new:
                             new_count += 1
@@ -1613,6 +1614,73 @@ class MaxAgent(BaseAgent):
                     logger.error(f"[Макс/promos] Ozon: {e}", exc_info=True)
 
         return counts
+
+    async def _send_promotions_summary(self, chat_id: int) -> None:
+        """Еженедельный саммари акций: синхронизирует и шлёт сводку в Telegram."""
+        import datetime as _dt_mod
+        from db import get_pool
+        await self.sync_promotions(chat_id)
+
+        today = _dt_mod.date.today()
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            active = await conn.fetch("""
+                SELECT title, marketplace, discount_pct, start_date, end_date, product_ids
+                FROM marketplace_promotions
+                WHERE chat_id = $1 AND (end_date IS NULL OR end_date >= $2)
+                ORDER BY marketplace, discount_pct DESC NULLS LAST
+            """, chat_id, today)
+            mapping = await conn.fetch(
+                "SELECT wb_article, ozon_offer_id, display_name FROM product_mapping"
+            )
+
+        if not active:
+            await self.bot.send_message(
+                chat_id=chat_id,
+                text="🎁 Нет активных акций WB/Ozon на сегодня.",
+                parse_mode="HTML",
+            )
+            return
+
+        # Все product_ids, участвующие хоть в одной акции
+        promo_pids: set[str] = set()
+        for row in active:
+            pids = row["product_ids"] or []
+            promo_pids.update(str(p) for p in pids)
+
+        lines = ["🎁 <b>Акции WB / Ozon:</b>\n"]
+        for row in active[:10]:
+            mp_label = "🟣 WB" if row["marketplace"] == "wb" else "🔵 Ozon"
+            end_str  = row["end_date"].strftime("%d.%m") if row["end_date"] else "—"
+            pids     = row["product_ids"] or []
+            discount = f" -{int(row['discount_pct'])}%" if row.get("discount_pct") else ""
+            lines.append(f"{mp_label} <b>{row['title']}</b>{discount} · до {end_str} · {len(pids)} тов.")
+        if len(active) > 10:
+            lines.append(f"…и ещё {len(active) - 10} акций")
+
+        # Определяем наши товары вне акций
+        not_in_promo = []
+        for m in mapping:
+            wb_id   = str(m["wb_article"] or "")
+            ozon_id = str(m["ozon_offer_id"] or "")
+            if wb_id and wb_id not in promo_pids and ozon_id not in promo_pids:
+                not_in_promo.append(m["display_name"])
+
+        if not_in_promo:
+            lines.append("")
+            lines.append("📦 <b>Ваши товары вне акций:</b>")
+            for name in not_in_promo[:8]:
+                lines.append(f"  · {name}")
+            if len(not_in_promo) > 8:
+                lines.append(f"  …и ещё {len(not_in_promo) - 8}")
+            lines.append("\n💡 <i>Участие в акции = +30-50% видимости в выдаче</i>")
+
+        await self.bot.send_message(
+            chat_id=chat_id,
+            text="\n".join(lines),
+            parse_mode="HTML",
+        )
+        logger.info(f"[Макс/promotions_summary] chat={chat_id} акций={len(active)} вне_акций={len(not_in_promo)}")
 
     async def cmd_sync_promotions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/sync_promotions — синхронизация акционных кампаний WB + Ozon."""

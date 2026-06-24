@@ -527,6 +527,44 @@ async def run_all_async() -> None:
 
     asyncio.create_task(_stock_alerts_loop())
 
+    async def _promotions_weekly_loop():
+        """Еженедельно в понедельник 09:00 МСК (06:00 UTC) — сводка акций WB/Ozon."""
+        from datetime import datetime, timezone, timedelta
+        from db import get_all_active_shops
+
+        while True:
+            try:
+                now  = datetime.now(timezone.utc)
+                # Следующий понедельник 06:00 UTC
+                days_until_monday = (7 - now.weekday()) % 7
+                if days_until_monday == 0 and now.hour >= 6:
+                    days_until_monday = 7
+                target = (now + timedelta(days=days_until_monday)).replace(
+                    hour=6, minute=0, second=0, microsecond=0
+                )
+                wait_seconds = (target - now).total_seconds()
+                logger.info(f"[promotions_weekly] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
+                await asyncio.sleep(wait_seconds)
+
+                if max_agent is None:
+                    continue
+
+                shops = await get_all_active_shops()
+                unique_chats = list({s["chat_id"] for s in shops})
+                for chat_id in unique_chats:
+                    try:
+                        await max_agent._send_promotions_summary(chat_id)
+                    except Exception as e:
+                        logger.error(f"[promotions_weekly] chat_id={chat_id} ошибка: {e}")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[promotions_weekly] критическая ошибка: {e}")
+                await asyncio.sleep(300)
+
+    asyncio.create_task(_promotions_weekly_loop())
+
     async def _competitor_monitor_loop():
         """Еженедельно в понедельник COMPETITOR_SCAN_HOUR_UTC — снапшот цен конкурентов WB."""
         from datetime import datetime, timezone, timedelta

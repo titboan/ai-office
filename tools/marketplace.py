@@ -308,6 +308,7 @@ class WBClient:
                 "quantity":    int(item.get("quantity", 1) or 1),
                 "seller_price": float(item.get("priceWithDisc") or 0),
                 "order_date":   item.get("date") or item.get("lastChangeDate", ""),
+                "region":       item.get("oblastMarkingCode") or item.get("regionName", ""),
             })
         logger.info(f"[WB.get_orders_all] итого не отменённых: {len(results)}")
         logger.info(f"[WB.get_orders_all] sample order_ids: {[o.get('order_id') for o in results[:3]]}")

@@ -210,6 +210,10 @@ async def _create_schema() -> None:
             DROP COLUMN IF EXISTS price
         """)
         await conn.execute("""
+            ALTER TABLE marketplace_orders
+            ADD COLUMN IF NOT EXISTS region TEXT NOT NULL DEFAULT ''
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS digest_channels (
                 id               BIGSERIAL PRIMARY KEY,
                 chat_id          TEXT        NOT NULL,
@@ -930,6 +934,7 @@ async def save_order(
     quantity: int,
     order_date,
     seller_price: float | None = None,
+    region: str = '',
 ) -> bool:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -937,15 +942,17 @@ async def save_order(
             """
             INSERT INTO marketplace_orders
                 (chat_id, marketplace, order_id, product_id, product_name,
-                 quantity, order_date, seller_price)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 quantity, order_date, seller_price, region)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ON CONFLICT (marketplace, order_id) DO UPDATE
-                SET seller_price = EXCLUDED.seller_price
+                SET seller_price = EXCLUDED.seller_price,
+                    region       = CASE WHEN marketplace_orders.region = '' AND EXCLUDED.region != ''
+                                        THEN EXCLUDED.region ELSE marketplace_orders.region END
                 WHERE marketplace_orders.seller_price IS NULL
-                  AND EXCLUDED.seller_price IS NOT NULL
+                   OR (marketplace_orders.region = '' AND EXCLUDED.region != '')
             """,
             chat_id, marketplace, order_id, product_id, product_name,
-            quantity, order_date, seller_price,
+            quantity, order_date, seller_price, region or '',
         )
         return result.split()[-1] != "0"
 

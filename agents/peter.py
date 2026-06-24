@@ -498,6 +498,19 @@ class PeterAgent(BaseAgent):
                 LIMIT 15
             """, chat_id)
 
+            # 10. Региональная аналитика WB (откуда заказывают)
+            regions_wb = await conn.fetch("""
+                SELECT region,
+                       COUNT(*)::int                                  AS orders_cnt,
+                       SUM(seller_price * quantity)::numeric(12,2)    AS revenue
+                FROM marketplace_orders
+                WHERE chat_id = $1 AND marketplace = 'wb' AND order_date >= $2
+                  AND region IS NOT NULL AND region != ''
+                GROUP BY region
+                ORDER BY revenue DESC
+                LIMIT 10
+            """, chat_id, date_from)
+
         return {
             "period_days":  days,
             "date_from":    date_from,
@@ -511,6 +524,7 @@ class PeterAgent(BaseAgent):
             "mom_trends":   [dict(r) for r in mom],
             "returns_top":  [dict(r) for r in returns_top],
             "kw_top":       [dict(r) for r in kw_top],
+            "regions_wb":   [dict(r) for r in regions_wb],
         }
 
     async def _collect_advanced_data(self, chat_id: int, days: int = 14) -> dict:
@@ -1906,6 +1920,108 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
             ]]),
         )
 
+    async def cmd_returns(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/returns [период=30] — анализ возвратов по товарам (топ по ставке)."""
+        chat_id = update.effective_user.id
+        days = 30
+        if context.args:
+            try:
+                days = int(context.args[0])
+            except ValueError:
+                pass
+
+        await update.message.reply_text(f"↩️ Анализирую возвраты за {days} дней…")
+
+        from db import get_pool
+        pool = await get_pool()
+        date_from = (datetime.now(_UTC) - timedelta(days=days)).date()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT ra.product_id, ra.marketplace,
+                       COALESCE(m.display_name, ra.product_name, ra.product_id) AS name,
+                       SUM(ra.returns_count)::int            AS total_returns,
+                       SUM(ra.return_amount)::numeric(12,2)  AS total_amount,
+                       AVG(ra.return_rate)::numeric(6,4)     AS avg_rate
+                FROM product_returns_analytics ra
+                LEFT JOIN product_mapping m ON (
+                    m.wb_article = ra.product_id OR
+                    m.ozon_offer_id = ra.product_id
+                )
+                WHERE ra.chat_id = $1 AND ra.stat_date >= $2
+                GROUP BY ra.product_id, ra.marketplace, ra.product_name, m.display_name
+                ORDER BY avg_rate DESC NULLS LAST, total_returns DESC
+                LIMIT 15
+            """, chat_id, date_from)
+
+        if not rows:
+            await update.message.reply_text(
+                "❌ Нет данных о возвратах. Запусти <code>/sync_returns</code> у Макса.",
+                parse_mode="HTML",
+            )
+            return
+
+        lines = [f"↩️ <b>Возвраты за {days} дней:</b>\n"]
+        high_return = []
+
+        for r in rows:
+            rate_pct  = float(r["avg_rate"] or 0) * 100
+            mp_label  = "🟣" if r["marketplace"] == "wb" else "🔵"
+            amount_k  = float(r["total_amount"] or 0) / 1000
+            flag      = " ⚠️" if rate_pct > 5 else ""
+            lines.append(
+                f"{mp_label} <b>{r['name']}</b> — {rate_pct:.1f}%"
+                f" ({r['total_returns']} шт · {amount_k:.0f}к ₽){flag}"
+            )
+            if rate_pct > 5:
+                high_return.append({"name": r["name"], "product_id": r["product_id"]})
+
+        if high_return:
+            lines.append("")
+            lines.append("⚠️ <i>Возврат >5% — описание может не совпадать с ожиданиями.</i>")
+
+        buttons = [
+            [InlineKeyboardButton(f"📝 Улучшить: {p['name']}", callback_data=f"returns_elina:{p['product_id']}")]
+            for p in high_return[:3]
+        ]
+        markup = InlineKeyboardMarkup(buttons) if buttons else None
+
+        await update.message.reply_text(
+            "\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=markup,
+        )
+
+    async def _handle_returns_elina_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Callback returns_elina:{product_id} → ставит задачу Элине на улучшение карточки."""
+        query = update.callback_query
+        await query.answer()
+        chat_id = query.from_user.id
+        product_id = query.data.split(":", 1)[1]
+
+        payload = json.dumps({
+            "action": "improve_card",
+            "product_id": product_id,
+            "reason": "high_return_rate",
+            "context": "Товар имеет высокий % возвратов (>5%). Улучши заголовок и описание, чтобы ожидания покупателей точнее совпадали с товаром.",
+        })
+
+        try:
+            await enqueue_task(
+                assigned_agent="elina",
+                task_type="improve_card",
+                payload=payload,
+                chat_id=chat_id,
+            )
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text(
+                f"✅ Элина получила задание: улучшить описание для <code>{product_id}</code>",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"[Питер/returns_elina] {e}", exc_info=True)
+            await query.message.reply_text(f"❌ Ошибка: {e}")
+
     def _help_text(self) -> str:
         return (
             "📊 **Питер** — бизнес-аналитик\n\n"
@@ -2034,7 +2150,11 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
         self.app.add_handler(CommandHandler("funnel",    self.cmd_funnel))
         self.app.add_handler(CommandHandler("seo_audit", self.cmd_seo_audit))
         self.app.add_handler(CommandHandler("abc",        self.cmd_abc))
+        self.app.add_handler(CommandHandler("returns",    self.cmd_returns))
         self.app.add_handler(CommandHandler("supply",  self.cmd_supply))
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_returns_elina_callback, pattern=r"^returns_elina:")
+        )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_peter_menu_callback, pattern=r"^pmenu:")
         )
