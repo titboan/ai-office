@@ -1866,6 +1866,79 @@ class MaxAgent(BaseAgent):
                 f"Период: {date_from} — {date_to}"
             )
 
+    async def _check_seo_drops(self, chat_id: int) -> list[dict]:
+        """Сравнить две последних даты в product_search_keywords, вернуть дропы позиций."""
+        from db import get_pool
+        threshold = getattr(config, "SEO_POSITION_DROP_THRESHOLD", 10)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            dates = await conn.fetch(
+                """SELECT DISTINCT stat_date FROM product_search_keywords
+                   WHERE chat_id=$1 AND marketplace='wb' AND position IS NOT NULL
+                   ORDER BY stat_date DESC LIMIT 2""",
+                chat_id,
+            )
+            if len(dates) < 2:
+                return []
+            date_new, date_old = dates[0]["stat_date"], dates[1]["stat_date"]
+            rows = await conn.fetch(
+                """SELECT n.keyword, n.product_id,
+                          COALESCE(m.display_name, n.product_id::text) AS name,
+                          o.position AS pos_old, n.position AS pos_new,
+                          (n.position - o.position) AS drop
+                   FROM product_search_keywords n
+                   JOIN product_search_keywords o
+                     ON o.chat_id=n.chat_id AND o.marketplace=n.marketplace
+                        AND o.product_id=n.product_id AND o.keyword=n.keyword
+                        AND o.stat_date=$3
+                   LEFT JOIN product_mapping m ON m.wb_nm_id = n.product_id::bigint
+                   WHERE n.chat_id=$1 AND n.marketplace='wb' AND n.stat_date=$2
+                     AND (n.position - o.position) >= $4
+                   ORDER BY drop DESC""",
+                chat_id, date_new, date_old, threshold,
+            )
+            return [dict(r) | {"date_old": str(date_old), "date_new": str(date_new)}
+                    for r in rows]
+
+    async def cmd_seo_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/seo_check — алерт при падении позиций ключевых слов WB."""
+        chat_id = update.effective_user.id
+        await update.message.reply_text("🔍 Проверяю позиции ключевых слов…")
+        from db import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            cnt = await conn.fetchval(
+                "SELECT COUNT(*) FROM product_search_keywords WHERE chat_id=$1", chat_id
+            )
+        if not cnt:
+            await update.message.reply_text(
+                "⚠️ <b>Нет данных о позициях</b>\n\n"
+                "WB закрыл API ключевых слов (404). Данные появятся после возобновления.\n"
+                "Следи за позициями вручную в WB Analytics.",
+                parse_mode="HTML",
+            )
+            return
+        drops = await self._check_seo_drops(chat_id)
+        threshold = getattr(config, "SEO_POSITION_DROP_THRESHOLD", 10)
+        if not drops:
+            await update.message.reply_text(
+                f"✅ <b>Позиции стабильны</b>\n\n"
+                f"Падений ≥{threshold} мест не обнаружено.\n"
+                f"Данные: {drops[0]['date_old'] if drops else '—'} → сейчас",
+                parse_mode="HTML",
+            )
+            return
+        lines = [f"📉 <b>Падения позиций WB (≥{threshold} мест)</b>\n"]
+        for d in drops[:20]:
+            lines.append(
+                f"• <b>{d['name']}</b> — «{d['keyword']}»: "
+                f"{d['pos_old']} → {d['pos_new']} (<b>−{d['drop']}</b>)"
+            )
+        if len(drops) > 20:
+            lines.append(f"\n…и ещё {len(drops) - 20} ключевых слов")
+        lines.append(f"\n<i>Сравнение: {drops[0]['date_old']} → {drops[0]['date_new']}</i>")
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
     async def cmd_sync_returns(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/sync_returns — синхронизация аналитики возвратов WB + Ozon."""
         chat_id = update.effective_user.id
@@ -4820,6 +4893,7 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("sync_cards",       self.cmd_sync_cards))
         self.app.add_handler(CommandHandler("sync_promotions", self.cmd_sync_promotions))
         self.app.add_handler(CommandHandler("sync_keywords",   self.cmd_sync_keywords))
+        self.app.add_handler(CommandHandler("seo_check",       self.cmd_seo_check))
         self.app.add_handler(CommandHandler("sync_returns",    self.cmd_sync_returns))
         self.app.add_handler(CommandHandler("shop_kpi",        self.cmd_shop_kpi))
         self.app.add_handler(CommandHandler("sync_sku",        self.cmd_sync_sku))

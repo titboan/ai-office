@@ -1,7 +1,7 @@
 # WbNinjaBot-анализ: SEO-алерты + Региональная аналитика
 
 **Дата:** 2026-06-22  
-**Статус:** в работе
+**Статус:** завершён
 
 ---
 
@@ -36,16 +36,16 @@
 
 ## Фаза 2: SEO Position Drop Alerts
 
-- [ ] **2.1** `config.py` — добавить `config.SEO_POSITION_DROP_THRESHOLD = 10`
-- [ ] **2.2** `agents/max.py` — новая функция `_check_seo_drops(chat_id, db)`:
+- [x] **2.1** `config.py` — добавить `config.SEO_POSITION_DROP_THRESHOLD = 10`
+- [x] **2.2** `agents/max.py` — новая функция `_check_seo_drops(chat_id, db)`:
   - Берёт два последних уникальных `stat_date` из `product_search_keywords`
   - Сравнивает `position` между датами для каждого ключевика
   - Возвращает список дропов ≥ порога
-- [ ] **2.3** `agents/max.py` — команда `/seo_check`:
+- [x] **2.3** `agents/max.py` — команда `/seo_check`:
   - Если нет данных → "API временно недоступен (WB закрыл эндпоинт)"
   - Если дропы есть → `📉 «лакомства для собак»: 8 → 23 (-15)`
   - Если стабильно → "Позиции стабильны относительно [дата]"
-- [ ] **2.4** `agents/max.py` — зарегистрировать `CommandHandler("seo_check", self.cmd_seo_check)`
+- [x] **2.4** `agents/max.py` — зарегистрировать `CommandHandler("seo_check", self.cmd_seo_check)`
 - [ ] **2.5** В конце `_sync_keywords()` (после реактивации API) — вызывать `_check_seo_drops()` и отправлять алерт при дропах
 
 ---
