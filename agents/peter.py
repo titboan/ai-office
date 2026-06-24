@@ -662,7 +662,6 @@ class PeterAgent(BaseAgent):
                 LIMIT 15
             """, chat_id, date_from)
 
-        return {
             abc_rows = await conn.fetch("""
                 SELECT
                     o.product_id,
