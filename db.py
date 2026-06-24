@@ -629,7 +629,26 @@ async def _create_schema() -> None:
             END $$
         """)
 
-        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots + multi-shop)")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_plans (
+                id          BIGSERIAL    PRIMARY KEY,
+                chat_id     BIGINT       NOT NULL,
+                title       TEXT         NOT NULL,
+                notes       TEXT,
+                priority    TEXT         NOT NULL DEFAULT 'medium',
+                category    TEXT,
+                deadline    DATE,
+                status      TEXT         NOT NULL DEFAULT 'active',
+                created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS user_plans_chat_status
+            ON user_plans (chat_id, status)
+        """)
+
+        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots + multi-shop + user_plans)")
 
 async def save_project(
     chat_id: int,
@@ -1964,6 +1983,71 @@ async def clear_price_recommendations(chat_id: int, marketplace: str) -> None:
             f"UPDATE product_mapping SET {col} = NULL WHERE chat_id = $1",
             chat_id,
         )
+
+
+async def create_user_plan(
+    chat_id: int,
+    title: str,
+    notes: str | None = None,
+    priority: str = "medium",
+    category: str | None = None,
+    deadline: str | None = None,
+) -> int:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO user_plans (chat_id, title, notes, priority, category, deadline)
+            VALUES ($1, $2, $3, $4, $5, $6::date)
+            RETURNING id
+            """,
+            chat_id, title, notes, priority, category, deadline,
+        )
+    return row["id"]
+
+
+async def get_user_plans(chat_id: int, status_filter: str = "active") -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if status_filter == "all":
+            rows = await conn.fetch(
+                "SELECT * FROM user_plans WHERE chat_id=$1 ORDER BY priority DESC, created_at DESC",
+                chat_id,
+            )
+        elif status_filter in ("done", "archived", "in_progress"):
+            rows = await conn.fetch(
+                "SELECT * FROM user_plans WHERE chat_id=$1 AND status=$2 ORDER BY updated_at DESC",
+                chat_id, status_filter,
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT * FROM user_plans WHERE chat_id=$1 AND status IN ('active','in_progress') ORDER BY priority DESC, deadline NULLS LAST, created_at DESC",
+                chat_id,
+            )
+    return [dict(r) for r in rows]
+
+
+async def update_user_plan(plan_id: int, chat_id: int, **kwargs) -> bool:
+    allowed = {"title", "notes", "priority", "category", "deadline", "status"}
+    fields = {k: v for k, v in kwargs.items() if k in allowed}
+    if not fields:
+        return False
+    pool = await get_pool()
+    set_parts = [f"{k} = ${i+3}" for i, k in enumerate(fields)]
+    set_parts.append("updated_at = NOW()")
+    sql = f"UPDATE user_plans SET {', '.join(set_parts)} WHERE id=$1 AND chat_id=$2"
+    async with pool.acquire() as conn:
+        result = await conn.execute(sql, plan_id, chat_id, *fields.values())
+    return result != "UPDATE 0"
+
+
+async def delete_user_plan(plan_id: int, chat_id: int) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM user_plans WHERE id=$1 AND chat_id=$2", plan_id, chat_id
+        )
+    return result != "DELETE 0"
 
 
 async def get_competitor_snapshots(weeks: int = 4) -> list[dict]:

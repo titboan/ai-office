@@ -1399,13 +1399,20 @@ class MartaAgent(BaseAgent):
             "<i>Тина автоматически присылает дайджест каждое утро в 08:00 МСК.</i>"
         ),
         "office": (
-            "⚙️ <b>Офис (Марта)</b>\n\n"
+            "⚙️ <b>Офис (Марта + Алекс)</b>\n\n"
+            "📋 <b>Планы и задачи (Алекс):</b>\n"
+            "/plans — показать все активные планы\n"
+            "/plans &lt;текст&gt; — добавить или изменить план\n"
+            "/remind — установить напоминание\n\n"
+            "🤖 <b>Управление офисом (Марта):</b>\n"
             "/status — очередь задач и состояние агентов\n"
             "/history — последние 10 выполненных задач\n"
             "/delegate &lt;агент&gt; &lt;задача&gt; — явно передать агенту\n"
             "/cancel &lt;id&gt; — отменить задачу из очереди\n"
             "/reset — очистить историю диалога\n\n"
-            "<i>Дайджест от Марты каждый день в 21:05 МСК: задачи, ошибки, агенты.</i>"
+            "<i>Планы хранятся в базе и не пропадают. Примеры:\n"
+            "«добавь план подготовить акцию к 30.06, приоритет высокий»\n"
+            "«отметь план #3 выполненным»</i>"
         ),
     }
 
@@ -1483,6 +1490,7 @@ class MartaAgent(BaseAgent):
             BotCommand("write", "✍️ Элина: написать текст"),
             BotCommand("post", "📝 Элина: написать пост"),
             BotCommand("research", "🔍 Каспер: исследовать тему"),
+            BotCommand("plans",  "📋 Алекс: мои планы и задачи"),
             BotCommand("remind", "⏰ Алекс: напоминание"),
             BotCommand("tenders", "🏛️ Тина: дайджест тендеров"),
             BotCommand("tenders_report", "📑 Тина: аналитика тендеров"),
@@ -1652,6 +1660,13 @@ class MartaAgent(BaseAgent):
     async def cmd_proxy_testpush(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "alex", "testpush")
 
+    async def cmd_proxy_plans(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        args = " ".join(context.args) if context.args else ""
+        if args:
+            await self._proxy_cmd(update, context, "alex", args)
+        else:
+            await self._proxy_cmd(update, context, "alex", "__plans__")
+
     # ── Каспер ───────────────────────────────────────────────────────────────
 
     async def cmd_proxy_research(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1762,8 +1777,9 @@ class MartaAgent(BaseAgent):
         self.app.add_handler(CommandHandler("post", self.cmd_proxy_post))
         self.app.add_handler(CommandHandler("seo", self.cmd_proxy_seo_elina))
         self.app.add_handler(CommandHandler("research", self.cmd_proxy_research))
-        self.app.add_handler(CommandHandler("remind", self.cmd_proxy_remind))
+        self.app.add_handler(CommandHandler("remind",   self.cmd_proxy_remind))
         self.app.add_handler(CommandHandler("testpush", self.cmd_proxy_testpush))
+        self.app.add_handler(CommandHandler("plans",    self.cmd_proxy_plans))
         self.app.add_handler(CommandHandler("tenders", self.cmd_proxy_tenders))
         self.app.add_handler(CommandHandler("tenders_report", self.cmd_proxy_tenders_report))
         # ── Меню ─────────────────────────────────────────────────────────
