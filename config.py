@@ -47,15 +47,6 @@ class Config:
     WEBHOOK_BASE_URL: str = os.getenv("WEBHOOK_BASE_URL", "")
     PORT: int = int(os.getenv("PORT", "8080"))
 
-    # Notion Integration
-    NOTION_TOKEN: str = os.getenv("NOTION_TOKEN", "")
-    NOTION_PARENT_PAGE_ID: str = os.getenv("NOTION_PARENT_PAGE_ID", "")
-    NOTION_PROJECTS_DB: str = os.getenv("NOTION_PROJECTS_DB", "")
-    NOTION_TASKS_DB: str = os.getenv("NOTION_TASKS_DB", "")
-    NOTION_IDEAS_DB: str = os.getenv("NOTION_IDEAS_DB", "")
-    NOTION_RESEARCH_DB: str = os.getenv("NOTION_RESEARCH_DB", "")
-    NOTION_CONTENT_DB: str = os.getenv("NOTION_CONTENT_DB", "")
-
     # Push-уведомления (ntfy.sh)
     NTFY_TOPIC: str = os.getenv("NTFY_TOPIC", "").strip()  # напр. "ai-office-tba"
 

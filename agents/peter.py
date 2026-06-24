@@ -7,8 +7,6 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from config import config
-from tools import save_research
-from utils.tg_format import strip_html as _strip_html
 from utils.tg_rich import send_rich_or_fallback as _send_rich
 from task_queue import create_task as enqueue_task
 from .base_agent import BaseAgent
@@ -752,23 +750,11 @@ class PeterAgent(BaseAgent):
         self,
         answer: str,
         *,
-        notion_title: str,
-        notion_source: str,
-        notion_link_text: str = "Сохранено в Notion",
         update: Update | None = None,
         chat_id: int | None = None,
         bot=None,
         after_markup: InlineKeyboardMarkup | None = None,
     ) -> None:
-        notion_url = await save_research(
-            title=notion_title,
-            content=_strip_html(answer),
-            source=notion_source,
-            agent="Питер",
-        )
-        if notion_url:
-            answer = f'{answer}\n\n📄 [{notion_link_text}]({notion_url})'
-
         _cid = chat_id or (update.effective_chat.id if update else None)
         if _cid:
             await _send_rich(self.bot_token, _cid, answer)
@@ -881,14 +867,6 @@ class PeterAgent(BaseAgent):
         except Exception as e:
             logger.warning(f"[Питер] handle_task: ошибка Claude: {e}")
             answer = f"⚠️ Ошибка анализа: {e}"
-        notion_url = await save_research(
-            title=task[:50],
-            content=_strip_html(answer),
-            source=f"agent:{from_agent}",
-            agent="Питер",
-        )
-        if notion_url:
-            answer = f'{answer}\n\n📄 [Анализ сохранён в Notion]({notion_url})'
         await self.post_to_group(f"📊 Анализ готов: {answer[:200]}…")
         return answer
 
@@ -1046,8 +1024,6 @@ class PeterAgent(BaseAgent):
 
         await self._send_answer(
             answer,
-            notion_title=f"Отчёт {datetime.now(_UTC).strftime('%d.%m.%Y')}",
-            notion_source="cmd:report",
             update=update,
             after_markup=self._PETER_NEXT_REPORT,
         )
@@ -1113,9 +1089,6 @@ class PeterAgent(BaseAgent):
 
         await self._send_answer(
             answer,
-            notion_title=f"Аудит {datetime.now(_UTC).strftime('%d.%m.%Y')}",
-            notion_source="cmd:audit",
-            notion_link_text="Аудит сохранён в Notion",
             update=update,
         )
 
@@ -1181,8 +1154,6 @@ class PeterAgent(BaseAgent):
 
         await self._send_answer(
             answer,
-            notion_title=f"ДРР {datetime.now(_UTC).strftime('%d.%m.%Y')}",
-            notion_source="cmd:drr",
             update=update,
             after_markup=self._PETER_NEXT_DRR,
         )
@@ -1237,8 +1208,6 @@ class PeterAgent(BaseAgent):
 
         await self._send_answer(
             answer,
-            notion_title=f"ДРР {datetime.now(_UTC).strftime('%d.%m.%Y')}",
-            notion_source="cmd:drr",
             chat_id=chat_id,
             after_markup=self._PETER_NEXT_DRR,
         )
@@ -1340,8 +1309,6 @@ class PeterAgent(BaseAgent):
 
         await self._send_answer(
             answer,
-            notion_title=f"Воронка {datetime.now(_UTC).strftime('%d.%m.%Y')}",
-            notion_source="cmd:funnel",
             update=update,
         )
 
@@ -1502,8 +1469,6 @@ class PeterAgent(BaseAgent):
 
         await self._send_answer(
             answer,
-            notion_title=f"План поставок {datetime.now(_UTC).strftime('%d.%m.%Y')}",
-            notion_source="cmd:supply",
             update=update,
         )
 
@@ -1677,8 +1642,6 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
 
         await self._send_answer(
             answer,
-            notion_title=f"SEO-аудит {datetime.now(_UTC).strftime('%d.%m.%Y')}",
-            notion_source="cmd:seo_audit",
             update=update,
         )
 
@@ -1818,8 +1781,6 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
         try:
             await self._send_answer(
                 answer,
-                notion_title=f"Еженедельный аудит {datetime.now(_UTC).strftime('%d.%m.%Y')}",
-                notion_source="scheduler:weekly_audit",
                 chat_id=chat_id,
             )
             logger.info(f"[Питер/weekly_audit] отправлен в chat_id={chat_id}")
@@ -1931,8 +1892,6 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
         try:
             await self._send_answer(
                 answer,
-                notion_title=f"Дайджест {datetime.now(_UTC).strftime('%d.%m.%Y')}",
-                notion_source="scheduler:daily_digest",
                 chat_id=chat_id,
             )
             logger.info(f"[Питер/daily_digest] отправлен в chat_id={chat_id}")
@@ -1984,8 +1943,6 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
 
         await self._send_answer(
             answer,
-            notion_title=f"ABC {datetime.now(_UTC).strftime('%d.%m.%Y')}",
-            notion_source="cmd:abc",
             update=update,
             after_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("📊 Отчёт", callback_data="pnext:report"),

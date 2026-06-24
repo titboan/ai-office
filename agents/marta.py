@@ -17,8 +17,6 @@ from db import save_project, find_project, list_projects
 from utils.tg_format import clean_agent_output as _clean_output
 from utils.tg_rich import send_rich_or_fallback as _send_rich
 from task_queue import create_task as enqueue_task, get_active_tasks, enqueue_chain_task
-from tools import create_project, create_project_page
-from tools.notion import get_project_context
 from .base_agent import BaseAgent, _AGENT_NAMES
 
 def _detect_priority(text: str) -> int:
@@ -300,33 +298,6 @@ class MartaAgent(BaseAgent):
             logger.warning(f"[Марта] _plan_chain error: {e} | raw: {raw[:200] if 'raw' in locals() else 'no response'}")
             return None
 
-    async def _create_project_page(self, user_request: str, plan: dict) -> tuple[str | None, str]:
-        """Создать страницу проекта в Notion. Возвращает (page_id, title)."""
-        parent_id = config.NOTION_PARENT_PAGE_ID
-        if not parent_id:
-            logger.warning("[Марта] NOTION_PARENT_PAGE_ID не задан — Notion страница не создаётся")
-            return None, ""
-        try:
-            # Генерируем короткое название проекта через Claude (haiku — простая задача)
-            resp = await self.claude.messages.create(
-                model=config.CLAUDE_HAIKU_MODEL,
-                max_tokens=30,
-                system="Придумай короткое название проекта (3-5 слов). Только название, без кавычек и пояснений.",
-                messages=[{"role": "user", "content": user_request}],
-            )
-            title = resp.content[0].text.strip()
-        except Exception:
-            title = user_request[:60]
-
-        page_id = await create_project_page(
-            parent_page_id=parent_id,
-            title=title,
-            description=user_request[:500],
-        )
-        if page_id:
-            logger.info(f"[Марта] Notion проект создан: page_id={page_id[:8]}… title={title!r}")
-        return page_id, title
-
     @staticmethod
     def _normalize_chain_steps(steps: list[dict]) -> tuple[list[dict], int]:
         """Нормализовать шаги цепочки: добавить group если нет, вернуть (steps, total_groups).
@@ -351,24 +322,11 @@ class MartaAgent(BaseAgent):
         """Запустить цепочку: enqueue шагов первой группы + настроить Redis-барьер."""
         steps    = plan.get("steps", [])
         chain_id = str(uuid.uuid4())
-        resume_page_id = getattr(self, "_resume_notion_page_id", None)
+        resume_page_id = None
 
         # Нормализуем шаги: добавляем group-поле
         steps, total_groups = self._normalize_chain_steps(steps)
         plan = {**plan, "steps": steps}  # сохраняем нормализованный план
-
-        notion_page_id = None
-        if plan.get("needs_project_page"):
-            notion_page_id, project_name = await self._create_project_page(user_request, plan)
-            if notion_page_id:
-                await save_project(
-                    chat_id=chat_id,
-                    name=project_name,
-                    notion_page_id=notion_page_id,
-                    chain_id=chain_id,
-                )
-        elif resume_page_id:
-            notion_page_id = resume_page_id
 
         # Первая группа: все шаги с group=0
         group0_steps = [s for s in steps if s["group"] == 0]
@@ -386,7 +344,6 @@ class MartaAgent(BaseAgent):
                 chain_index=0,
                 chain_total=total_groups,
                 chain_plan=plan,
-                notion_page_id=notion_page_id,
                 from_agent="marta",
                 correlation_id=corr_id,
                 priority=_detect_priority(user_request),
@@ -451,7 +408,6 @@ class MartaAgent(BaseAgent):
             await self._delete_pending_chain(chat_id)
             if plan:
                 await self._start_chain(plan, user_text, chat_id)
-                self._resume_notion_page_id = None
                 _ce = {
                     "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
                     "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
@@ -627,7 +583,6 @@ class MartaAgent(BaseAgent):
             proj_name = cm.group(1).strip()
             project = await find_project(chat_id, proj_name)
             if project is None:
-                self._resume_notion_page_id = None
                 projects = await list_projects(chat_id)
                 if projects:
                     proj_list = "\n".join(f"• {p['name']}" for p in projects)
@@ -635,19 +590,6 @@ class MartaAgent(BaseAgent):
                     proj_list = "(нет сохранённых проектов)"
                 await reply_func(f"Проект '{proj_name}' не найден. Доступные проекты:\n{proj_list}")
                 return
-            self._resume_notion_page_id = project.get("notion_page_id")
-            ctx = ""
-            if project.get("notion_page_id"):
-                ctx = await get_project_context(project["notion_page_id"])
-            if ctx:
-                user_text = (
-                    f"[КОНТЕКСТ ПРОЕКТА: {project['name']}]\n"
-                    f"{ctx}\n"
-                    f"[КОНЕЦ КОНТЕКСТА]\n\n"
-                    f"Исходный запрос пользователя: {user_text}"
-                )
-        else:
-            self._resume_notion_page_id = None
 
         # ── Проверяем нужна ли цепочка агентов ───────────────────────────────
         if not skip_chain:
@@ -727,17 +669,6 @@ class MartaAgent(BaseAgent):
             cleaned = _clean_output(marta_response)
             await reply_func(cleaned)
             await self.post_to_group(marta_response)
-
-            if _PROJECT_TRIGGER_RE.search(user_text):
-                project_name = _extract_project_name(user_text)
-                notion_url = await create_project(
-                    name=project_name,
-                    description=marta_response[:500],
-                )
-                if notion_url:
-                    await reply_func(
-                        f'📁 **Проект «{project_name}» создан в Notion:** [Открыть]({notion_url})',
-                    )
             return
 
         agent_key, subtask = delegation
@@ -1173,18 +1104,6 @@ class MartaAgent(BaseAgent):
         clean = self._strip_delegate_block(marta_response)
         await self.post_to_group(f"📋 {clean[:200]}")
 
-        # Если задача — создание проекта, сохраняем в Notion
-        if _PROJECT_TRIGGER_RE.search(task):
-            project_name = _extract_project_name(task)
-            logger.info(f"[Марта] Детектирован проект в handle_task: {project_name!r}")
-            notion_url = await create_project(
-                name=project_name,
-                description=clean[:500],
-            )
-            if notion_url:
-                logger.info(f"[Марта] Проект сохранён в Notion: {notion_url}")
-                clean = f'{clean}\n\n📁 **Проект «{project_name}» создан в Notion:** [ссылка]({notion_url})'
-
         return clean
 
     # ------------------------------------------------------------------ #
@@ -1336,10 +1255,7 @@ class MartaAgent(BaseAgent):
             return
         lines = ["📂 **Проекты:**\n"]
         for p in projects:
-            pid = p["notion_page_id"]
-            pid_clean = pid.replace("-", "") if pid else ""
-            link = f' [→ Notion](https://notion.so/{pid_clean})' if pid else ""
-            lines.append(f"• {p['name']}{link}")
+            lines.append(f"• {p['name']}")
         await _send_rich(
             self.bot_token, update.effective_chat.id, "\n".join(lines),
             reply_markup_dict=self._main_keyboard().to_dict(),

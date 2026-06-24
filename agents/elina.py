@@ -7,7 +7,6 @@ from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
-from tools import save_content
 from utils.tg_rich import send_rich_or_fallback as _send_rich
 from .base_agent import BaseAgent
 
@@ -226,18 +225,7 @@ class ElinaAgent(BaseAgent):
             is_task=True,
         )
 
-        notion_url = await save_content(
-            title=f"SEO карточка {product_id}",
-            text=answer,
-            content_type="Статья",
-        )
-        if notion_url:
-            logger.info(f"[{self.name}] SEO сохранён в Notion: {notion_url}")
-            await self.post_to_group(f"📝 SEO-карточка готова и сохранена в Notion: {notion_url}")
-            answer = f"{answer}\n\n📄 [Сохранено в Notion (SEO)]({notion_url})"
-        else:
-            await self.post_to_group(f"📝 SEO-карточка готова: {answer[:200]}…")
-
+        await self.post_to_group(f"📝 SEO-карточка готова: {answer[:200]}…")
         return answer
 
     # ------------------------------------------------------------------ #
@@ -278,21 +266,7 @@ class ElinaAgent(BaseAgent):
         )
 
         content_type = _detect_content_type(task)
-        notion_url = await save_content(
-            title=task[:100],
-            text=answer,
-            content_type=content_type,
-        )
-
-        if notion_url:
-            logger.info(f"[{self.name}] Контент сохранён в Notion ({content_type}): {notion_url}")
-            await self.post_to_group(
-                f"📝 {content_type} готов и сохранён в Notion: {notion_url}"
-            )
-            answer = f"{answer}\n\n📄 [Сохранено в Notion ({content_type})]({notion_url})"
-        else:
-            await self.post_to_group(f"📝 {content_type} готов: {answer[:200]}…")
-
+        await self.post_to_group(f"📝 {content_type} готов: {answer[:200]}…")
         return answer
 
     # ------------------------------------------------------------------ #

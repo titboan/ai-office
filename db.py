@@ -630,7 +630,6 @@ async def _create_schema() -> None:
 async def save_project(
     chat_id: int,
     name: str,
-    notion_page_id: str,
     chain_id: str | None = None,
 ) -> None:
     """Сохраняет или обновляет проект. Upsert по chat_id + name_lower."""
@@ -638,14 +637,13 @@ async def save_project(
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO projects (chat_id, name, notion_page_id, chain_id)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO projects (chat_id, name, chain_id)
+            VALUES ($1, $2, $3)
             ON CONFLICT (chat_id, name_lower) DO UPDATE
-                SET notion_page_id = EXCLUDED.notion_page_id,
-                    chain_id       = EXCLUDED.chain_id,
-                    updated_at     = NOW()
+                SET chain_id   = EXCLUDED.chain_id,
+                    updated_at = NOW()
             """,
-            chat_id, name, notion_page_id, chain_id,
+            chat_id, name, chain_id,
         )
 
 

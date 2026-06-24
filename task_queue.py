@@ -209,7 +209,6 @@ async def enqueue_chain_task(
     chain_index: int,
     chain_total: int,
     chain_plan: dict | None = None,
-    notion_page_id: str | None = None,
     parent_task_id: int | None = None,
     from_agent: str = "marta",
     correlation_id: str | None = None,
@@ -233,16 +232,16 @@ async def enqueue_chain_task(
                     from_agent, chat_id,
                     correlation_id, parent_task_id,
                     priority, timeout_seconds,
-                    chain_id, chain_index, chain_total, chain_plan, notion_page_id,
+                    chain_id, chain_index, chain_total, chain_plan,
                     parallel_group
                 )
-                VALUES ($1,'general',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14)
+                VALUES ($1,'general',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13)
                 RETURNING id
             """, agent_key, payload,
                 from_agent, chat_id,
                 corr_id, parent_task_id,
                 priority, timeout_seconds,
-                chain_id, chain_index, chain_total, chain_plan_json, notion_page_id,
+                chain_id, chain_index, chain_total, chain_plan_json,
                 parallel_group)
             task_id = row["id"]
             logger.info(
