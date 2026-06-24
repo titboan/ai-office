@@ -494,7 +494,138 @@ async def _create_schema() -> None:
                 UNIQUE(keyword, position, snapshot_date, marketplace)
             )
         """)
-        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots)")
+
+        # ── Ozon Performance credentials per-shop ──────────────────────────────
+        await conn.execute("""
+            ALTER TABLE marketplace_shops
+            ADD COLUMN IF NOT EXISTS performance_client_id     TEXT,
+            ADD COLUMN IF NOT EXISTS performance_client_secret TEXT
+        """)
+
+        # ── Multi-shop migration (поддержка нескольких Ozon-магазинов) ─────────
+
+        # 1. Убрать UNIQUE (chat_id, marketplace) из marketplace_shops
+        await conn.execute("""
+            DO $$ BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM pg_constraint c
+                    JOIN pg_class t ON c.conrelid = t.oid
+                    WHERE t.relname = 'marketplace_shops'
+                    AND c.contype = 'u'
+                    AND c.conname = 'marketplace_shops_chat_id_marketplace_key'
+                ) THEN
+                    ALTER TABLE marketplace_shops DROP CONSTRAINT marketplace_shops_chat_id_marketplace_key;
+                END IF;
+            END $$
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uniq_marketplace_shops_multi
+            ON marketplace_shops (chat_id, marketplace, COALESCE(client_id, ''))
+        """)
+
+        # 2. Добавить shop_id в критичные таблицы
+        await conn.execute("""
+            ALTER TABLE marketplace_stocks
+            ADD COLUMN IF NOT EXISTS shop_id BIGINT NOT NULL DEFAULT 0
+        """)
+        await conn.execute("""
+            ALTER TABLE marketplace_financial_report
+            ADD COLUMN IF NOT EXISTS shop_id BIGINT NOT NULL DEFAULT 0
+        """)
+        await conn.execute("""
+            ALTER TABLE marketplace_fin_adv
+            ADD COLUMN IF NOT EXISTS shop_id BIGINT NOT NULL DEFAULT 0
+        """)
+
+        # 3. Заполнить shop_id существующих записей
+        await conn.execute("""
+            UPDATE marketplace_stocks ms
+            SET shop_id = COALESCE(
+                (SELECT id FROM marketplace_shops s
+                 WHERE s.chat_id = ms.chat_id AND s.marketplace = ms.marketplace
+                 LIMIT 1), 0)
+            WHERE ms.shop_id = 0
+        """)
+        await conn.execute("""
+            UPDATE marketplace_financial_report mfr
+            SET shop_id = COALESCE(
+                (SELECT id FROM marketplace_shops s
+                 WHERE s.chat_id = mfr.chat_id AND s.marketplace = mfr.marketplace
+                 LIMIT 1), 0)
+            WHERE mfr.shop_id = 0
+        """)
+        await conn.execute("""
+            UPDATE marketplace_fin_adv mfa
+            SET shop_id = COALESCE(
+                (SELECT id FROM marketplace_shops s
+                 WHERE s.chat_id = mfa.chat_id AND s.marketplace = mfa.marketplace
+                 LIMIT 1), 0)
+            WHERE mfa.shop_id = 0
+        """)
+
+        # 4. Обновить UNIQUE-ограничения: включить shop_id
+        await conn.execute("""
+            DO $$
+            DECLARE v_conname text;
+            BEGIN
+                SELECT c.conname INTO v_conname
+                FROM pg_constraint c
+                JOIN pg_class t ON c.conrelid = t.oid
+                WHERE t.relname = 'marketplace_stocks' AND c.contype = 'u'
+                AND NOT EXISTS (
+                    SELECT 1 FROM pg_attribute a
+                    WHERE a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+                    AND a.attname = 'shop_id'
+                );
+                IF v_conname IS NOT NULL THEN
+                    EXECUTE 'ALTER TABLE marketplace_stocks DROP CONSTRAINT ' || quote_ident(v_conname);
+                    ALTER TABLE marketplace_stocks ADD CONSTRAINT marketplace_stocks_shop_product_wh_key
+                        UNIQUE (shop_id, product_id, warehouse_name);
+                END IF;
+            END $$
+        """)
+        await conn.execute("""
+            DO $$
+            DECLARE v_conname text;
+            BEGIN
+                SELECT c.conname INTO v_conname
+                FROM pg_constraint c
+                JOIN pg_class t ON c.conrelid = t.oid
+                WHERE t.relname = 'marketplace_financial_report' AND c.contype = 'u'
+                AND NOT EXISTS (
+                    SELECT 1 FROM pg_attribute a
+                    WHERE a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+                    AND a.attname = 'shop_id'
+                );
+                IF v_conname IS NOT NULL THEN
+                    EXECUTE 'ALTER TABLE marketplace_financial_report DROP CONSTRAINT ' || quote_ident(v_conname);
+                    ALTER TABLE marketplace_financial_report ADD CONSTRAINT marketplace_financial_report_shop_product_date_key
+                        UNIQUE (shop_id, product_id, report_date);
+                END IF;
+            END $$
+        """)
+        await conn.execute("""
+            DO $$
+            DECLARE v_conname text;
+            BEGIN
+                SELECT c.conname INTO v_conname
+                FROM pg_constraint c
+                JOIN pg_class t ON c.conrelid = t.oid
+                WHERE t.relname = 'marketplace_fin_adv' AND c.contype = 'u'
+                AND NOT EXISTS (
+                    SELECT 1 FROM pg_attribute a
+                    WHERE a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+                    AND a.attname = 'shop_id'
+                );
+                IF v_conname IS NOT NULL THEN
+                    EXECUTE 'ALTER TABLE marketplace_fin_adv DROP CONSTRAINT ' || quote_ident(v_conname);
+                    ALTER TABLE marketplace_fin_adv ADD CONSTRAINT marketplace_fin_adv_shop_date_key
+                        UNIQUE (shop_id, stat_date);
+                END IF;
+            END $$
+        """)
+
+        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots + multi-shop)")
 
 async def save_project(
     chat_id: int,
@@ -632,21 +763,58 @@ async def add_marketplace_shop(
     api_token: str,
     shop_name: str | None = None,
     client_id: str | None = None,
-) -> None:
+) -> int:
+    """Добавить или обновить магазин. Возвращает id записи в marketplace_shops."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
+        existing = await conn.fetchrow(
+            """
+            SELECT id FROM marketplace_shops
+            WHERE chat_id = $1 AND marketplace = $2
+              AND COALESCE(client_id, '') = COALESCE($3, '')
+            """,
+            chat_id, marketplace, client_id,
+        )
+        if existing:
+            await conn.execute(
+                """
+                UPDATE marketplace_shops
+                SET api_token = $1, shop_name = COALESCE($2, shop_name), is_active = true
+                WHERE id = $3
+                """,
+                api_token, shop_name, existing["id"],
+            )
+            return existing["id"]
+        row = await conn.fetchrow(
             """
             INSERT INTO marketplace_shops (chat_id, marketplace, api_token, client_id, shop_name)
             VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (chat_id, marketplace) DO UPDATE
-                SET api_token  = EXCLUDED.api_token,
-                    client_id  = EXCLUDED.client_id,
-                    shop_name  = EXCLUDED.shop_name,
-                    is_active  = true
+            RETURNING id
             """,
             chat_id, marketplace, api_token, client_id, shop_name,
         )
+        return row["id"]
+
+
+async def set_performance_credentials(
+    chat_id: int,
+    ozon_client_id: str,
+    performance_client_id: str,
+    performance_client_secret: str,
+) -> bool:
+    """Привязать Ozon Performance credentials к конкретному магазину. Возвращает True если нашёл."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE marketplace_shops
+            SET performance_client_id     = $1,
+                performance_client_secret = $2
+            WHERE chat_id = $3 AND marketplace = 'ozon' AND client_id = $4
+            """,
+            performance_client_id, performance_client_secret, chat_id, ozon_client_id,
+        )
+        return result.split()[-1] != "0"
 
 
 async def get_marketplace_shops(chat_id: int) -> list[dict]:
@@ -736,21 +904,22 @@ async def upsert_stock(
     warehouse_name: str | None,
     stock: int,
     reserved: int,
+    shop_id: int = 0,
 ) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO marketplace_stocks
-                (chat_id, marketplace, product_id, product_name, warehouse_name, stock, reserved, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-            ON CONFLICT (chat_id, marketplace, product_id, warehouse_name) DO UPDATE
+                (chat_id, marketplace, product_id, product_name, warehouse_name, stock, reserved, shop_id, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+            ON CONFLICT (shop_id, product_id, warehouse_name) DO UPDATE
                 SET product_name   = EXCLUDED.product_name,
                     stock          = EXCLUDED.stock,
                     reserved       = EXCLUDED.reserved,
                     updated_at     = NOW()
             """,
-            chat_id, marketplace, product_id, product_name, warehouse_name or "", stock, reserved,
+            chat_id, marketplace, product_id, product_name, warehouse_name or "", stock, reserved, shop_id,
         )
 
 
@@ -780,19 +949,19 @@ async def upsert_ad_stat(
         )
 
 
-async def upsert_fin_adv(chat_id: int, marketplace: str, stat_date, adv_spend: float) -> None:
+async def upsert_fin_adv(chat_id: int, marketplace: str, stat_date, adv_spend: float, shop_id: int = 0) -> None:
     """Сохранить/обновить суммарные рекламные расходы из финотчёта за день."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO marketplace_fin_adv (chat_id, marketplace, stat_date, adv_spend, updated_at)
-            VALUES ($1, $2, $3, $4, NOW())
-            ON CONFLICT (chat_id, marketplace, stat_date) DO UPDATE
+            INSERT INTO marketplace_fin_adv (chat_id, marketplace, stat_date, adv_spend, shop_id, updated_at)
+            VALUES ($1, $2, $3, $4, $5, NOW())
+            ON CONFLICT (shop_id, stat_date) DO UPDATE
                 SET adv_spend  = EXCLUDED.adv_spend,
                     updated_at = NOW()
             """,
-            chat_id, marketplace, stat_date, adv_spend,
+            chat_id, marketplace, stat_date, adv_spend, shop_id,
         )
 
 
@@ -1208,15 +1377,16 @@ async def upsert_financial_report(
     logistics: float = 0,
     storage: float = 0,
     penalty: float = 0,
+    shop_id: int = 0,
 ) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("""
             INSERT INTO marketplace_financial_report
                 (chat_id, marketplace, product_id, report_date,
-                 quantity, revenue, payout, commission, logistics, storage, penalty, updated_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
-            ON CONFLICT (chat_id, marketplace, product_id, report_date) DO UPDATE SET
+                 quantity, revenue, payout, commission, logistics, storage, penalty, shop_id, updated_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
+            ON CONFLICT (shop_id, product_id, report_date) DO UPDATE SET
                 quantity   = EXCLUDED.quantity,
                 revenue    = EXCLUDED.revenue,
                 payout     = EXCLUDED.payout,
@@ -1226,7 +1396,7 @@ async def upsert_financial_report(
                 penalty    = EXCLUDED.penalty,
                 updated_at = NOW()
         """, chat_id, marketplace, product_id, report_date,
-             quantity, revenue, payout, commission, logistics, storage, penalty)
+             quantity, revenue, payout, commission, logistics, storage, penalty, shop_id)
 
 
 async def upsert_funnel_stat(

@@ -385,13 +385,13 @@ class MaxAgent(BaseAgent):
     # ------------------------------------------------------------------ #
 
     def _status_text(self, shops: list[dict]) -> str:
-        connected = {s["marketplace"] for s in shops}
-        wb_ok   = "wb"   in connected
-        ozon_ok = "ozon" in connected
-        lines = [
-            "🟣 Wildberries — подключён" if wb_ok   else "🟣 Wildberries — не подключён",
-            "🔵 Ozon — подключён"        if ozon_ok else "🔵 Ozon — не подключён",
-        ]
+        if not shops:
+            return "Магазинов нет. Нажми /start чтобы подключить."
+        lines = []
+        for s in shops:
+            emoji = "🟣" if s["marketplace"] == "wb" else "🔵"
+            name = s.get("shop_name") or _MP_LABELS.get(s["marketplace"], s["marketplace"])
+            lines.append(f"{emoji} {name} — подключён")
         return "\n".join(lines)
 
     async def _build_keyboard(self, chat_id: int) -> InlineKeyboardMarkup:
@@ -427,6 +427,7 @@ class MaxAgent(BaseAgent):
                 InlineKeyboardButton("❓ Справка",          callback_data="menu_help"),
             ],
         ]
+        rows.append([InlineKeyboardButton("➕ Добавить магазин", callback_data="onboard:add_shop")])
         update_row = []
         if "wb" in connected:
             update_row.append(InlineKeyboardButton("🔑 Токен WB",   callback_data="onboard:update_wb"))
@@ -440,7 +441,9 @@ class MaxAgent(BaseAgent):
         self, chat_id: int, shops: list[dict], message_method
     ) -> None:
         """Показать статус площадок + динамические кнопки действий."""
-        text = "👋 Вот твои магазины:\n" + self._status_text(shops)
+        count = len(shops)
+        shop_word = "магазин" if count == 1 else "магазина" if count < 5 else "магазинов"
+        text = f"👋 Активных {shop_word}: {count}\n\n" + self._status_text(shops)
         keyboard = await self._build_keyboard(chat_id)
         await message_method(text, reply_markup=keyboard)
 
@@ -449,15 +452,21 @@ class MaxAgent(BaseAgent):
     # ------------------------------------------------------------------ #
 
     async def _send_platform_choice(self, chat_id: int) -> None:
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🟣 Wildberries", callback_data="onboard:wb"),
-            InlineKeyboardButton("🔵 Ozon",        callback_data="onboard:ozon"),
-            InlineKeyboardButton("🟣+🔵 Обе",      callback_data="onboard:both"),
-        ]])
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🟣 Wildberries", callback_data="onboard:wb"),
+                InlineKeyboardButton("🔵 Ozon",        callback_data="onboard:ozon"),
+            ],
+            [InlineKeyboardButton("🟣+🔵 Подключить обе", callback_data="onboard:both")],
+        ])
         await self._notify_user(
             chat_id,
-            "👋 Привет! Я Макс — слежу за отзывами на маркетплейсах и отвечаю за тебя.\n\n"
-            "Какую площадку подключим?",
+            "👋 Привет! Я **Макс** — AI-менеджер маркетплейсов.\n\n"
+            "**Что делаю автоматически:**\n"
+            "• Отвечаю на отзывы 3 раза в день (09:00, 14:00, 20:00 МСК)\n"
+            "• На негативные 1–2⭐ — жду твоего одобрения, остальные публикую сам\n"
+            "• Слежу за остатками, продажами и рекламной статистикой\n\n"
+            "На подключение — 2 минуты. Какую площадку начнём?",
             reply_markup=keyboard,
         )
 
@@ -466,11 +475,22 @@ class MaxAgent(BaseAgent):
         from db import get_marketplace_shops
         shops = await get_marketplace_shops(chat_id)
         labels = " и ".join(_MP_LABELS.get(mp, mp) for mp in connected)
-        intro = f"✅ Готово! Подключено: {labels}\nБуду проверять отзывы в 09:00, 14:00 и 20:00 МСК.\n\n"
         status = self._status_text(shops)
+        text = (
+            f"🎉 **{labels} подключён!**\n\n"
+            f"{status}\n\n"
+            "**Что происходит автоматически:**\n"
+            "• Отзывы проверяются в 09:00, 14:00 и 20:00 МСК\n"
+            "• 3–5⭐ — публикую ответ сам\n"
+            "• 1–2⭐ — пришлю тебе на одобрение\n\n"
+            "**С чего начать:**\n"
+            "1. /sync — загрузить данные магазина\n"
+            "2. /products — добавить себестоимость товаров\n"
+            "3. /dashboard — посмотреть аналитику"
+        )
         await self._notify_user(
             chat_id,
-            intro + status,
+            text,
             reply_markup=await self._build_keyboard(chat_id),
         )
 
@@ -658,11 +678,21 @@ class MaxAgent(BaseAgent):
             await query.edit_message_text("Отправь Client-Id магазина Ozon:")
             return
 
+        if action == "add_shop":
+            await query.answer()
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🟣 Wildberries", callback_data="onboard:add_wb"),
+                InlineKeyboardButton("🔵 Ozon",        callback_data="onboard:add_ozon"),
+            ]])
+            await query.message.reply_text("Какую площадку добавить?", reply_markup=keyboard)
+            return
+
         if action == "add_wb":
             await query.answer()
             await self._set_onboard(chat_id, {"step": "wb_token", "data": {}})
             await query.edit_message_text(
                 "🟣 Подключаем Wildberries.\n\n"
+                "Шаг 1 из 2 — API токен\n\n"
                 "Отправь API токен Wildberries.\n\n"
                 "📌 Где взять:\n"
                 "seller.wildberries.ru → Настройки → Доступ к API → "
@@ -675,9 +705,10 @@ class MaxAgent(BaseAgent):
             await self._set_onboard(chat_id, {"step": "ozon_client_id", "data": {}})
             await query.edit_message_text(
                 "🔵 Подключаем Ozon.\n\n"
+                "Шаг 1 из 3 — Client-Id\n\n"
                 "Отправь Client-Id магазина Ozon.\n\n"
                 "📌 Где взять:\n"
-                "seller.ozon.ru → Настройки → API ключи"
+                "seller.ozon.ru → Настройки → API ключи → Seller API"
             )
             return
 
@@ -696,7 +727,8 @@ class MaxAgent(BaseAgent):
             await self._set_onboard(chat_id, {"step": "wb_token", "data": {}})
             await query.edit_message_text(
                 "🟣 Wildberries выбран.\n\n"
-                "Отправь API токен Wildberries.\n\n"
+                "Шаг 1 из 2 — API токен\n\n"
+                "Отправь API токен.\n\n"
                 "📌 Где взять:\n"
                 "seller.wildberries.ru → Настройки → Доступ к API → "
                 "создать токен с категорией Отзывы"
@@ -705,14 +737,16 @@ class MaxAgent(BaseAgent):
             await self._set_onboard(chat_id, {"step": "ozon_client_id", "data": {}})
             await query.edit_message_text(
                 "🔵 Ozon выбран.\n\n"
+                "Шаг 1 из 3 — Client-Id\n\n"
                 "Отправь Client-Id магазина Ozon.\n\n"
                 "📌 Где взять:\n"
-                "seller.ozon.ru → Настройки → API ключи"
+                "seller.ozon.ru → Настройки → API ключи → Seller API"
             )
         elif action == "both":
             await self._set_onboard(chat_id, {"step": "wb_token", "data": {"need_ozon": True}})
             await query.edit_message_text(
-                "🟣+🔵 Подключим обе площадки. Начнём с Wildberries.\n\n"
+                "🟣+🔵 Подключим обе. Начнём с Wildberries.\n\n"
+                "Шаг 1 из 4 — API токен WB\n\n"
                 "Отправь API токен Wildberries.\n\n"
                 "📌 Где взять:\n"
                 "seller.wildberries.ru → Настройки → Доступ к API → "
@@ -752,9 +786,11 @@ class MaxAgent(BaseAgent):
             data["wb_connected"] = True
             data["wb_token"] = text
             await self._set_onboard(chat_id, {"step": "wb_statistics_token", "data": data})
+            step_label = "Шаг 2 из 4" if data.get("need_ozon") else "Шаг 2 из 2"
             await update.message.reply_text(
-                "✅ Wildberries подключён!\n\n"
-                "Теперь отправь токен для <b>Statistics API</b> (остатки и продажи).\n\n"
+                f"✅ Wildberries подключён!\n\n"
+                f"{step_label} — Statistics API\n\n"
+                "Отправь токен для <b>Statistics API</b> (остатки и продажи).\n\n"
                 "📌 Где взять:\n"
                 "seller.wildberries.ru → Настройки → Доступ к API → "
                 "создать токен с категорией <b>Статистика</b>\n\n"
@@ -787,7 +823,13 @@ class MaxAgent(BaseAgent):
         elif step == "ozon_client_id":
             data["client_id"] = text
             await self._set_onboard(chat_id, {"step": "ozon_api_key", "data": data})
-            await update.message.reply_text("Теперь отправь Api-Key")
+            total = "3" if not data.get("updating") else "2"
+            await update.message.reply_text(
+                f"Шаг 2 из {total} — Api-Key\n\n"
+                "Теперь отправь Api-Key магазина.\n\n"
+                "📌 Где взять:\n"
+                "seller.ozon.ru → Настройки → API ключи → Seller API"
+            )
 
         elif step == "ozon_api_key":
             await update.message.reply_text("🔍 Проверяю подключение к Ozon…")
@@ -801,8 +843,29 @@ class MaxAgent(BaseAgent):
                 )
                 await self._set_onboard(chat_id, {"step": "ozon_client_id", "data": data})
                 return
+            if data.get("updating"):
+                from db import add_marketplace_shop
+                await add_marketplace_shop(chat_id, "ozon", text, client_id=client_id)
+                await self._clear_onboard(chat_id)
+                await update.message.reply_text("✅ Токен Ozon обновлён.")
+                return
+            data["ozon_api_key"] = text
+            await self._set_onboard(chat_id, {"step": "ozon_shop_name", "data": data})
+            await update.message.reply_text(
+                "✅ Проверка прошла!\n\n"
+                "Шаг 3 из 3 — Название магазина\n\n"
+                "Как назовём этот магазин?\n"
+                "Например: «Основной Ozon», «Ozon Premium», «Новый»\n\n"
+                "Имя видно только тебе — помогает различать магазины в отчётах.\n"
+                "Если не важно — отправь /skip"
+            )
+
+        elif step == "ozon_shop_name":
+            shop_name = None if text.strip() == "/skip" else text.strip()
             from db import add_marketplace_shop
-            await add_marketplace_shop(chat_id, "ozon", text, client_id=client_id)
+            client_id = data.get("client_id", "")
+            api_key = data.get("ozon_api_key", "")
+            await add_marketplace_shop(chat_id, "ozon", api_key, client_id=client_id, shop_name=shop_name)
             data["ozon_connected"] = True
             connected = (["wb"] if data.get("wb_connected") else []) + ["ozon"]
             await self._clear_onboard(chat_id)
@@ -1108,7 +1171,7 @@ class MaxAgent(BaseAgent):
                         chat_id=chat_id, marketplace=mp,
                         product_id=s["product_id"], product_name=s.get("product_name"),
                         warehouse_name=s.get("warehouse_name", ""), stock=s["stock"],
-                        reserved=s.get("reserved", 0),
+                        reserved=s.get("reserved", 0), shop_id=shop["id"],
                     )
                 logger.info(f"[Макс/sync] {mp_label}: {len(stocks)} позиций остатков")
                 if mp == "wb":
@@ -1375,8 +1438,9 @@ class MaxAgent(BaseAgent):
 
             if mp == "ozon":
                 try:
-                    ozon_perf_client_id     = os.getenv("OZON_PERFORMANCE_CLIENT_ID")
-                    ozon_perf_client_secret = os.getenv("OZON_PERFORMANCE_CLIENT_SECRET")
+                    # Per-shop credentials (приоритет), иначе глобальные env vars
+                    ozon_perf_client_id     = shop.get("performance_client_id") or os.getenv("OZON_PERFORMANCE_CLIENT_ID")
+                    ozon_perf_client_secret = shop.get("performance_client_secret") or os.getenv("OZON_PERFORMANCE_CLIENT_SECRET")
                     if ozon_perf_client_id and ozon_perf_client_secret:
                         redis = await self._get_redis()
                         perf_client = OzonPerformanceClient(ozon_perf_client_id, ozon_perf_client_secret, redis)
@@ -1399,9 +1463,9 @@ class MaxAgent(BaseAgent):
                                     orders_count=ps.get("orders_count", 0),
                                 )
                                 prod_count += 1
-                        logger.info(f"[Макс/adv] Ozon реклама: {len(ad_stats)} записей, {prod_count} sku-записей")
+                        logger.info(f"[Макс/adv] Ozon реклама (client_id={shop.get('client_id')}): {len(ad_stats)} записей, {prod_count} sku-записей")
                     else:
-                        logger.warning("[Макс/adv] Ozon Performance credentials не настроены")
+                        logger.warning(f"[Макс/adv] Ozon Performance credentials не настроены для client_id={shop.get('client_id')}")
                 except Exception as e:
                     logger.error(f"[Макс/adv] Ozon реклама: {e}")
 
@@ -1419,6 +1483,7 @@ class MaxAgent(BaseAgent):
                         await upsert_fin_adv(
                             chat_id=chat_id, marketplace="ozon",
                             stat_date=_date.fromisoformat(row["date"]), adv_spend=row["adv_spend"],
+                            shop_id=shop["id"],
                         )
                     logger.info(f"[Макс/adv] Ozon финотчёт рекламы: {len(fin_adv)} дней")
                 except Exception as e:
@@ -1464,6 +1529,7 @@ class MaxAgent(BaseAgent):
                             logistics=r["logistics"],
                             storage=r["storage"],
                             penalty=r["penalty"],
+                            shop_id=shop["id"],
                         )
                     counts["wb"] = len(rows)
                     logger.info(f"[Макс/fin] WB: {len(rows)} записей финотчёта")
@@ -1486,14 +1552,11 @@ class MaxAgent(BaseAgent):
                             logistics=r["logistics"],
                             storage=r["storage"],
                             penalty=r["penalty"],
+                            shop_id=shop["id"],
                         )
                     counts["ozon"] = len(rows)
                     logger.info(f"[Макс/fin] Ozon: {len(rows)} записей финотчёта")
 
-                    # /v3/finance/transaction/list не отдаёт quantity — добираем его
-                    # и точную выручку через realization-отчёт (report_date = 1 число
-                    # месяца, отдельная строка от недельных payout/commission/logistics
-                    # выше — суммируются вместе в NET-марже у Питера).
                     real_rows = await client.get_realization_quantity_revenue(date_from=date_from, date_to=date_to)
                     for r in real_rows:
                         await upsert_financial_report(
@@ -1502,6 +1565,7 @@ class MaxAgent(BaseAgent):
                             report_date=r["report_date"],
                             quantity=r["quantity"],
                             revenue=r["revenue"],
+                            shop_id=shop["id"],
                         )
                     logger.info(f"[Макс/fin] Ozon: {len(real_rows)} записей quantity/revenue из realization")
                 except Exception as e:
@@ -2858,22 +2922,28 @@ class MaxAgent(BaseAgent):
         if len(args) < 2:
             await update.message.reply_text(
                 "Использование:\n"
-                "  /add_shop wb <api_token>\n"
-                "  /add_shop ozon <api_token> <client_id>"
+                "  /add_shop wb <api_token> [название]\n"
+                "  /add_shop ozon <api_token> <client_id> [название]"
             )
             return
         mp, token = args[0].lower(), args[1]
-        client_id = args[2] if len(args) > 2 else None
         chat_id = update.effective_user.id
         if mp not in ("wb", "ozon"):
             await update.message.reply_text("Поддерживается: wb, ozon")
             return
-        if mp == "ozon" and not client_id:
-            await update.message.reply_text("Для Ozon нужен client_id: /add_shop ozon <token> <client_id>")
-            return
+        if mp == "ozon":
+            if len(args) < 3:
+                await update.message.reply_text("Для Ozon нужен client_id: /add_shop ozon <token> <client_id> [название]")
+                return
+            client_id = args[2]
+            shop_name = args[3] if len(args) > 3 else None
+        else:
+            client_id = None
+            shop_name = args[2] if len(args) > 2 else None
         from db import add_marketplace_shop
-        await add_marketplace_shop(chat_id, mp, token, client_id=client_id)
-        await update.message.reply_text(f"✅ Магазин {_MP_LABELS.get(mp, mp)} подключён.")
+        await add_marketplace_shop(chat_id, mp, token, client_id=client_id, shop_name=shop_name)
+        label = shop_name or _MP_LABELS.get(mp, mp)
+        await update.message.reply_text(f"✅ Магазин <b>{label}</b> подключён.", parse_mode="HTML")
 
     async def cmd_shops(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         from telegram import Chat
@@ -2886,9 +2956,45 @@ class MaxAgent(BaseAgent):
             return
         lines = ["🛒 <b>Ваши магазины:</b>\n"]
         for s in shops:
-            label = _MP_LABELS.get(s["marketplace"], s["marketplace"])
-            lines.append(f"• {s.get('shop_name') or label} ({label})")
+            mp_label = _MP_LABELS.get(s["marketplace"], s["marketplace"])
+            name = s.get("shop_name") or mp_label
+            client = f" · client_id: {s['client_id']}" if s.get("client_id") else ""
+            lines.append(f"• <b>{name}</b> ({mp_label}{client}) — ID {s['id']}")
+        lines.append("\nДобавить: /add_shop ozon &lt;token&gt; &lt;client_id&gt; [название]")
+        lines.append("Реклама Ozon: /set_performance &lt;client_id&gt; &lt;perf_id&gt; &lt;perf_secret&gt;")
         await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+    async def cmd_set_performance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/set_performance <ozon_client_id> <perf_client_id> <perf_secret> — привязать Ozon Performance credentials к магазину."""
+        from telegram import Chat
+        if update.effective_chat and update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
+            logger.debug(f"[max:handler] cmd_set_performance вызван из группы")
+        args = context.args or []
+        if len(args) < 3:
+            await update.message.reply_text(
+                "Использование:\n"
+                "<code>/set_performance &lt;ozon_client_id&gt; &lt;perf_client_id&gt; &lt;perf_secret&gt;</code>\n\n"
+                "ozon_client_id — ID магазина из /shops\n"
+                "perf_client_id и perf_secret — из кабинета Ozon Performance",
+                parse_mode="HTML",
+            )
+            return
+        ozon_client_id, perf_client_id, perf_secret = args[0], args[1], args[2]
+        chat_id = update.effective_user.id
+        from db import set_performance_credentials
+        found = await set_performance_credentials(chat_id, ozon_client_id, perf_client_id, perf_secret)
+        if found:
+            await update.message.reply_text(
+                f"✅ Performance credentials сохранены для магазина с client_id <code>{ozon_client_id}</code>.\n"
+                "Реклама будет синхронизироваться при следующем /sync_adv",
+                parse_mode="HTML",
+            )
+        else:
+            await update.message.reply_text(
+                f"Магазин Ozon с client_id <code>{ozon_client_id}</code> не найден.\n"
+                "Проверь список через /shops",
+                parse_mode="HTML",
+            )
 
     async def cmd_pending(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         from telegram import Chat
@@ -5110,8 +5216,9 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("menu",          self.cmd_menu))
         self.app.add_handler(CommandHandler("help",          self.cmd_help))
         self.app.add_handler(CommandHandler("data_status",   self.cmd_data_status))
-        self.app.add_handler(CommandHandler("add_shop",      self.cmd_add_shop))
-        self.app.add_handler(CommandHandler("shops",         self.cmd_shops))
+        self.app.add_handler(CommandHandler("add_shop",          self.cmd_add_shop))
+        self.app.add_handler(CommandHandler("shops",             self.cmd_shops))
+        self.app.add_handler(CommandHandler("set_performance",   self.cmd_set_performance))
         self.app.add_handler(CommandHandler("pending",       self.cmd_pending))
         self.app.add_handler(CommandHandler("reviews",       self.cmd_reviews))
         self.app.add_handler(CommandHandler("reset_checked", self.cmd_reset_checked))

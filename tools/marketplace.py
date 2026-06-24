@@ -2173,9 +2173,10 @@ class OzonPerformanceClient:
     async def _get_token(self) -> str | None:
         """Получить токен из Redis или запросить новый. TTL 25 минут."""
         import json as _json
-        # Пробуем Redis
+        # Пробуем Redis (ключ per-client_id — у разных магазинов разные токены)
+        cache_key = f"ozon_perf_token:{self._client_id}"
         try:
-            cached = await self._redis.get("ozon_perf_token")
+            cached = await self._redis.get(cache_key)
             if cached:
                 return cached.decode() if isinstance(cached, bytes) else cached
         except Exception as e:
@@ -2204,7 +2205,7 @@ class OzonPerformanceClient:
 
         # Кешируем на 25 минут
         try:
-            await self._redis.setex("ozon_perf_token", 1500, token)
+            await self._redis.setex(cache_key, 1500, token)
         except Exception as e:
             logger.warning(f"[OzonPerf] Redis set error: {e}")
 
