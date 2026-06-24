@@ -201,7 +201,7 @@ async def get_active_tasks() -> list[dict]:
 
 
 async def enqueue_chain_task(
-    pool,  # принимается для совместимости, не используется напрямую
+    pool,  # устарел, всегда передавать None — оставлен для совместимости вызовов
     agent_key: str,
     payload: str,
     chat_id: int | None,
@@ -281,7 +281,7 @@ async def count_incomplete_in_group(chain_id: str, group_index: int) -> int:
         return 0
 
 
-async def get_chain_results(pool, chain_id: str) -> list[dict]:
+async def get_chain_results(pool, chain_id: str) -> list[dict]:  # pool устарел, всегда None
     """Completed задачи цепочки, отсортированные по chain_index."""
     try:
         db_pool = await get_pool()
@@ -298,7 +298,7 @@ async def get_chain_results(pool, chain_id: str) -> list[dict]:
         return []
 
 
-async def get_chain_status(pool, chain_id: str) -> dict:
+async def get_chain_status(pool, chain_id: str) -> dict:  # pool устарел, всегда None
     """Статистика по статусам задач цепочки."""
     try:
         db_pool = await get_pool()
@@ -319,7 +319,7 @@ async def get_chain_status(pool, chain_id: str) -> dict:
         return {}
 
 
-async def get_chain_plan(pool, chain_id: str) -> dict | None:
+async def get_chain_plan(pool, chain_id: str) -> dict | None:  # pool устарел, всегда None
     """Получить план цепочки из первой задачи (chain_index=0)."""
     import json as _json
     try:

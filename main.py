@@ -18,7 +18,6 @@ import hmac
 import json as _json
 import os
 import signal
-from contextlib import suppress
 from decimal import Decimal
 from urllib.parse import parse_qsl
 
@@ -35,8 +34,6 @@ from agents import (
     PeterAgent,
     ElinaAgent,
     AlexAgent,
-    DanAgent,
-    EvaAgent,
     MaxAgent,
     TinaAgent,
 )
@@ -54,6 +51,21 @@ AGENTS: dict[str, tuple] = {
     "max":    (MaxAgent,    "max"),
     "tina":   (TinaAgent,   "tina"),
 }
+
+
+# ────────────────────────────────────────────────────────────────────────────
+#  Scheduling helpers
+# ────────────────────────────────────────────────────────────────────────────
+
+def _unique_chats(shops: list[dict]) -> list[int]:
+    return list({s["chat_id"] for s in shops})
+
+
+def _days_until_next_monday(now, hour: int) -> int:
+    d = (7 - now.weekday()) % 7
+    if d == 0 and now.hour >= hour:
+        d = 7
+    return d
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -168,7 +180,7 @@ async def run_all_async() -> None:
                     continue
 
                 shops = await get_all_active_shops()
-                unique_chats = list({s["chat_id"] for s in shops})
+                unique_chats = _unique_chats(shops)
                 for chat_id in unique_chats:
                     try:
                         await max_agent.process_reviews(chat_id)
@@ -202,7 +214,7 @@ async def run_all_async() -> None:
                     continue
 
                 shops = await get_all_active_shops()
-                unique_chats = list({s["chat_id"] for s in shops})
+                unique_chats = _unique_chats(shops)
 
                 for chat_id in unique_chats:
                     try:
@@ -243,7 +255,7 @@ async def run_all_async() -> None:
                     continue
 
                 shops = await get_all_active_shops()
-                unique_chats = list({s["chat_id"] for s in shops})
+                unique_chats = _unique_chats(shops)
 
                 for chat_id in unique_chats:
                     try:
@@ -274,7 +286,7 @@ async def run_all_async() -> None:
                     continue
 
                 shops = await get_all_active_shops()
-                unique_chats = list({s["chat_id"] for s in shops})
+                unique_chats = _unique_chats(shops)
                 logger.info(f"[questions_scheduler] проверка вопросов для {len(unique_chats)} пользователей")
 
                 for chat_id in unique_chats:
@@ -308,7 +320,7 @@ async def run_all_async() -> None:
                     continue
 
                 shops = await get_all_active_shops()
-                unique_chats = list({s["chat_id"] for s in shops})
+                unique_chats = _unique_chats(shops)
                 logger.info(f"[orders_sync] синхронизация для {len(unique_chats)} пользователей")
 
                 for chat_id in unique_chats:
@@ -335,9 +347,7 @@ async def run_all_async() -> None:
             try:
                 now = datetime.now(timezone.utc)
                 # Следующий понедельник 07:00 UTC
-                days_until_monday = (7 - now.weekday()) % 7
-                if days_until_monday == 0 and now.hour >= 7:
-                    days_until_monday = 7
+                days_until_monday = _days_until_next_monday(now, hour=7)
                 target = (now + timedelta(days=days_until_monday)).replace(
                     hour=7, minute=0, second=0, microsecond=0
                 )
@@ -349,7 +359,7 @@ async def run_all_async() -> None:
                     continue
 
                 shops = await get_all_active_shops()
-                unique_chats = list({s["chat_id"] for s in shops})
+                unique_chats = _unique_chats(shops)
 
                 for chat_id in unique_chats:
                     try:
@@ -387,7 +397,7 @@ async def run_all_async() -> None:
 
                 pool = await get_pool()
                 shops = await get_all_active_shops()
-                unique_chats = list({s["chat_id"] for s in shops})
+                unique_chats = _unique_chats(shops)
 
                 for chat_id in unique_chats:
                     # Снимок выручки за вчера
@@ -473,7 +483,7 @@ async def run_all_async() -> None:
                     continue
 
                 shops = await get_all_active_shops()
-                unique_chats = list({s["chat_id"] for s in shops})
+                unique_chats = _unique_chats(shops)
                 if not unique_chats:
                     logger.info("[tender_scheduler] нет активных пользователей — пропускаем")
                     continue
@@ -512,7 +522,7 @@ async def run_all_async() -> None:
                     continue
 
                 shops = await get_all_active_shops()
-                unique_chats = list({s["chat_id"] for s in shops})
+                unique_chats = _unique_chats(shops)
                 for chat_id in unique_chats:
                     try:
                         await max_agent._check_stock_alerts(chat_id, deduplicate=True)
@@ -536,9 +546,7 @@ async def run_all_async() -> None:
             try:
                 now  = datetime.now(timezone.utc)
                 # Следующий понедельник 06:00 UTC
-                days_until_monday = (7 - now.weekday()) % 7
-                if days_until_monday == 0 and now.hour >= 6:
-                    days_until_monday = 7
+                days_until_monday = _days_until_next_monday(now, hour=6)
                 target = (now + timedelta(days=days_until_monday)).replace(
                     hour=6, minute=0, second=0, microsecond=0
                 )
@@ -550,7 +558,7 @@ async def run_all_async() -> None:
                     continue
 
                 shops = await get_all_active_shops()
-                unique_chats = list({s["chat_id"] for s in shops})
+                unique_chats = _unique_chats(shops)
                 for chat_id in unique_chats:
                     try:
                         await max_agent._send_promotions_summary(chat_id)
@@ -575,9 +583,7 @@ async def run_all_async() -> None:
                 now  = datetime.now(timezone.utc)
                 hour = getattr(config, "COMPETITOR_SCAN_HOUR_UTC", 6)
                 # следующий понедельник в нужный час
-                days_until_monday = (7 - now.weekday()) % 7
-                if days_until_monday == 0 and now.hour >= hour:
-                    days_until_monday = 7
+                days_until_monday = _days_until_next_monday(now, hour=hour)
                 target = (now + timedelta(days=days_until_monday)).replace(
                     hour=hour, minute=0, second=0, microsecond=0
                 )
@@ -641,7 +647,7 @@ async def run_all_async() -> None:
                     continue
 
                 shops = await get_all_active_shops()
-                unique_chats = list({s["chat_id"] for s in shops})
+                unique_chats = _unique_chats(shops)
 
                 for chat_id in unique_chats:
                     try:
@@ -852,7 +858,7 @@ async def run_all_async() -> None:
         pass
 
     # Graceful shutdown
-    for task in (status_task, digest_task, reviews_task, negative_task):
+    for task in (status_task, reviews_task):
         task.cancel()
         try:
             await task

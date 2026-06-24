@@ -13,8 +13,6 @@ from __future__ import annotations
 import html
 import re
 
-from utils.tg_rich import RICH_MARKDOWN_FORMAT_RULES  # noqa: F401
-
 # Characters that need escaping in MarkdownV2 plain text segments
 _MDV2_SPECIAL = r'\_*[]()~`>#+-=|{}.!'
 

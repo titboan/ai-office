@@ -805,12 +805,6 @@ class BaseAgent(ABC):
                 await asyncio.sleep(5)
         logger.info(f"[{self.name}] Worker loop остановлен")
 
-    @staticmethod
-    def _strip_html(text: str) -> str:
-        """Убрать HTML-теги для plain-text fallback."""
-        import re as _re
-        return _re.sub(r"<[^>]+>", "", text)
-
     async def _notify_user(self, chat_id: int, text: str, reply_markup=None, bot_token: str | None = None) -> None:
         """Отправить сообщение пользователю через Rich Messages (Bot API 10.1).
 
