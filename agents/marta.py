@@ -137,7 +137,7 @@ class MartaAgent(BaseAgent):
         return ReplyKeyboardMarkup([
             ["📊 Отчёт", "📈 Дашборд"],
             ["⭐ Отзывы", "🔄 Синхронизация"],
-            ["📋 Статус", "📂 Проекты", "❓ Помощь"],
+            ["🗂️ Меню", "📋 Статус", "❓ Помощь"],
         ], resize_keyboard=True)
 
     # ------------------------------------------------------------------ #
@@ -525,6 +525,14 @@ class MartaAgent(BaseAgent):
             label = _AGENT_QUICK_LABEL.get(agent_key, agent_key)
             await reply_func(
                 f"⏳ Передала задачу {label} — пришлю результат когда готово.",
+            )
+            return
+
+        if user_text.strip() == "🗂️ Меню":
+            await _send_rich(
+                self.bot_token, chat_id,
+                "🏢 AI Office — Быстрое меню\n\nВыбери раздел:",
+                reply_markup_dict=self._MARTA_MENU_KEYBOARD.to_dict(),
             )
             return
 
@@ -1304,10 +1312,126 @@ class MartaAgent(BaseAgent):
             "• «напомни проверить склад в 15:00»"
         )
 
+    # ── Inline-меню ──────────────────────────────────────────────────────────
+
+    _MARTA_MENU_KEYBOARD = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 Аналитика",      callback_data="mmenu:analytics"),
+            InlineKeyboardButton("🛒 Маркетплейсы",   callback_data="mmenu:market"),
+        ],
+        [
+            InlineKeyboardButton("🔄 Синхронизация",  callback_data="mmenu:sync"),
+            InlineKeyboardButton("✍️ Контент",         callback_data="mmenu:content"),
+        ],
+        [
+            InlineKeyboardButton("👨‍💻 Разработка",     callback_data="mmenu:dev"),
+            InlineKeyboardButton("🏛️ Тендеры",        callback_data="mmenu:tenders"),
+        ],
+        [
+            InlineKeyboardButton("⚙️ Офис",           callback_data="mmenu:office"),
+        ],
+    ])
+
+    _MARTA_MENU_SECTIONS: dict[str, str] = {
+        "analytics": (
+            "📊 <b>Аналитика (Питер)</b>\n\n"
+            "/report — полный отчёт по продажам WB + Ozon (выручка, топ-товары, план)\n"
+            "/drr — доля рекламных расходов и ROAS по товарам\n"
+            "/abc — ABC-анализ: какие товары приносят 80% выручки\n"
+            "/funnel — воронка конверсии: просмотры → корзина → заказы → выкупы\n"
+            "/returns — топ возвратов по ставке и причинам\n"
+            "/audit — 30-дневный аудит здоровья магазина + SWOT\n"
+            "/seo_audit — SEO карточек: CTR, позиции, приоритеты правок\n"
+            "/supply — план поставки по складам и кластерам\n"
+            "/order — заказывать ли у поставщика (остатки на 30/60/90 дней)\n"
+            "/analyze &lt;вопрос&gt; — произвольный анализ по данным из БД"
+        ),
+        "market": (
+            "🛒 <b>Маркетплейсы (Макс)</b>\n\n"
+            "/reviews — обработать новые отзывы WB + Ozon\n"
+            "/questions — неотвеченные вопросы покупателей\n"
+            "/pending — отзывы на модерации\n"
+            "/products — список товаров с артикулами WB↔Ozon\n"
+            "/shop_kpi — KPI магазина: рейтинг, штрафы\n"
+            "/data_status — статус данных: что свежее, что устарело\n"
+            "/shops — подключённые магазины\n"
+            "/seo_check — алерты падения позиций ключевых слов (≥10 мест)\n"
+            "/bid_adjust — рекомендации по ставкам на основе ДРР\n"
+            "/margin &lt;артикул&gt; — быстрая проверка маржи\n"
+            "/apply_prices — применить рекомендованные цены"
+        ),
+        "sync": (
+            "🔄 <b>Синхронизация данных (Макс)</b>\n\n"
+            "/sync — заказы, остатки, продажи (основной синк)\n"
+            "/sync_fin — финансовые отчёты WB + Ozon за 90 дней\n"
+            "/sync_adv — статистика рекламных кампаний\n"
+            "/sync_funnel — воронка конверсии карточек\n"
+            "/sync_returns — аналитика возвратов\n"
+            "/sync_cards — контент карточек товаров\n"
+            "/sync_keywords — позиции ключевых слов WB\n\n"
+            "<i>💡 Синк финансов и рекламы запускается автоматически ночью.</i>"
+        ),
+        "content": (
+            "✍️ <b>Контент и исследования</b>\n\n"
+            "<b>Элина</b> — копирайтер:\n"
+            "/write &lt;задание&gt; — написать текст любого типа\n"
+            "/post &lt;тема&gt; — пост для маркетплейса или соцсетей\n"
+            "/seo &lt;артикул&gt; — SEO-оптимизация карточки товара\n\n"
+            "<b>Каспер</b> — исследователь:\n"
+            "/research &lt;тема&gt; — веб-поиск и анализ по теме\n\n"
+            "<b>Алекс</b> — планировщик:\n"
+            "/remind &lt;время&gt; &lt;текст&gt; — push-напоминание на телефон\n\n"
+            "<i>💡 Или просто напиши мне — роутну к нужному агенту автоматически.</i>"
+        ),
+        "dev": (
+            "👨‍💻 <b>Разработка (Кевин)</b>\n\n"
+            "/code &lt;задача&gt; — написать код, скрипт, функцию\n"
+            "/plan &lt;идея&gt; — спланировать фичу или проект\n\n"
+            "<i>Кевин также умеет: создать репозиторий GitHub, сделать PR, задеплоить на Pages.</i>\n\n"
+            "<b>Просто напиши Марте:</b>\n"
+            "• «создай репо ai-office-tools»\n"
+            "• «напиши скрипт для парсинга CSV»"
+        ),
+        "tenders": (
+            "🏛️ <b>Тендеры 44-ФЗ (Тина)</b>\n\n"
+            "/tenders — дайджест новых тендеров по фильтрам\n"
+            "/tenders_report — аналитический отчёт по тендерам\n\n"
+            "<i>Тина автоматически присылает дайджест каждое утро в 08:00 МСК.</i>"
+        ),
+        "office": (
+            "⚙️ <b>Офис (Марта)</b>\n\n"
+            "/status — очередь задач и состояние агентов\n"
+            "/history — последние 10 выполненных задач\n"
+            "/delegate &lt;агент&gt; &lt;задача&gt; — явно передать агенту\n"
+            "/cancel &lt;id&gt; — отменить задачу из очереди\n"
+            "/reset — очистить историю диалога\n\n"
+            "<i>Дайджест от Марты каждый день в 21:05 МСК: задачи, ошибки, агенты.</i>"
+        ),
+    }
+
+    async def cmd_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/menu — быстрое меню всех команд AI Office."""
+        await update.message.reply_text(
+            "🏢 <b>AI Office — Быстрое меню</b>\n\nВыбери раздел:",
+            parse_mode="HTML",
+            reply_markup=self._MARTA_MENU_KEYBOARD,
+        )
+
+    async def _handle_marta_menu_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Inline-кнопки меню Марты (mmenu:*)."""
+        query = update.callback_query
+        await query.answer()
+        section = query.data.split(":", 1)[1] if ":" in query.data else ""
+        text = self._MARTA_MENU_SECTIONS.get(section, "❓ Раздел не найден")
+        await query.message.reply_text(text, parse_mode="HTML")
+
     def _bot_commands(self) -> list:
         from telegram import BotCommand
         return [
             BotCommand("start", "Главное меню и помощь"),
+            BotCommand("menu", "🗂️ Быстрое меню всех команд"),
             BotCommand("status", "Состояние офиса и активные задачи"),
             BotCommand("history", "Последние 10 задач"),
             # ── Питер ─────────────────────────────────────────────────────
@@ -1630,7 +1754,13 @@ class MartaAgent(BaseAgent):
         self.app.add_handler(CommandHandler("testpush", self.cmd_proxy_testpush))
         self.app.add_handler(CommandHandler("tenders", self.cmd_proxy_tenders))
         self.app.add_handler(CommandHandler("tenders_report", self.cmd_proxy_tenders_report))
+        # ── Меню ─────────────────────────────────────────────────────────
+        self.app.add_handler(CommandHandler("menu", self.cmd_menu))
         # ── Callbacks Марты ──────────────────────────────────────────────
+        self.app.add_handler(CallbackQueryHandler(
+            self._handle_marta_menu_callback,
+            pattern="^mmenu:",
+        ))
         self.app.add_handler(CallbackQueryHandler(
             self._handle_chain_callback,
             pattern="^chain_(confirm|cancel)$",
