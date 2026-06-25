@@ -1493,51 +1493,41 @@ class MaxAgent(BaseAgent):
                             )
                             prod_count += 1
                     logger.info(f"[Макс/adv] WB реклама: {len(ad_stats)} записей, {prod_count} nm-записей")
-                    # Заполняем wb_nm_id и category в product_mapping через WB Content API.
-                    # nmId (из fullstats) ≠ wb_article (supplierArticle) — нужен маппинг.
-                    # subjectName из тех же карточек — автоматическая категория товара.
+                    # Заполняем wb_nm_id в product_mapping через Statistics stocks API.
+                    # Content API требует разрешение "Контент" — stocks работает на том же токене.
                     try:
                         from db import get_pool
                         pool = await get_pool()
                         async with pool.acquire() as conn:
                             needs_sync = await conn.fetch(
-                                "SELECT id, wb_article, category FROM product_mapping "
-                                "WHERE wb_article IS NOT NULL "
-                                "AND (wb_nm_id IS NULL OR category IS NULL)"
+                                "SELECT id, wb_article FROM product_mapping "
+                                "WHERE wb_article IS NOT NULL AND wb_nm_id IS NULL"
                             )
                         if needs_sync:
-                            nm_map = await client.get_nm_ids()
-                            logger.info(f"[Макс/adv] WB Content API вернул {len(nm_map)} товаров. "
-                                        f"Артикулы в маппинге: "
-                                        f"{[r['wb_article'] for r in needs_sync]}")
+                            nm_map = await client.get_nm_id_mapping(stats_token)
+                            logger.info(f"[Макс/adv] Statistics stocks вернул {len(nm_map)} артикулов. "
+                                        f"Нужно заполнить: {[r['wb_article'] for r in needs_sync]}")
                             updated_count = 0
                             async with pool.acquire() as conn:
                                 for row in needs_sync:
                                     article_key = (row["wb_article"] or "").lower()
-                                    entry = nm_map.get(article_key)
-                                    if not entry:
+                                    nm_id = nm_map.get(article_key)
+                                    if not nm_id:
                                         logger.error(
                                             f"[Макс/adv] wb_nm_id: артикул '{row['wb_article']}' "
-                                            f"не найден в WB Content API — "
-                                            f"JOIN в product_adv_stats не работает для этого товара. "
-                                            f"Доступные vendorCode: {list(nm_map.keys())[:10]}"
+                                            f"не найден в Statistics stocks — нет остатков за 30 дней? "
+                                            f"Доступные артикулы: {list(nm_map.keys())[:10]}"
                                         )
                                         continue
-                                    nm_id    = entry["nm_id"]
-                                    category = entry.get("category") or entry.get("subject") or None
                                     result = await conn.execute(
-                                        """UPDATE product_mapping
-                                           SET wb_nm_id  = COALESCE(wb_nm_id, $1),
-                                               category  = COALESCE(category, $2)
-                                           WHERE id = $3""",
-                                        nm_id, category, row["id"],
+                                        "UPDATE product_mapping SET wb_nm_id = $1 WHERE id = $2 AND wb_nm_id IS NULL",
+                                        nm_id, row["id"],
                                     )
                                     if result.split()[-1] != "0":
                                         updated_count += 1
-                            logger.info(f"[Макс/adv] wb_nm_id+category: обновлено {updated_count} "
-                                        f"из {len(needs_sync)} товаров")
+                            logger.info(f"[Макс/adv] wb_nm_id: обновлено {updated_count} из {len(needs_sync)} товаров")
                         else:
-                            logger.info("[Макс/adv] wb_nm_id: все товары уже имеют nmId и category")
+                            logger.info("[Макс/adv] wb_nm_id: все товары уже имеют nmId")
                     except Exception as e:
                         logger.error(f"[Макс/adv] wb_nm_id sync ошибка: {e}", exc_info=True)
                 except Exception as e:

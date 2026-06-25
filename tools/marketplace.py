@@ -180,6 +180,38 @@ class WBClient:
             return False
 
 
+    async def get_nm_id_mapping(self, statistics_token: str) -> dict[str, str]:
+        """Маппинг supplierArticle (lower) → nmId через Statistics stocks API.
+
+        Не требует разрешения "Контент" — использует тот же токен, что и остатки.
+        Возвращает {lower(supplierArticle): str(nmId)}.
+        """
+        import json as _json
+        _STATS_BASE = "https://statistics-api.wildberries.ru"
+        stats_headers = {"Authorization": f"Bearer {statistics_token}", "Content-Type": "application/json"}
+        date_from = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%dT00:00:00")
+        url = f"{_STATS_BASE}/api/v1/supplier/stocks"
+        data = None
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url, headers=stats_headers,
+                params={"dateFrom": date_from},
+                timeout=_TIMEOUT,
+            ) as resp:
+                raw = await resp.text()
+                if resp.status != 200:
+                    logger.error(f"[WB.get_nm_id_mapping] HTTP {resp.status}: {raw[:200]}")
+                    return {}
+                data = _json.loads(raw)
+        result: dict[str, str] = {}
+        for item in (data if isinstance(data, list) else []):
+            article = str(item.get("supplierArticle") or "").strip()
+            nm_id = str(item.get("nmId") or "").strip()
+            if article and nm_id:
+                result[article.lower()] = nm_id
+        logger.info(f"[WB.get_nm_id_mapping] маппинг: {len(result)} артикулов → nmId")
+        return result
+
     async def get_stocks(self, statistics_token: str) -> list[dict]:
         """Остатки по складам. Требует отдельный Statistics API токен."""
         _STATS_BASE = "https://statistics-api.wildberries.ru"
