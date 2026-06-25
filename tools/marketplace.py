@@ -220,6 +220,72 @@ class WBClient:
             })
         return results
 
+    async def get_in_transit(self) -> list[dict]:
+        """Товары в пути к складам WB: незакрытые FBO-поставки.
+
+        Возвращает [{"product_id": supplierArticle, "qty": int}].
+        Использует Marketplace API (не Statistics), обычно не блокируется.
+        """
+        _MP_BASE = "https://marketplace-api.wildberries.ru"
+        headers = self._headers()
+        supply_ids: list[str] = []
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                next_cursor = 0
+                while True:
+                    async with session.get(
+                        f"{_MP_BASE}/api/v3/supplies",
+                        headers=headers,
+                        params={"limit": 1000, "next": next_cursor},
+                        timeout=_TIMEOUT,
+                    ) as resp:
+                        if resp.status != 200:
+                            raw = await resp.text()
+                            logger.warning(f"[WB.get_in_transit] supplies HTTP {resp.status}: {raw[:200]}")
+                            return []
+                        data = await resp.json()
+                    supplies = data.get("supplies") or []
+                    for s in supplies:
+                        if not s.get("done"):
+                            supply_ids.append(s["id"])
+                    next_val = data.get("next", 0)
+                    if not supplies or not next_val:
+                        break
+                    next_cursor = next_val
+        except Exception as e:
+            logger.error(f"[WB.get_in_transit] supplies list error: {e}")
+            return []
+
+        if not supply_ids:
+            return []
+
+        totals: dict[str, int] = {}
+        try:
+            async with aiohttp.ClientSession() as session:
+                for sid in supply_ids:
+                    try:
+                        async with session.get(
+                            f"{_MP_BASE}/api/v3/supplies/{sid}/orders",
+                            headers=headers,
+                            params={"limit": 1000},
+                            timeout=_TIMEOUT,
+                        ) as resp:
+                            if resp.status != 200:
+                                continue
+                            data = await resp.json()
+                        for order in data.get("orders") or []:
+                            article = str(order.get("article") or "").strip()
+                            if article:
+                                totals[article] = totals.get(article, 0) + 1
+                    except Exception:
+                        continue
+        except Exception as e:
+            logger.error(f"[WB.get_in_transit] orders error: {e}")
+
+        logger.info(f"[WB.get_in_transit] {len(supply_ids)} поставок, {len(totals)} артикулов в пути")
+        return [{"product_id": art, "qty": qty} for art, qty in totals.items()]
+
     async def get_orders(self, date_from: datetime, statistics_token: str) -> list[dict]:
         """Новые заказы через Statistics API (isCancel=false)."""
         _STATS_BASE = "https://statistics-api.wildberries.ru"
@@ -1395,6 +1461,7 @@ class OzonClient:
                 "warehouse_name": item.get("warehouse_name", ""),
                 "stock":         int(item.get("free_to_sell_amount", 0) or item.get("for_sale", 0)),
                 "reserved":      int(item.get("reserved_amount", 0)),
+                "in_transit":    int(item.get("incoming_amount", 0)),
             })
         if skipped:
             logger.warning(f"[Ozon.get_stocks] пропущено записей без offer_id: {skipped}")

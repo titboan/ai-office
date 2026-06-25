@@ -660,6 +660,17 @@ async def _create_schema() -> None:
         """)
 
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS marketplace_in_transit (
+                chat_id     BIGINT       NOT NULL,
+                marketplace TEXT         NOT NULL,
+                product_id  TEXT         NOT NULL,
+                qty         INTEGER      NOT NULL DEFAULT 0,
+                updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (chat_id, marketplace, product_id)
+            )
+        """)
+
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS user_plans (
                 id          BIGSERIAL    PRIMARY KEY,
                 chat_id     BIGINT       NOT NULL,
@@ -678,7 +689,7 @@ async def _create_schema() -> None:
             ON user_plans (chat_id, status)
         """)
 
-        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots + multi-shop + orders-shop-id + product-costs-v2 + user_plans)")
+        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots + multi-shop + orders-shop-id + product-costs-v2 + user_plans + in_transit)")
 
 async def save_project(
     chat_id: int,
@@ -971,6 +982,27 @@ async def upsert_stock(
                     updated_at     = NOW()
             """,
             chat_id, marketplace, product_id, product_name, warehouse_name or "", stock, reserved, shop_id,
+        )
+
+
+async def upsert_in_transit(
+    chat_id: int,
+    marketplace: str,
+    product_id: str,
+    qty: int,
+) -> None:
+    """Обновить количество товара в пути на склад маркетплейса (агрегат по товару)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO marketplace_in_transit (chat_id, marketplace, product_id, qty, updated_at)
+            VALUES ($1, $2, $3, $4, NOW())
+            ON CONFLICT (chat_id, marketplace, product_id) DO UPDATE
+                SET qty        = EXCLUDED.qty,
+                    updated_at = NOW()
+            """,
+            chat_id, marketplace, product_id, qty,
         )
 
 

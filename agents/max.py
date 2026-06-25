@@ -1218,7 +1218,7 @@ class MaxAgent(BaseAgent):
 
     async def sync_marketplace_data(self, chat_id: int) -> None:
         """Синхронизировать остатки, продажи и заказы для всех магазинов пользователя."""
-        from db import get_marketplace_shops, upsert_stock, save_sale, save_order
+        from db import get_marketplace_shops, upsert_stock, save_sale, save_order, upsert_in_transit
         from tools.marketplace import make_client
 
         shops = await get_marketplace_shops(chat_id)
@@ -1233,8 +1233,9 @@ class MaxAgent(BaseAgent):
             # Остатки
             try:
                 stocks = await client.get_stocks(statistics_token=stats_token)
+                ozon_in_transit: dict[str, int] = {}
                 for s in stocks:
-                    if not s.get("product_id"):  # пропускаем пустые product_id
+                    if not s.get("product_id"):
                         continue
                     await upsert_stock(
                         chat_id=chat_id, marketplace=mp,
@@ -1242,6 +1243,10 @@ class MaxAgent(BaseAgent):
                         warehouse_name=s.get("warehouse_name", ""), stock=s["stock"],
                         reserved=s.get("reserved", 0), shop_id=shop["id"],
                     )
+                    # Ozon: incoming_amount агрегируем по товару (несколько складов)
+                    if mp == "ozon" and s.get("in_transit", 0):
+                        pid = s["product_id"]
+                        ozon_in_transit[pid] = ozon_in_transit.get(pid, 0) + s["in_transit"]
                 logger.info(f"[Макс/sync] {mp_label}: {len(stocks)} позиций остатков")
                 if mp == "wb":
                     from db import cleanup_old_stocks
@@ -1253,8 +1258,23 @@ class MaxAgent(BaseAgent):
                     deleted = await clear_ozon_numeric_stocks(chat_id)
                     if deleted:
                         logger.info(f"[Макс/sync] Ozon: удалено {deleted} старых записей с числовым SKU")
+                    for pid, qty in ozon_in_transit.items():
+                        await upsert_in_transit(chat_id, "ozon", pid, qty)
+                    if ozon_in_transit:
+                        logger.info(f"[Макс/sync] Ozon: {len(ozon_in_transit)} товаров в пути на склад")
             except Exception as e:
                 logger.error(f"[Макс/sync] get_stocks {mp_label}: {e}")
+
+            # WB: синхронизируем поставки в пути через Marketplace API
+            if mp == "wb":
+                try:
+                    in_transit_items = await client.get_in_transit()
+                    for item in in_transit_items:
+                        await upsert_in_transit(chat_id, "wb", item["product_id"], item["qty"])
+                    if in_transit_items:
+                        logger.info(f"[Макс/sync] WB: {len(in_transit_items)} артикулов в пути на склад")
+                except Exception as e:
+                    logger.warning(f"[Макс/sync] WB get_in_transit: {e}")
 
             # Продажи (включая возвраты с is_return=True)
             try:

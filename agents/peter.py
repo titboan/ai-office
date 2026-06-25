@@ -857,7 +857,9 @@ class PeterAgent(BaseAgent):
                 supply_data = await self._collect_supply_data(chat_id, days=14)
                 prompt = (
                     f"Аналитическая задача от {from_agent}: {task}\n\n"
-                    f"ДАННЫЕ ПО ОСТАТКАМ И ПРОДАЖАМ (14 дней):\n"
+                    f"ДАННЫЕ ПО ОСТАТКАМ, В ПУТИ И ПРОДАЖАМ (14 дней):\n"
+                    f"stock = на складе МП, in_transit = в пути к складу МП (не суммировать).\n"
+                    f"need = нужно для цели (только склад), to_order = заказать у поставщика сверх in_transit.\n"
                     f"{json.dumps(supply_data, ensure_ascii=False, default=str, indent=2)}"
                 )
             except Exception as e:
@@ -1341,7 +1343,7 @@ class PeterAgent(BaseAgent):
         )
 
     async def _collect_supply_data(self, chat_id: int, days: int = 14) -> dict:
-        """Остатки по складам/кластерам + темп продаж для плана поставки."""
+        """Остатки по складам/кластерам + темп продаж + товары в пути для плана поставки."""
         from db import get_pool
         from agents.max import _get_cluster, _get_ozon_cluster
         pool = await get_pool()
@@ -1385,11 +1387,22 @@ class PeterAgent(BaseAgent):
                 HAVING SUM(o.quantity) > 0
             """, chat_id, days, date_from)
 
+            # Товары в пути на склад (от поставщика к МП)
+            in_transit_raw = await conn.fetch("""
+                SELECT marketplace, product_id, qty
+                FROM marketplace_in_transit
+                WHERE chat_id = $1
+            """, chat_id)
+
         velocity: dict[tuple, float] = {
             (r["marketplace"], r["key"]): float(r["daily_rate"]) for r in velocity_raw
         }
         velocity_names: dict[tuple, str] = {
             (r["marketplace"], r["key"]): r["name"] or r["key"] for r in velocity_raw
+        }
+        # in_transit по (marketplace, product_id)
+        in_transit_map: dict[tuple, int] = {
+            (r["marketplace"], r["product_id"]): int(r["qty"]) for r in in_transit_raw
         }
 
         cluster_stocks: dict[str, dict] = {}
@@ -1409,6 +1422,7 @@ class PeterAgent(BaseAgent):
             if prod_key not in cluster_stocks:
                 cluster_stocks[prod_key] = {
                     "name": name, "marketplace": mp, "daily_rate": daily_rate,
+                    "product_id": pid,
                     "clusters": {},
                 }
             entry = cluster_stocks[prod_key]
@@ -1420,19 +1434,35 @@ class PeterAgent(BaseAgent):
         result = []
         for prod_data in sorted(cluster_stocks.values(), key=lambda x: -x["daily_rate"]):
             dr = prod_data["daily_rate"]
+            mp = prod_data["marketplace"]
+            pid = prod_data["product_id"]
+            in_transit = in_transit_map.get((mp, pid), 0)
+
+            total_stock = sum(prod_data["clusters"].values())
+            total_need = max(0, round(TARGET_DAYS * dr - total_stock)) if dr > 0 else 0
+            # Сколько ещё заказывать у поставщика (сверх того что уже в пути)
+            to_order = max(0, total_need - in_transit)
+
             clusters_out = []
             for cl, stock in sorted(prod_data["clusters"].items()):
-                days_left = round(stock / dr, 1) if dr > 0 else 999
-                qty_to_send = max(0, round(TARGET_DAYS * dr - stock))
+                days_left_wh = round(stock / dr, 1) if dr > 0 else 999
+                need_cluster = max(0, round(TARGET_DAYS * dr - stock))
                 clusters_out.append({
-                    "cluster": cl, "stock": stock,
-                    "days_left": days_left, "qty_to_send": qty_to_send,
+                    "cluster": cl,
+                    "stock": stock,
+                    "days_left": days_left_wh,  # только склад, без учёта в пути
+                    "need": need_cluster,         # нужно для цели (без учёта в пути)
                 })
+
             result.append({
                 "name": prod_data["name"],
                 "marketplace": prod_data["marketplace"],
                 "daily_rate": float(dr),
                 "target_days": TARGET_DAYS,
+                "in_transit": in_transit,        # в пути к складу МП (всего по товару)
+                "total_stock": total_stock,      # на складе сейчас (все кластеры)
+                "total_need": total_need,        # нужно отгрузить для цели
+                "to_order": to_order,            # заказать у поставщика сверх in_transit
                 "clusters": clusters_out,
             })
 
@@ -1461,22 +1491,30 @@ class PeterAgent(BaseAgent):
 
         prompt = f"""Составь план поставок на ближайшие 30 дней.
 
-ДАННЫЕ ПО ОСТАТКАМ И ПРОДАЖАМ (период анализа: {days} дней):
+ДАННЫЕ ПО ОСТАТКАМ, В ПУТИ И ПРОДАЖАМ (период анализа: {days} дней):
 {json.dumps(supply_data, ensure_ascii=False, indent=2)}
+
+Поля данных:
+- stock (склад) и in_transit (в пути к складу МП) — ВСЕГДА показывай раздельно, не суммируй
+- need — сколько нужно отгрузить для цели (только по складу), игнорируя in_transit
+- to_order — сколько заказать у поставщика СВЕРХ того что уже в пути (= need - in_transit, мин 0)
 
 ФОРМАТ ОТВЕТА (мобильный, без широких таблиц):
 
 **Название товара** (Площадка) — X шт/день
-🔴 Кластер А: 50 шт, 3 дн → везти 200 шт
-🟡 Кластер Б: 120 шт, 12 дн → везти 80 шт
-🟢 Кластер В: 400 шт, 40 дн → не нужно
-Итого: 280 шт
+🚚 В пути: 100 шт (+40 дн покрытие)    ← только если in_transit > 0
+🔴 Кластер А: склад 50 шт (3 дн) → нужно 200 шт
+🟡 Кластер Б: склад 120 шт (12 дн) → нужно 80 шт
+🟢 Кластер В: склад 400 шт (40 дн) → норма
+Итого нужно: 280 шт | В пути: 100 шт | Заказать ещё: 180 шт
 
 ПРАВИЛА:
 - days_left < 7  → 🔴 СРОЧНО
 - days_left 7-20 → 🟡 Скоро
-- days_left > 20 → 🟢 Норма (пропустить если qty_to_send = 0)
+- days_left > 20 → 🟢 Норма (пропустить если need = 0)
+- 🟢 кластеры показывай только если у товара есть 🔴/🟡 (чтобы видеть полную картину)
 - В конце: топ-3 самых срочных (товар + кластер + сколько шт)
+- Если in_transit = 0 — не показывай строку «В пути»
 - Если данных нет — предупреди и напиши /sync у Макса"""
 
         await update.message.reply_text("🤔 Составляю план поставки…")
