@@ -539,16 +539,25 @@ class WBClient:
                 count_data = _json.loads(raw)
 
         # Только активные кампании (status=9) — у завершённых нет свежей статистики
+        # Диагностика: логируем ВСЕ статусы чтобы понять почему нет кампаний
         campaign_ids = []
+        all_statuses: dict[int, int] = {}
         for group in (count_data.get("adverts") or []):
-            if group.get("status") == 9:
+            st = group.get("status", -1)
+            cnt = group.get("count", 0)
+            all_statuses[st] = all_statuses.get(st, 0) + cnt
+            if st == 9:
                 for adv in (group.get("advert_list") or []):
                     cid = adv.get("advertId")
                     if cid:
                         campaign_ids.append(cid)
 
+        if all_statuses:
+            logger.info(f"[WB.get_ad_stats] кампании по статусам: {all_statuses} "
+                        f"(9=активные, 11=пауза, 7=завершены)")
         if not campaign_ids:
-            logger.info("[WB.get_ad_stats] нет кампаний")
+            logger.warning("[WB.get_ad_stats] нет активных кампаний (status=9) — "
+                           f"все статусы: {all_statuses}")
             return []
         logger.info(f"[WB.get_ad_stats] кампаний для статистики: {len(campaign_ids)}")
 
@@ -580,8 +589,11 @@ class WBClient:
                         continue
                     stats = _json.loads(raw)
 
+            _campaigns_with_nm = 0
+            _campaigns_no_nm = 0
             for item in (stats if isinstance(stats, list) else []):
                 cid = item.get("advertId")
+                campaign_nm_total = 0
                 for day in (item.get("days") or []):
                     views  = int(day.get("views", 0) or 0)
                     clicks = int(day.get("clicks", 0) or 0)
@@ -592,7 +604,8 @@ class WBClient:
                         continue
                     # Собираем per-nm статистику для product_adv_stats
                     product_stats = []
-                    for app in (day.get("apps") or []):
+                    apps = day.get("apps") or []
+                    for app in apps:
                         for nm in (app.get("nm") or []):
                             nm_id = str(nm.get("nmId", ""))
                             if not nm_id:
@@ -610,6 +623,7 @@ class WBClient:
                                 "spend":         nm_spend,
                                 "orders_count":  nm_orders,
                             })
+                    campaign_nm_total += len(product_stats)
                     results.append({
                         "campaign_id":   str(cid),
                         "campaign_name": str(cid),
@@ -620,8 +634,27 @@ class WBClient:
                         "spend":         spend,
                         "product_stats": product_stats,
                     })
+                if campaign_nm_total > 0:
+                    _campaigns_with_nm += 1
+                else:
+                    _campaigns_no_nm += 1
+                    logger.warning(f"[WB.get_ad_stats] кампания {cid}: нет nm-данных "
+                                   f"(apps пустые или nm[] пустые) — "
+                                   f"тип кампании может не поддерживать разбивку по товарам")
 
-        logger.info(f"[WB.get_ad_stats] итого записей: {len(results)}")
+            logger.info(f"[WB.get_ad_stats] batch: кампаний с nm={_campaigns_with_nm}, "
+                        f"без nm={_campaigns_no_nm}")
+
+        total_nm = sum(len(r["product_stats"]) for r in results)
+        if total_nm == 0 and results:
+            logger.error(
+                f"[WB.get_ad_stats] ДИАГНОЗ: {len(results)} дней статистики загружены, "
+                f"но nm-разбивки нет ни в одном. "
+                f"Причина: кампании WB не возвращают apps[].nm[] — "
+                f"проверь тип кампаний (нужен тип 8=Авто). "
+                f"WB без разбивки по товарам."
+            )
+        logger.info(f"[WB.get_ad_stats] итого записей: {len(results)}, nm-записей: {total_nm}")
         return results
 
     async def get_nm_ids(self) -> dict[str, dict]:

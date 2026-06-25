@@ -1501,28 +1501,45 @@ class MaxAgent(BaseAgent):
                         async with pool.acquire() as conn:
                             needs_sync = await conn.fetch(
                                 "SELECT id, wb_article, category FROM product_mapping "
-                                "WHERE wb_article IS NOT NULL "
-                                "AND (wb_nm_id IS NULL OR category IS NULL)"
+                                "WHERE chat_id = $1 "
+                                "AND wb_article IS NOT NULL "
+                                "AND (wb_nm_id IS NULL OR category IS NULL)",
+                                chat_id,
                             )
                         if needs_sync:
                             nm_map = await client.get_nm_ids()
+                            logger.info(f"[Макс/adv] WB Content API вернул {len(nm_map)} товаров. "
+                                        f"Артикулы в маппинге: "
+                                        f"{[r['wb_article'] for r in needs_sync]}")
+                            updated_count = 0
                             async with pool.acquire() as conn:
                                 for row in needs_sync:
-                                    entry = nm_map.get((row["wb_article"] or "").lower())
+                                    article_key = (row["wb_article"] or "").lower()
+                                    entry = nm_map.get(article_key)
                                     if not entry:
+                                        logger.warning(
+                                            f"[Макс/adv] wb_nm_id: артикул '{row['wb_article']}' "
+                                            f"не найден в WB Content API. "
+                                            f"Доступные vendorCode: {list(nm_map.keys())[:10]}"
+                                        )
                                         continue
                                     nm_id    = entry["nm_id"]
                                     category = entry.get("category") or entry.get("subject") or None
-                                    await conn.execute(
+                                    result = await conn.execute(
                                         """UPDATE product_mapping
                                            SET wb_nm_id  = COALESCE(wb_nm_id, $1),
                                                category  = COALESCE(category, $2)
                                            WHERE id = $3""",
                                         nm_id, category, row["id"],
                                     )
-                            logger.info(f"[Макс/adv] wb_nm_id+category синхронизированы для {len(needs_sync)} товаров")
+                                    if result.split()[-1] != "0":
+                                        updated_count += 1
+                            logger.info(f"[Макс/adv] wb_nm_id+category: обновлено {updated_count} "
+                                        f"из {len(needs_sync)} товаров")
+                        else:
+                            logger.info("[Макс/adv] wb_nm_id: все товары уже имеют nmId и category")
                     except Exception as e:
-                        logger.error(f"[Макс/adv] wb_nm_id sync ошибка: {e}")
+                        logger.error(f"[Макс/adv] wb_nm_id sync ошибка: {e}", exc_info=True)
                 except Exception as e:
                     logger.error(f"[Макс/adv] WB реклама: {e}")
 
