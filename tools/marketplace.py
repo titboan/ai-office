@@ -674,8 +674,7 @@ class WBClient:
                     _campaigns_with_nm += 1
                 else:
                     _campaigns_no_nm += 1
-                    logger.info(f"[WB.get_ad_stats] кампания {cid}: нет nm-разбивки "
-                                f"(тип {ctype} — WB не поддерживает для 4/5/6/9)")
+                    logger.info(f"[WB.get_ad_stats] кампания {cid}: нет nm-разбивки (WB типы 4/5/6/9)")
 
             logger.info(f"[WB.get_ad_stats] batch: кампаний с nm={_campaigns_with_nm}, "
                         f"без nm={_campaigns_no_nm}")
