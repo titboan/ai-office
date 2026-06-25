@@ -16,7 +16,7 @@ from config import config
 from db import save_project, find_project, list_projects
 from utils.tg_format import clean_agent_output as _clean_output
 from utils.tg_rich import send_rich_or_fallback as _send_rich
-from task_queue import create_task as enqueue_task, get_active_tasks, enqueue_chain_task
+from task_queue import create_task as enqueue_task, get_active_tasks, get_recent_tasks, enqueue_chain_task
 from .base_agent import BaseAgent, _AGENT_NAMES
 
 def _detect_priority(text: str) -> int:
@@ -1332,93 +1332,160 @@ class MartaAgent(BaseAgent):
         ],
     ])
 
-    _MARTA_MENU_SECTIONS: dict[str, str] = {
+    # command_key → (agent_key, payload) — команды без обязательных аргументов
+    _MMENU_ACTIONS: dict[str, tuple[str, str]] = {
+        # Питер
+        "report":       ("peter", "Дай отчёт по продажам WB и Ozon за последние 14 дней"),
+        "audit":        ("peter", "Проведи 30-дневный аудит магазина со SWOT-анализом"),
+        "drr":          ("peter", "Покажи долю рекламных расходов (ДРР) и ROAS по товарам"),
+        "abc":          ("peter", "Проведи ABC-анализ товаров по вкладу в выручку"),
+        "funnel":       ("peter", "Покажи воронку конверсии: просмотры → корзина → заказы → выкупы"),
+        "returns":      ("peter", "Покажи топ возвратов по ставке и причинам"),
+        "supply":       ("peter", "Сделай план поставки по складам и кластерам"),
+        "order":        ("peter", "Проверь нужно ли заказывать у поставщика (30/60/90 дней)"),
+        "seo_audit":    ("peter", "Проведи SEO-аудит карточек: CTR, позиции, приоритеты правок"),
+        # Макс
+        "reviews":      ("max", "Обработай новые отзывы на WB и Ozon"),
+        "questions":    ("max", "Покажи неотвеченные вопросы покупателей"),
+        "pending":      ("max", "Покажи отзывы на модерации"),
+        "products":     ("max", "Покажи список товаров с артикулами WB и Ozon"),
+        "shop_kpi":     ("max", "Покажи KPI магазина: рейтинг и штрафы"),
+        "data_status":  ("max", "Покажи статус данных в базе: что свежее, что устарело"),
+        "shops":        ("max", "Покажи подключённые магазины"),
+        "seo_check":    ("max", "Проверь алерты падения позиций ключевых слов (≥10 мест)"),
+        "bid_adjust":   ("max", "Дай рекомендации по ставкам рекламы на основе ДРР"),
+        "apply_prices": ("max", "Примени рекомендованные цены для товаров"),
+        "sync":         ("max", "Синхронизируй данные: заказы, остатки, продажи"),
+        "sync_fin":     ("max", "Синхронизируй финансовые отчёты WB и Ozon за 90 дней"),
+        "sync_adv":     ("max", "Синхронизируй статистику рекламных кампаний"),
+        "sync_funnel":  ("max", "Синхронизируй воронку конверсии карточек"),
+        "sync_returns": ("max", "Синхронизируй аналитику возвратов"),
+        "sync_cards":   ("max", "Синхронизируй контент карточек товаров"),
+        "sync_keywords":("max", "Синхронизируй позиции ключевых слов WB"),
+        # Тина
+        "tenders":        ("tina", "Покажи дайджест новых тендеров по моим фильтрам"),
+        "tenders_report": ("tina", "Подготовь аналитический отчёт по тендерам"),
+        # Алекс
+        "plans": ("alex", "Покажи все активные планы"),
+    }
+
+    _MMENU_AGENT_LABEL: dict[str, str] = {
+        "peter": "📊 Питер", "max": "🛒 Макс",
+        "tina": "🏛️ Тина",  "alex": "🗓️ Алекс",
+    }
+
+    # (заголовок, строки InlineKeyboard) для каждого раздела
+    _MARTA_MENU_SECTIONS: dict[str, tuple[str, list]] = {
         "analytics": (
-            "📊 <b>Аналитика (Питер)</b>\n\n"
-            "/report — полный отчёт по продажам WB + Ozon (выручка, топ-товары, план)\n"
-            "/drr — доля рекламных расходов и ROAS по товарам\n"
-            "/abc — ABC-анализ: какие товары приносят 80% выручки\n"
-            "/funnel — воронка конверсии: просмотры → корзина → заказы → выкупы\n"
-            "/returns — топ возвратов по ставке и причинам\n"
-            "/audit — 30-дневный аудит здоровья магазина + SWOT\n"
-            "/seo_audit — SEO карточек: CTR, позиции, приоритеты правок\n"
-            "/supply — план поставки по складам и кластерам\n"
-            "/order — заказывать ли у поставщика (остатки на 30/60/90 дней)\n"
-            "/analyze &lt;вопрос&gt; — произвольный анализ по данным из БД"
+            "📊 <b>Аналитика — Питер</b>\nВыбери отчёт:",
+            [
+                [
+                    InlineKeyboardButton("📊 Отчёт продаж",  callback_data="mmenu_run:report"),
+                    InlineKeyboardButton("🔍 Аудит",          callback_data="mmenu_run:audit"),
+                ],
+                [
+                    InlineKeyboardButton("📣 ДРР / ROAS",     callback_data="mmenu_run:drr"),
+                    InlineKeyboardButton("🔻 Воронка",        callback_data="mmenu_run:funnel"),
+                ],
+                [
+                    InlineKeyboardButton("📦 Поставки",       callback_data="mmenu_run:supply"),
+                    InlineKeyboardButton("📬 Заказ",          callback_data="mmenu_run:order"),
+                ],
+                [
+                    InlineKeyboardButton("🔤 ABC-анализ",     callback_data="mmenu_run:abc"),
+                    InlineKeyboardButton("↩️ Возвраты",       callback_data="mmenu_run:returns"),
+                ],
+                [InlineKeyboardButton("🔤 SEO карточек",      callback_data="mmenu_run:seo_audit")],
+                [InlineKeyboardButton("◀️ Назад",             callback_data="mmenu:back")],
+            ],
         ),
         "market": (
-            "🛒 <b>Маркетплейсы (Макс)</b>\n\n"
-            "/reviews — обработать новые отзывы WB + Ozon\n"
-            "/questions — неотвеченные вопросы покупателей\n"
-            "/pending — отзывы на модерации\n"
-            "/products — список товаров с артикулами WB↔Ozon\n"
-            "/shop_kpi — KPI магазина: рейтинг, штрафы\n"
-            "/data_status — статус данных: что свежее, что устарело\n"
-            "/shops — подключённые магазины\n"
-            "/seo_check — алерты падения позиций ключевых слов (≥10 мест)\n"
-            "/bid_adjust — рекомендации по ставкам на основе ДРР\n"
-            "/margin &lt;артикул&gt; — быстрая проверка маржи\n"
-            "/apply_prices — применить рекомендованные цены"
+            "🛒 <b>Маркетплейсы — Макс</b>\nВыбери действие:",
+            [
+                [InlineKeyboardButton("🔔 Обработать отзывы", callback_data="mmenu_run:reviews")],
+                [
+                    InlineKeyboardButton("❓ Вопросы",         callback_data="mmenu_run:questions"),
+                    InlineKeyboardButton("⏳ Модерация",       callback_data="mmenu_run:pending"),
+                ],
+                [
+                    InlineKeyboardButton("📊 KPI магазина",    callback_data="mmenu_run:shop_kpi"),
+                    InlineKeyboardButton("🗄️ Статус данных",   callback_data="mmenu_run:data_status"),
+                ],
+                [
+                    InlineKeyboardButton("🏪 Магазины",        callback_data="mmenu_run:shops"),
+                    InlineKeyboardButton("📦 Товары",          callback_data="mmenu_run:products"),
+                ],
+                [
+                    InlineKeyboardButton("🔻 Позиции ключей",  callback_data="mmenu_run:seo_check"),
+                    InlineKeyboardButton("🎯 Ставки рекламы",  callback_data="mmenu_run:bid_adjust"),
+                ],
+                [InlineKeyboardButton("💲 Применить рекомендованные цены", callback_data="mmenu_run:apply_prices")],
+                [InlineKeyboardButton("◀️ Назад",             callback_data="mmenu:back")],
+            ],
         ),
         "sync": (
-            "🔄 <b>Синхронизация данных (Макс)</b>\n\n"
-            "/sync — заказы, остатки, продажи (основной синк)\n"
-            "/sync_fin — финансовые отчёты WB + Ozon за 90 дней\n"
-            "/sync_adv — статистика рекламных кампаний\n"
-            "/sync_funnel — воронка конверсии карточек\n"
-            "/sync_returns — аналитика возвратов\n"
-            "/sync_cards — контент карточек товаров\n"
-            "/sync_keywords — позиции ключевых слов WB\n\n"
-            "<i>💡 Синк финансов и рекламы запускается автоматически ночью.</i>"
+            "🔄 <b>Синхронизация данных — Макс</b>\nВыбери тип:\n<i>💡 Финансы и реклама синхронизируются автоматически ночью.</i>",
+            [
+                [InlineKeyboardButton("🔄 Полный синк — заказы · остатки · продажи", callback_data="mmenu_run:sync")],
+                [
+                    InlineKeyboardButton("💰 Финотчёт",   callback_data="mmenu_run:sync_fin"),
+                    InlineKeyboardButton("📣 Реклама",    callback_data="mmenu_run:sync_adv"),
+                ],
+                [
+                    InlineKeyboardButton("🔻 Воронка",    callback_data="mmenu_run:sync_funnel"),
+                    InlineKeyboardButton("↩️ Возвраты",  callback_data="mmenu_run:sync_returns"),
+                ],
+                [
+                    InlineKeyboardButton("🃏 Карточки",   callback_data="mmenu_run:sync_cards"),
+                    InlineKeyboardButton("🔑 Ключевые слова", callback_data="mmenu_run:sync_keywords"),
+                ],
+                [InlineKeyboardButton("◀️ Назад",        callback_data="mmenu:back")],
+            ],
         ),
         "content": (
             "✍️ <b>Контент и исследования</b>\n\n"
-            "<b>Элина</b> — копирайтер:\n"
-            "/write &lt;задание&gt; — написать текст любого типа\n"
-            "/post &lt;тема&gt; — пост для маркетплейса или соцсетей\n"
-            "/seo &lt;артикул&gt; — SEO-оптимизация карточки товара\n\n"
-            "<b>Каспер</b> — исследователь:\n"
-            "/research &lt;тема&gt; — веб-поиск и анализ по теме\n\n"
-            "<b>Алекс</b> — планировщик:\n"
-            "/remind &lt;время&gt; &lt;текст&gt; — push-напоминание на телефон\n\n"
-            "<i>💡 Или просто напиши мне — роутну к нужному агенту автоматически.</i>"
+            "<b>Элина</b> — пишет тексты, посты, SEO-описания\n"
+            "<b>Каспер</b> — исследует рынок, ниши, конкурентов\n"
+            "<b>Алекс</b> — ставит напоминания\n\n"
+            "Просто напиши задание — Марта роутнёт к нужному агенту:\n"
+            "• <i>«напиши продающий текст для карточки»</i>\n"
+            "• <i>«исследуй нишу детских игрушек»</i>\n"
+            "• <i>«напомни через 2 часа проверить отчёт»</i>",
+            [
+                [InlineKeyboardButton("◀️ Назад", callback_data="mmenu:back")],
+            ],
         ),
         "dev": (
-            "👨‍💻 <b>Разработка (Кевин)</b>\n\n"
-            "/code &lt;задача&gt; — написать код, скрипт, функцию\n"
-            "/plan &lt;идея&gt; — спланировать фичу или проект\n\n"
-            "<i>Кевин также умеет: создать репозиторий GitHub, сделать PR, задеплоить на Pages.</i>\n\n"
-            "<b>Просто напиши Марте:</b>\n"
-            "• «создай репо ai-office-tools»\n"
-            "• «напиши скрипт для парсинга CSV»"
+            "👨‍💻 <b>Разработка — Кевин</b>\n\n"
+            "Кевин пишет код, скрипты, делает PR на GitHub, деплоит на Pages.\n\n"
+            "Просто напиши Марте задание:\n"
+            "• <i>«напиши скрипт для парсинга CSV»</i>\n"
+            "• <i>«создай репо ai-office-tools»</i>\n"
+            "• <i>«сделай PR с фичей X»</i>",
+            [
+                [InlineKeyboardButton("◀️ Назад", callback_data="mmenu:back")],
+            ],
         ),
         "tenders": (
-            "🏛️ <b>Тендеры 44-ФЗ (Тина)</b>\n\n"
-            "/tenders — дайджест новых тендеров по фильтрам\n"
-            "/tenders_report — аналитический отчёт по тендерам\n\n"
-            "<i>Тина автоматически присылает дайджест каждое утро в 08:00 МСК.</i>"
+            "🏛️ <b>Тендеры 44-ФЗ — Тина</b>\nВыбери действие:\n<i>💡 Тина присылает дайджест автоматически в 08:00 МСК.</i>",
+            [
+                [InlineKeyboardButton("🏛️ Дайджест тендеров",    callback_data="mmenu_run:tenders")],
+                [InlineKeyboardButton("📊 Аналитика по тендерам", callback_data="mmenu_run:tenders_report")],
+                [InlineKeyboardButton("◀️ Назад",                 callback_data="mmenu:back")],
+            ],
         ),
         "office": (
-            "⚙️ <b>Офис (Марта + Алекс)</b>\n\n"
-            "📋 <b>Планы и задачи (Алекс):</b>\n"
-            "/plans — показать все активные планы\n"
-            "/plans &lt;текст&gt; — добавить или изменить план\n"
-            "/remind — установить напоминание\n\n"
-            "🤖 <b>Управление офисом (Марта):</b>\n"
-            "/status — очередь задач и состояние агентов\n"
-            "/history — последние 10 выполненных задач\n"
-            "/delegate &lt;агент&gt; &lt;задача&gt; — явно передать агенту\n"
-            "/cancel &lt;id&gt; — отменить задачу из очереди\n"
-            "/reset — очистить историю диалога\n\n"
-            "<i>Планы хранятся в базе и не пропадают. Примеры:\n"
-            "«добавь план подготовить акцию к 30.06, приоритет высокий»\n"
-            "«отметь план #3 выполненным»</i>"
+            "⚙️ <b>Офис — Марта + Алекс</b>\nВыбери действие:",
+            [
+                [InlineKeyboardButton("📋 Активные планы",  callback_data="mmenu_run:plans")],
+                [
+                    InlineKeyboardButton("📊 Статус очереди", callback_data="mmenu_run:queue_status"),
+                    InlineKeyboardButton("📜 История задач",  callback_data="mmenu_run:queue_history"),
+                ],
+                [InlineKeyboardButton("◀️ Назад",           callback_data="mmenu:back")],
+            ],
         ),
     }
-
-    _MARTA_MENU_BACK = InlineKeyboardMarkup([[
-        InlineKeyboardButton("◀️ Назад", callback_data="mmenu:back"),
-    ]])
 
     _MARTA_MENU_HEADER = "🏢 <b>AI Office — Быстрое меню</b>\n\nВыбери раздел:"
 
@@ -1433,19 +1500,98 @@ class MartaAgent(BaseAgent):
     async def _handle_marta_menu_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """Inline-кнопки меню Марты (mmenu:*). Редактирует то же сообщение — не плодит новые."""
+        """Inline-кнопки меню Марты (mmenu:* и mmenu_run:*)."""
         query = update.callback_query
         await query.answer()
-        section = query.data.split(":", 1)[1] if ":" in query.data else ""
-        if section == "back":
+        data = query.data
+        chat_id = query.message.chat_id
+
+        # ── Назад → главное меню ─────────────────────────────────────────
+        if data == "mmenu:back":
             await query.edit_message_text(
                 self._MARTA_MENU_HEADER,
                 parse_mode="HTML",
                 reply_markup=self._MARTA_MENU_KEYBOARD,
             )
             return
-        text = self._MARTA_MENU_SECTIONS.get(section, "❓ Раздел не найден")
-        await query.edit_message_text(text, parse_mode="HTML", reply_markup=self._MARTA_MENU_BACK)
+
+        # ── Открыть раздел ───────────────────────────────────────────────
+        if data.startswith("mmenu:"):
+            section = data.split(":", 1)[1]
+            info = self._MARTA_MENU_SECTIONS.get(section)
+            if not info:
+                await query.answer("❓ Раздел не найден", show_alert=True)
+                return
+            header, rows = info
+            await query.edit_message_text(
+                header, parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(rows),
+            )
+            return
+
+        # ── Выполнить действие (mmenu_run:cmd) ───────────────────────────
+        if data.startswith("mmenu_run:"):
+            cmd = data.split(":", 1)[1]
+
+            # Статус и история — отвечаем локально, без очереди
+            if cmd == "queue_status":
+                tasks = await get_active_tasks()
+                _STATUS_EMOJI = {
+                    "queued": "🕐", "acknowledged": "👀",
+                    "running": "⚙️", "failed": "🔴", "timeout": "⏱️",
+                }
+                _AGENT_EMOJI = {
+                    "peter": "📊", "max": "🛒", "elina": "✍️", "alex": "🗓️",
+                    "kasper": "🔍", "kevin": "👨‍💻", "tina": "🏛️", "marta": "👩‍💼",
+                }
+                if not tasks:
+                    text = "✅ <b>Статус очереди</b>\n\nВсе агенты свободны."
+                else:
+                    lines = ["📋 <b>Статус очереди</b>\n"]
+                    for t in tasks:
+                        ae = _AGENT_EMOJI.get(t["assigned_agent"], "🤖")
+                        se = _STATUS_EMOJI.get(t["status"], "❓")
+                        short = t["payload"][:60] + ("…" if len(t["payload"]) > 60 else "")
+                        lines.append(f"{ae} {se} <b>{t['assigned_agent']}</b>: {short}")
+                    text = "\n".join(lines)
+                await query.message.reply_text(text, parse_mode="HTML")
+                return
+
+            if cmd == "queue_history":
+                rows_db = await get_recent_tasks(limit=10)
+                if not rows_db:
+                    text = "📜 <b>История задач</b>\n\nЗадач пока нет."
+                else:
+                    lines = ["📜 <b>Последние задачи</b>\n"]
+                    _AGENT_EMOJI = {
+                        "peter": "📊", "max": "🛒", "elina": "✍️", "alex": "🗓️",
+                        "kasper": "🔍", "kevin": "👨‍💻", "tina": "🏛️", "marta": "👩‍💼",
+                    }
+                    for t in rows_db:
+                        ae = _AGENT_EMOJI.get(t["assigned_agent"], "🤖")
+                        short = t["payload"][:60] + ("…" if len(t["payload"]) > 60 else "")
+                        lines.append(f"{ae} {t['assigned_agent']}: {short}")
+                    text = "\n".join(lines)
+                await query.message.reply_text(text, parse_mode="HTML")
+                return
+
+            # Все остальные команды — передаём агенту
+            action = self._MMENU_ACTIONS.get(cmd)
+            if not action:
+                await query.answer("❓ Команда не найдена", show_alert=True)
+                return
+            agent_key, payload = action
+            await enqueue_task(
+                assigned_agent=agent_key,
+                payload=payload,
+                from_agent="marta",
+                chat_id=chat_id,
+                priority=0,
+            )
+            label = self._MMENU_AGENT_LABEL.get(agent_key, agent_key)
+            await query.message.reply_text(
+                f"⏳ Передала задачу {label} — пришлю результат когда готово."
+            )
 
     def _bot_commands(self) -> list:
         from telegram import BotCommand
@@ -1787,7 +1933,7 @@ class MartaAgent(BaseAgent):
         # ── Callbacks Марты ──────────────────────────────────────────────
         self.app.add_handler(CallbackQueryHandler(
             self._handle_marta_menu_callback,
-            pattern="^mmenu:",
+            pattern="^mmenu",
         ))
         self.app.add_handler(CallbackQueryHandler(
             self._handle_chain_callback,
