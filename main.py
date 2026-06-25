@@ -17,7 +17,9 @@ import hashlib
 import hmac
 import json as _json
 import os
+import queue as _thread_queue
 import signal
+import threading
 from decimal import Decimal
 from urllib.parse import parse_qsl
 
@@ -37,6 +39,62 @@ from agents import (
     MaxAgent,
     TinaAgent,
 )
+
+# ────────────────────────────────────────────────────────────────────────────
+#  DB log sink — пишет ERROR/CRITICAL в таблицу agent_logs
+# ────────────────────────────────────────────────────────────────────────────
+
+_pending_logs: _thread_queue.Queue = _thread_queue.Queue(maxsize=500)
+
+
+def _db_log_sink(message) -> None:
+    """Loguru sink: кладёт ERROR+ записи в thread-safe очередь без блокировки."""
+    record = message.record
+    try:
+        _pending_logs.put_nowait({
+            "level": record["level"].name,
+            "name": record["name"],
+            "message": record["message"],
+            "exc": str(record["exception"]) if record["exception"] else None,
+        })
+    except _thread_queue.Full:
+        pass  # очередь переполнена — дропаем, чтобы не тормозить агентов
+
+
+async def _db_log_writer_loop() -> None:
+    """Asyncio-таск: дренирует очередь и пишет батчами в agent_logs каждые 5 с.
+    Раз в сутки удаляет записи старше 30 дней."""
+    from db import get_pool
+    pool = await get_pool()
+    cleanup_counter = 0
+    while True:
+        await asyncio.sleep(5)
+        batch = []
+        try:
+            while True:
+                batch.append(_pending_logs.get_nowait())
+        except _thread_queue.Empty:
+            pass
+        if batch:
+            try:
+                await pool.executemany(
+                    "INSERT INTO agent_logs (level, logger_name, message, exc_text)"
+                    " VALUES ($1, $2, $3, $4)",
+                    [(r["level"], r["name"], r["message"], r["exc"]) for r in batch],
+                )
+            except Exception as exc:
+                # Намеренно не логируем через logger — рекурсия
+                print(f"[agent_logs writer] ошибка записи: {exc}", flush=True)
+        cleanup_counter += 1
+        if cleanup_counter >= 17280:  # ~24 ч при sleep(5)
+            cleanup_counter = 0
+            try:
+                await pool.execute(
+                    "DELETE FROM agent_logs WHERE ts < NOW() - INTERVAL '30 days'"
+                )
+            except Exception:
+                pass
+
 
 # Реестр: ключ → (класс агента, webhook-суффикс)
 AGENTS: dict[str, tuple] = {
@@ -117,6 +175,11 @@ async def run_all_async() -> None:
     # Инициализируем PostgreSQL (создаёт таблицу tasks если не существует)
     from db import init_db, close_db
     await init_db()
+
+    # Подключаем DB-логгер: ERROR/CRITICAL → таблица agent_logs
+    logger.add(_db_log_sink, level="ERROR", format="{message}", enqueue=False)
+    asyncio.create_task(_db_log_writer_loop())
+    logger.info("[main] DB log sink подключён — ошибки пишутся в agent_logs")
 
     agents = []
     for key, (agent_cls, _) in AGENTS.items():

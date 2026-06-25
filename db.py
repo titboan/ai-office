@@ -689,7 +689,22 @@ async def _create_schema() -> None:
             ON user_plans (chat_id, status)
         """)
 
-        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots + multi-shop + orders-shop-id + product-costs-v2 + user_plans + in_transit)")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_logs (
+                id          BIGSERIAL    PRIMARY KEY,
+                ts          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                level       TEXT         NOT NULL,
+                logger_name TEXT,
+                message     TEXT         NOT NULL,
+                exc_text    TEXT
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS agent_logs_ts
+            ON agent_logs (ts DESC)
+        """)
+
+        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots + multi-shop + orders-shop-id + product-costs-v2 + user_plans + in_transit + agent_logs)")
 
 async def save_project(
     chat_id: int,
@@ -2110,6 +2125,23 @@ async def delete_user_plan(plan_id: int, chat_id: int) -> bool:
             "DELETE FROM user_plans WHERE id=$1 AND chat_id=$2", plan_id, chat_id
         )
     return result != "DELETE 0"
+
+
+async def get_recent_errors(hours: int = 24, limit: int = 100) -> list[dict]:
+    """Последние ошибки агентов из agent_logs за указанный период."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT ts, level, logger_name, message, exc_text
+            FROM agent_logs
+            WHERE ts >= NOW() - ($1 * INTERVAL '1 hour')
+            ORDER BY ts DESC
+            LIMIT $2
+            """,
+            hours, limit,
+        )
+    return [dict(r) for r in rows]
 
 
 async def get_competitor_snapshots(weeks: int = 4) -> list[dict]:
