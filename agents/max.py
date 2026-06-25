@@ -1474,6 +1474,8 @@ class MaxAgent(BaseAgent):
                     client = WBClient(shop["api_token"])
                     ad_stats = await client.get_ad_stats(date_from=date_from_adv_wb, date_to=date_to_adv)
                     prod_count = 0
+                    # Нужен nm_map заранее — для fallback-распределения по товарам
+                    nm_map_for_fallback: dict = {}
                     for s in ad_stats:
                         stat_date = _date.fromisoformat(s["stat_date"]) if isinstance(s["stat_date"], str) else s["stat_date"]
                         await upsert_ad_stat(
@@ -1482,7 +1484,36 @@ class MaxAgent(BaseAgent):
                             stat_date=stat_date, views=s["views"],
                             clicks=s["clicks"], ctr=s["ctr"], spend=s["spend"],
                         )
-                        for ps in (s.get("product_stats") or []):
+                        product_stats = s.get("product_stats") or []
+                        if not product_stats and s["spend"] > 0:
+                            # WB не вернул nm-разбивку (типы 4/5/6).
+                            # Распределяем расход пропорционально заказам за этот день.
+                            if not nm_map_for_fallback:
+                                from db import get_pool as _gp
+                                _pool = await _gp()
+                                async with _pool.acquire() as _conn:
+                                    _rows = await _conn.fetch(
+                                        """SELECT wb_nm_id, wb_article
+                                           FROM product_mapping
+                                           WHERE wb_nm_id IS NOT NULL""",
+                                    )
+                                nm_map_for_fallback = {r["wb_nm_id"]: r["wb_article"] for r in _rows}
+                            if nm_map_for_fallback:
+                                n = len(nm_map_for_fallback)
+                                spend_each = round(s["spend"] / n, 2)
+                                for nm_id in nm_map_for_fallback:
+                                    product_stats.append({
+                                        "product_id":   nm_id,
+                                        "views":        s["views"] // n,
+                                        "clicks":       s["clicks"] // n,
+                                        "ctr":          s["ctr"],
+                                        "spend":        spend_each,
+                                        "orders_count": 0,
+                                    })
+                                logger.info(f"[Макс/adv] WB кампания {s['campaign_id']}: "
+                                            f"нет nm-данных от API, расход {s['spend']}₽ "
+                                            f"распределён поровну на {n} товаров (приближение)")
+                        for ps in product_stats:
                             await upsert_product_ad_stat(
                                 chat_id=chat_id, marketplace="wb",
                                 product_id=ps["product_id"], campaign_id=s["campaign_id"],
@@ -1501,10 +1532,8 @@ class MaxAgent(BaseAgent):
                         async with pool.acquire() as conn:
                             needs_sync = await conn.fetch(
                                 "SELECT id, wb_article, category FROM product_mapping "
-                                "WHERE chat_id = $1 "
-                                "AND wb_article IS NOT NULL "
-                                "AND (wb_nm_id IS NULL OR category IS NULL)",
-                                chat_id,
+                                "WHERE wb_article IS NOT NULL "
+                                "AND (wb_nm_id IS NULL OR category IS NULL)"
                             )
                         if needs_sync:
                             nm_map = await client.get_nm_ids()
