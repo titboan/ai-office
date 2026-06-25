@@ -1517,9 +1517,10 @@ class MaxAgent(BaseAgent):
                                     article_key = (row["wb_article"] or "").lower()
                                     entry = nm_map.get(article_key)
                                     if not entry:
-                                        logger.warning(
+                                        logger.error(
                                             f"[Макс/adv] wb_nm_id: артикул '{row['wb_article']}' "
-                                            f"не найден в WB Content API. "
+                                            f"не найден в WB Content API — "
+                                            f"JOIN в product_adv_stats не работает для этого товара. "
                                             f"Доступные vendorCode: {list(nm_map.keys())[:10]}"
                                         )
                                         continue

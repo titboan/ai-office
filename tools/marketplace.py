@@ -556,8 +556,9 @@ class WBClient:
             logger.info(f"[WB.get_ad_stats] кампании по статусам: {all_statuses} "
                         f"(9=активные, 11=пауза, 7=завершены)")
         if not campaign_ids:
-            logger.warning("[WB.get_ad_stats] нет активных кампаний (status=9) — "
-                           f"все статусы: {all_statuses}")
+            logger.error("[WB.get_ad_stats] нет активных кампаний WB (status=9) — "
+                         f"все статусы: {all_statuses}. "
+                         f"WB per-product ДРР недоступен.")
             return []
         logger.info(f"[WB.get_ad_stats] кампаний для статистики: {len(campaign_ids)}")
 
@@ -638,9 +639,9 @@ class WBClient:
                     _campaigns_with_nm += 1
                 else:
                     _campaigns_no_nm += 1
-                    logger.warning(f"[WB.get_ad_stats] кампания {cid}: нет nm-данных "
-                                   f"(apps пустые или nm[] пустые) — "
-                                   f"тип кампании может не поддерживать разбивку по товарам")
+                    logger.error(f"[WB.get_ad_stats] кампания {cid}: нет nm-данных "
+                                 f"(apps пустые или nm[] пустые) — "
+                                 f"тип кампании может не поддерживать разбивку по товарам")
 
             logger.info(f"[WB.get_ad_stats] batch: кампаний с nm={_campaigns_with_nm}, "
                         f"без nm={_campaigns_no_nm}")
@@ -1001,9 +1002,9 @@ class WBClient:
             return {}
 
     async def get_questions(self, is_answered: bool = False, take: int = 100) -> list[dict]:
-        """Вопросы покупателей WB через questions-api.wildberries.ru."""
+        """Вопросы покупателей WB через feedbacks-api.wildberries.ru (questions-api устарел)."""
         import json as _json
-        _Q_BASE = "https://questions-api.wildberries.ru"
+        _Q_BASE = "https://feedbacks-api.wildberries.ru"
         url = f"{_Q_BASE}/api/v1/questions"
         headers = {"Authorization": self._token, "Content-Type": "application/json"}
         params = {"isAnswered": str(is_answered).lower(), "take": take, "skip": 0}
@@ -1036,7 +1037,7 @@ class WBClient:
     async def answer_question(self, question_id: str, text: str) -> bool:
         """Отправить ответ на вопрос покупателя WB."""
         import json as _json
-        _Q_BASE = "https://questions-api.wildberries.ru"
+        _Q_BASE = "https://feedbacks-api.wildberries.ru"
         url = f"{_Q_BASE}/api/v1/questions"
         headers = {"Authorization": self._token, "Content-Type": "application/json"}
         body = {"id": question_id, "text": text, "state": "wbGoodsQaStatePublished"}
