@@ -136,8 +136,7 @@ class MartaAgent(BaseAgent):
     def _main_keyboard(self) -> ReplyKeyboardMarkup:
         return ReplyKeyboardMarkup([
             ["📊 Отчёт", "📈 Дашборд"],
-            ["⭐ Отзывы", "🔄 Синхронизация"],
-            ["🗂️ Меню", "📋 Статус", "❓ Помощь"],
+            ["🗂️ Меню", "❓ Помощь"],
         ], resize_keyboard=True)
 
     # ------------------------------------------------------------------ #
