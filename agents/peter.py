@@ -233,10 +233,17 @@ class PeterAgent(BaseAgent):
         ozon_shops = [s for s in all_shops if s["marketplace"] == "ozon"]
         multi_ozon = len(ozon_shops) > 1
 
+        async def _q(conn, name: str, sql: str, *args):
+            try:
+                return await conn.fetch(sql, *args)
+            except Exception as exc:
+                logger.error(f"[Питер/_collect_data] {name}: {exc}")
+                return []
+
         async with pool.acquire() as conn:
 
             # 1. Оборот по площадкам (с разбивкой по магазину при мульти-Ozon)
-            revenue = await conn.fetch("""
+            revenue = await _q(conn, "revenue", """
                 SELECT o.marketplace,
                        o.shop_id,
                        COALESCE(ms.shop_name, o.marketplace) AS shop_name,
@@ -250,7 +257,7 @@ class PeterAgent(BaseAgent):
             """, chat_id, date_from)
 
             # 2. Топ-10 товаров по обороту — с display_name и category из реестра
-            top_products = await conn.fetch("""
+            top_products = await _q(conn, "top_products", """
                 SELECT o.marketplace,
                        o.shop_id,
                        COALESCE(ms.shop_name, o.marketplace) AS shop_name,
@@ -271,7 +278,7 @@ class PeterAgent(BaseAgent):
             """, chat_id, date_from)
 
             # 3. Рентабельность WB (комиссия ~20%, логистика ~100₽/заказ)
-            margin_wb = await conn.fetch("""
+            margin_wb = await _q(conn, "margin_wb", """
                 SELECT
                     o.product_id,
                     COALESCE(m.display_name, MAX(o.product_name)) AS product_name,
@@ -295,7 +302,7 @@ class PeterAgent(BaseAgent):
             """, chat_id, date_from)
 
             # 4. Рентабельность Ozon — с разбивкой по магазину при мульти-Ozon
-            margin_ozon = await conn.fetch("""
+            margin_ozon = await _q(conn, "margin_ozon", """
                 SELECT
                     o.product_id,
                     o.shop_id,
@@ -333,7 +340,7 @@ class PeterAgent(BaseAgent):
             _today = _date.today()
             _oz_month_end   = _today.replace(day=1) - timedelta(days=1)
             _oz_month_start = _oz_month_end.replace(day=1)
-            net_margin_raw = await conn.fetch("""
+            net_margin_raw = await _q(conn, "net_margin", """
                 SELECT
                     COALESCE(m.display_name, f.product_id) AS product_name,
                     SUM(f.quantity) FILTER (WHERE f.marketplace = 'wb')::int            AS qty_wb,
@@ -363,7 +370,7 @@ class PeterAgent(BaseAgent):
             # очищен от комиссии/логистики/хранения МП, а seller_price — это то, что видит
             # покупатель/продавец на площадке (та же цена, на которую раньше сверялись с
             # пользователем: 541,44₽ WB / 797₽ Ozon для КБ50).
-            avg_price_raw = await conn.fetch("""
+            avg_price_raw = await _q(conn, "avg_price", """
                 SELECT COALESCE(m.display_name, o.product_id) AS product_name, o.marketplace,
                        (SUM(o.seller_price * o.quantity) / SUM(o.quantity))::numeric(12,2) AS avg_price
                 FROM marketplace_orders o
@@ -438,7 +445,7 @@ class PeterAgent(BaseAgent):
             # т.к. Performance API даёт только клики (~55% от фактических расходов).
             # Для WB — Performance API покрывает все типы, финотчёт не нужен.
             # Fallback: если fin_adv пуст (до первого синка), используем perf_spend.
-            adv = await conn.fetch("""
+            adv = await _q(conn, "adv", """
                 SELECT
                     a.marketplace,
                     CASE
@@ -467,7 +474,7 @@ class PeterAgent(BaseAgent):
             """, chat_id, date_from)
 
             # 6. Остатки — товары с низким стоком
-            low_stocks = await conn.fetch("""
+            low_stocks = await _q(conn, "low_stocks", """
                 SELECT marketplace, product_id,
                        MAX(product_name) AS product_name,
                        SUM(stock)        AS stock
@@ -480,7 +487,7 @@ class PeterAgent(BaseAgent):
             """, chat_id)
 
             # 7. MoM тренды из ночных снимков (последние 2 месяца)
-            mom = await conn.fetch("""
+            mom = await _q(conn, "mom", """
                 SELECT DATE_TRUNC('month', snapshot_date) AS month,
                        SUM(revenue)::numeric(12,2) AS revenue,
                        SUM(orders_count)::int      AS orders
@@ -490,7 +497,7 @@ class PeterAgent(BaseAgent):
             """, chat_id)
 
             # 8. Топ возвратов за 30 дней
-            returns_top = await conn.fetch("""
+            returns_top = await _q(conn, "returns_top", """
                 SELECT product_id, product_name,
                        SUM(returns_count)::int          AS returns_count,
                        SUM(return_amount)::numeric(12,2) AS return_amount,
@@ -503,7 +510,7 @@ class PeterAgent(BaseAgent):
             """, chat_id)
 
             # 9. Топ ключевых слов WB (для SEO-контекста)
-            kw_top = await conn.fetch("""
+            kw_top = await _q(conn, "kw_top", """
                 SELECT DISTINCT ON (keyword) keyword, position, search_count, ctr
                 FROM product_search_keywords
                 WHERE chat_id = $1 AND marketplace = 'wb'
@@ -512,7 +519,7 @@ class PeterAgent(BaseAgent):
             """, chat_id)
 
             # 10. Региональная аналитика WB (откуда заказывают)
-            regions_wb = await conn.fetch("""
+            regions_wb = await _q(conn, "regions_wb", """
                 SELECT region,
                        COUNT(*)::int                                  AS orders_cnt,
                        SUM(seller_price * quantity)::numeric(12,2)    AS revenue
@@ -525,7 +532,7 @@ class PeterAgent(BaseAgent):
             """, chat_id, date_from)
 
             # 11. Эффект инфографики — CTR до/после обновления
-            infographic_ctr = await conn.fetch("""
+            infographic_ctr = await _q(conn, "infographic_ctr", """
                 SELECT
                     COALESCE(m.display_name, m.wb_article) AS name,
                     m.infographic_updated_at::date          AS updated_at,
@@ -571,10 +578,17 @@ class PeterAgent(BaseAgent):
         pool = await get_pool()
         date_from = (datetime.now(_UTC) - timedelta(days=days)).date()
 
+        async def _q(conn, name: str, sql: str, *args):
+            try:
+                return await conn.fetch(sql, *args)
+            except Exception as exc:
+                logger.error(f"[Питер/_collect_advanced_data] {name}: {exc}")
+                return []
+
         async with pool.acquire() as conn:
 
             # 1. Тренд: текущие 7 дней vs предыдущие 7 дней
-            trend = await conn.fetch("""
+            trend = await _q(conn, "trend", """
                 SELECT marketplace,
                        SUM(CASE WHEN order_date >= NOW() - INTERVAL '7 days'
                                 THEN seller_price * quantity ELSE 0 END)::numeric(12,2) AS week_current,
@@ -587,7 +601,7 @@ class PeterAgent(BaseAgent):
 
             # 2. CTR, ROAS, расход по товарам (из product_adv_stats + выкупы)
             # ROAS = выкупы (продажи, без возвратов) / расход на рекламу
-            product_metrics = await conn.fetch("""
+            product_metrics = await _q(conn, "product_metrics", """
                 SELECT
                     p.product_id,
                     COALESCE(m.display_name, p.product_id) AS name,
@@ -634,7 +648,7 @@ class PeterAgent(BaseAgent):
             """, chat_id, date_from)
 
             # 3. Stock velocity — дней осталось при текущих продажах
-            stock_velocity = await conn.fetch("""
+            stock_velocity = await _q(conn, "stock_velocity", """
                 SELECT
                     s.marketplace,
                     s.product_id,
@@ -676,7 +690,7 @@ class PeterAgent(BaseAgent):
             # Товаров мало (десятки), фронт сам группирует по display_name и берёт топ-15.
 
             # 4. Воронка конверсии по товарам
-            funnel = await conn.fetch("""
+            funnel = await _q(conn, "funnel", """
                 SELECT
                     f.product_id,
                     COALESCE(m.display_name, f.product_id) AS name,
@@ -700,7 +714,7 @@ class PeterAgent(BaseAgent):
                 LIMIT 15
             """, chat_id, date_from)
 
-            abc_rows = await conn.fetch("""
+            abc_rows = await _q(conn, "abc_rows", """
                 SELECT
                     o.product_id,
                     COALESCE(m.display_name, MAX(o.product_name)) AS name,
