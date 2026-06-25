@@ -704,7 +704,18 @@ async def _create_schema() -> None:
             ON agent_logs (ts DESC)
         """)
 
-        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots + multi-shop + orders-shop-id + product-costs-v2 + user_plans + in_transit + agent_logs)")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS wb_campaigns (
+                campaign_id   TEXT PRIMARY KEY,
+                campaign_name TEXT,
+                nm_ids        TEXT[] DEFAULT '{}'
+            )
+        """)
+        await conn.execute("""
+            ALTER TABLE wb_campaigns ADD COLUMN IF NOT EXISTS nm_ids TEXT[] DEFAULT '{}'
+        """)
+
+        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots + multi-shop + orders-shop-id + product-costs-v2 + user_plans + in_transit + agent_logs + wb_campaigns)")
 
 async def save_project(
     chat_id: int,
@@ -2125,6 +2136,37 @@ async def delete_user_plan(plan_id: int, chat_id: int) -> bool:
             "DELETE FROM user_plans WHERE id=$1 AND chat_id=$2", plan_id, chat_id
         )
     return result != "DELETE 0"
+
+
+async def get_wb_campaign_nm_ids(campaign_ids: list[str]) -> dict[str, list[str]]:
+    """Вернуть {campaign_id: [nm_id, ...]} из wb_campaigns для указанных кампаний."""
+    if not campaign_ids:
+        return {}
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT campaign_id, nm_ids FROM wb_campaigns WHERE campaign_id = ANY($1) AND nm_ids != '{}'",
+            campaign_ids,
+        )
+    return {r["campaign_id"]: list(r["nm_ids"]) for r in rows if r["nm_ids"]}
+
+
+async def set_wb_campaign_nm_ids(campaign_id: str, nm_ids: list[str], campaign_name: str = "") -> None:
+    """Сохранить ручной маппинг кампании → nm_ids в wb_campaigns."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO wb_campaigns (campaign_id, campaign_name, nm_ids)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (campaign_id) DO UPDATE
+                SET nm_ids        = EXCLUDED.nm_ids,
+                    campaign_name = CASE WHEN EXCLUDED.campaign_name != ''
+                                         THEN EXCLUDED.campaign_name
+                                         ELSE wb_campaigns.campaign_name END
+            """,
+            campaign_id, campaign_name, nm_ids,
+        )
 
 
 async def get_recent_errors(hours: int = 24, limit: int = 100) -> list[dict]:

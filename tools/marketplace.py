@@ -979,6 +979,51 @@ class WBClient:
             logger.error(f"[WB.get_campaign_cpm] error: {e}")
             return None
 
+    async def get_campaign_products_v2(self, campaign_ids: list[str]) -> dict[str, list[str]]:
+        """Попытка получить nm_ids через POST /adv/v2/promotion/adverts.
+
+        Если endpoint жив — возвращает {campaign_id: [nm_id, ...]}.
+        Если 404 — тихо возвращает {} (ожидаемо для устаревших WB endpoints).
+        Логирует полный ответ при успехе чтобы можно было скорректировать парсинг.
+        """
+        import json as _json
+        result: dict[str, list[str]] = {}
+        url = "https://advert-api.wildberries.ru/adv/v2/promotion/adverts"
+        headers = {"Authorization": self._token, "Content-Type": "application/json"}
+        ids = [int(cid) for cid in campaign_ids if cid.isdigit()]
+        if not ids:
+            return {}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url, headers=headers,
+                    json=ids,
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status == 404:
+                        logger.info("[WB.get_campaign_products_v2] POST /adv/v2/promotion/adverts → 404 (endpoint мёртв)")
+                        return {}
+                    if resp.status != 200:
+                        logger.error(f"[WB.get_campaign_products_v2] HTTP {resp.status}: {raw[:300]}")
+                        return {}
+                    logger.info(f"[WB.get_campaign_products_v2] ✅ HTTP 200 — ответ: {raw[:800]}")
+                    data = _json.loads(raw)
+                    for item in (data if isinstance(data, list) else []):
+                        cid = str(item.get("advertId") or item.get("id") or "")
+                        nms: list[str] = []
+                        params_key = "unitedParams" if int(item.get("type") or 0) == 8 else "params"
+                        for p in (item.get(params_key) or []):
+                            for nm in (p.get("nms") or []):
+                                if nm:
+                                    nms.append(str(nm))
+                        if cid and nms:
+                            result[cid] = nms
+                    logger.info(f"[WB.get_campaign_products_v2] получено nm для {len(result)}/{len(ids)} кампаний")
+        except Exception as e:
+            logger.error(f"[WB.get_campaign_products_v2] exception: {e}")
+        return result
+
     async def update_campaign_cpm(
         self, campaign_id: str, campaign_type: int, subject_id: int, new_cpm: int
     ) -> bool:

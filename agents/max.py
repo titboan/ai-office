@@ -84,6 +84,7 @@ _HELP_TEXT = """\
 — /add — добавить товар в реестр
 — /cost — задать себестоимость (WB и Ozon раздельно)
 — /map — добавить/обновить маппинг артикулов
+— /camp — задать товары для WB рекламной кампании вручную
 — /sync_sku — подтянуть Ozon SKU в реестр
 
 ⚙️ <b>Управление</b>
@@ -1494,6 +1495,50 @@ class MaxAgent(BaseAgent):
                             )
                             prod_count += 1
                     logger.info(f"[Макс/adv] WB реклама: {len(ad_stats)} записей, {prod_count} nm-записей")
+
+                    # Для кампаний без nm-данных: сначала пробуем WB v2 API,
+                    # затем fallback на ручной маппинг из wb_campaigns (/camp команда).
+                    campaigns_no_nm = [
+                        s for s in ad_stats if not s.get("product_stats") and s.get("spend", 0) > 0
+                    ]
+                    if campaigns_no_nm:
+                        from db import get_wb_campaign_nm_ids
+                        camp_ids = [s["campaign_id"] for s in campaigns_no_nm]
+
+                        # Шаг 1: попытка WB v2 API
+                        v2_nms = await client.get_campaign_products_v2(camp_ids)
+
+                        # Шаг 2: ручной маппинг для тех кампаний, что v2 не вернул
+                        missing = [cid for cid in camp_ids if cid not in v2_nms]
+                        manual_nms = await get_wb_campaign_nm_ids(missing) if missing else {}
+
+                        # Объединяем: v2 имеет приоритет
+                        nm_source = {**manual_nms, **v2_nms}
+
+                        for s in campaigns_no_nm:
+                            nms = nm_source.get(s["campaign_id"]) or []
+                            if not nms:
+                                continue
+                            n = len(nms)
+                            stat_date = _date.fromisoformat(s["stat_date"]) if isinstance(s["stat_date"], str) else s["stat_date"]
+                            spend_each = round(s["spend"] / n, 4) if n else 0
+                            for nm_id in nms:
+                                await upsert_product_ad_stat(
+                                    chat_id=chat_id, marketplace="wb",
+                                    product_id=nm_id, campaign_id=s["campaign_id"],
+                                    stat_date=stat_date,
+                                    views=s["views"] // n if n else 0,
+                                    clicks=s["clicks"] // n if n else 0,
+                                    ctr=s["ctr"], spend=spend_each,
+                                    orders_count=0,
+                                )
+                                prod_count += 1
+                        src = "v2 API" if v2_nms else ("ручной маппинг" if manual_nms else "нет")
+                        logger.info(
+                            f"[Макс/adv] WB nm fallback: {len(campaigns_no_nm)} кампаний без nm, "
+                            f"источник={src}, добавлено nm-записей: {prod_count}"
+                        )
+
                     # Заполняем wb_nm_id в product_mapping через Statistics stocks API.
                     # Content API требует разрешение "Контент" — stocks работает на том же токене.
                     try:
@@ -3574,6 +3619,64 @@ class MaxAgent(BaseAgent):
             logger.error(f"[Макс/map] ошибка: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
 
+    async def cmd_camp(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/camp wb CAMPAIGN_ID ТОВАР1 ТОВАР2 ... — задать товары для WB рекламной кампании.
+
+        WB API не возвращает список товаров для кампаний типов 4/5/6 (поиск/каталог/карточка).
+        Эта команда позволяет вручную указать, какие товары рекламируются в кампании,
+        чтобы Питер мог рассчитать ДРР по товарам.
+
+        Пример: /camp wb 31530289 КБ50 ИМ0,7 ГБ1,5
+        Пример с одним товаром: /camp wb 36201888 БК50гр"""
+        args = (update.message.text or "").split()
+        if len(args) < 4 or args[1].lower() != "wb":
+            await update.message.reply_text(
+                "Формат: /camp wb CAMPAIGN_ID ТОВАР1 ТОВАР2 ...\n"
+                "Пример: /camp wb 31530289 КБ50 ИМ0,7\n\n"
+                "ID кампании можно посмотреть в /logs или в ЛК WB."
+            )
+            return
+        campaign_id = args[2].strip()
+        product_names = args[3:]
+        chat_id = update.effective_chat.id
+        try:
+            from db import get_pool, set_wb_campaign_nm_ids
+            pool = await get_pool()
+            # Ищем nm_id для каждого товара через product_mapping
+            nm_ids: list[str] = []
+            not_found: list[str] = []
+            async with pool.acquire() as conn:
+                for name in product_names:
+                    row = await conn.fetchrow(
+                        """SELECT wb_nm_id FROM product_mapping
+                           WHERE wb_nm_id IS NOT NULL
+                             AND (display_name ILIKE $1 OR wb_article ILIKE $1)
+                           LIMIT 1""",
+                        name,
+                    )
+                    if row and row["wb_nm_id"]:
+                        nm_ids.append(row["wb_nm_id"])
+                    else:
+                        not_found.append(name)
+            if not nm_ids:
+                await update.message.reply_text(
+                    f"❌ Ни один товар не найден в реестре с заполненным wb_nm_id.\n"
+                    f"Сначала запусти /sync_adv чтобы заполнить nm_id, затем повтори /camp."
+                )
+                return
+            await set_wb_campaign_nm_ids(campaign_id, nm_ids)
+            ok_names = [n for n in product_names if n not in not_found]
+            msg = (
+                f"✅ Кампания {campaign_id} → {len(nm_ids)} товаров: {', '.join(ok_names)}\n"
+                f"При следующем /sync_adv расход будет разбит по этим товарам."
+            )
+            if not_found:
+                msg += f"\n⚠️ Не найдены (нет nm_id): {', '.join(not_found)}"
+            await update.message.reply_text(msg)
+        except Exception as e:
+            logger.error(f"[Макс/camp] ошибка: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+
     async def cmd_cost(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/cost <идентификатор> <wb|ozon> <сумма> — задать себестоимость.
         Пример: /cost КБ50 wb 136.3"""
@@ -5319,6 +5422,7 @@ class MaxAgent(BaseAgent):
             BotCommand("reprice",          "💡 Предложения по изменению цен"),
             BotCommand("apply_prices",     "✅ Применить рекомендации Питера"),
             BotCommand("map",              "🗺️ Добавить товар в реестр"),
+            BotCommand("camp",             "📣 Задать товары WB кампании для ДРР"),
             # SEO и реклама
             BotCommand("seo_check",        "🔍 Алерты по падению SEO-позиций"),
             BotCommand("bid_adjust",       "📣 Корректировка рекламных ставок"),
@@ -5355,6 +5459,7 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("sync_sku",        self.cmd_sync_sku))
         self.app.add_handler(CommandHandler("products",      self.cmd_products))
         self.app.add_handler(CommandHandler("map",           self.cmd_map))
+        self.app.add_handler(CommandHandler("camp",          self.cmd_camp))
         self.app.add_handler(CommandHandler("cost",          self.cmd_cost_wizard))
         self.app.add_handler(CommandHandler("margin",        self.cmd_margin_check))
         self.app.add_handler(CommandHandler("reprice",       self.cmd_reprice))
