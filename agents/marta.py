@@ -1344,29 +1344,41 @@ class MartaAgent(BaseAgent):
         "supply":       ("peter", "Сделай план поставки по складам и кластерам"),
         "order":        ("peter", "Проверь нужно ли заказывать у поставщика (30/60/90 дней)"),
         "seo_audit":    ("peter", "Проведи SEO-аудит карточек: CTR, позиции, приоритеты правок"),
+        "analyze":      ("peter", "Проведи произвольный бизнес-анализ по данным маркетплейсов"),
         # Макс
         "reviews":      ("max", "Обработай новые отзывы на WB и Ozon"),
-        "questions":    ("max", "Покажи неотвеченные вопросы покупателей"),
-        "pending":      ("max", "Покажи отзывы на модерации"),
-        "products":     ("max", "Покажи список товаров с артикулами WB и Ozon"),
-        "shop_kpi":     ("max", "Покажи KPI магазина: рейтинг и штрафы"),
-        "data_status":  ("max", "Покажи статус данных в базе: что свежее, что устарело"),
-        "shops":        ("max", "Покажи подключённые магазины"),
-        "seo_check":    ("max", "Проверь алерты падения позиций ключевых слов (≥10 мест)"),
-        "bid_adjust":   ("max", "Дай рекомендации по ставкам рекламы на основе ДРР"),
-        "apply_prices": ("max", "Примени рекомендованные цены для товаров"),
-        "sync":         ("max", "Синхронизируй данные: заказы, остатки, продажи"),
-        "sync_fin":     ("max", "Синхронизируй финансовые отчёты WB и Ozon за 90 дней"),
-        "sync_adv":     ("max", "Синхронизируй статистику рекламных кампаний"),
-        "sync_funnel":  ("max", "Синхронизируй воронку конверсии карточек"),
-        "sync_returns": ("max", "Синхронизируй аналитику возвратов"),
-        "sync_cards":   ("max", "Синхронизируй контент карточек товаров"),
-        "sync_keywords":("max", "Синхронизируй позиции ключевых слов WB"),
-        # Тина
-        "tenders":        ("tina", "Покажи дайджест новых тендеров по моим фильтрам"),
-        "tenders_report": ("tina", "Подготовь аналитический отчёт по тендерам"),
+        "questions":    ("max", "__questions__"),
+        "pending":      ("max", "__pending__"),
+        "products":     ("max", "__products__"),
+        "shop_kpi":     ("max", "__shop_kpi__"),
+        "data_status":  ("max", "__data_status__"),
+        "shops":        ("max", "__shops__"),
+        "seo_check":    ("max", "__seo_check__"),
+        "bid_adjust":   ("max", "__bid_adjust__"),
+        "margin":       ("max", "__margin__"),
+        "apply_prices": ("max", "применить рекомендованные цены от Питера — apply_prices"),
+        "sync":         ("max", "__sync__"),
+        "sync_fin":     ("max", "__sync_fin__"),
+        "sync_adv":     ("max", "__sync_adv__"),
+        "sync_funnel":  ("max", "__sync_funnel__"),
+        "sync_returns": ("max", "__sync_returns__"),
+        "sync_cards":   ("max", "__sync_cards__"),
+        "sync_keywords":("max", "__sync_keywords__"),
+        # Кевин
+        "code":  ("kevin", "Реши задачу разработки"),
+        "plan":  ("kevin", "Составь план реализации фичи"),
+        # Элина
+        "write":       ("elina", "Напиши текст"),
+        "post":        ("elina", "Напиши пост для маркетплейса или соцсетей"),
+        "seo_elina":   ("elina", "SEO-оптимизация карточки товара"),
+        # Каспер
+        "research": ("kasper", "Исследуй тему"),
         # Алекс
-        "plans": ("alex", "Покажи все активные планы"),
+        "plans":  ("alex", "__plans__"),
+        "remind": ("alex", "Установи напоминание"),
+        # Тина
+        "tenders":        ("tina", "tenders"),
+        "tenders_report": ("tina", "tenders_report"),
     }
 
     _MMENU_AGENT_LABEL: dict[str, str] = {
@@ -1395,7 +1407,10 @@ class MartaAgent(BaseAgent):
                     InlineKeyboardButton("🔤 ABC-анализ",     callback_data="mmenu_run:abc"),
                     InlineKeyboardButton("↩️ Возвраты",       callback_data="mmenu_run:returns"),
                 ],
-                [InlineKeyboardButton("🔤 SEO карточек",      callback_data="mmenu_run:seo_audit")],
+                [
+                    InlineKeyboardButton("🔤 SEO карточек",   callback_data="mmenu_run:seo_audit"),
+                    InlineKeyboardButton("💬 Свободный вопрос", callback_data="mmenu_run:analyze"),
+                ],
                 [InlineKeyboardButton("◀️ Назад",             callback_data="mmenu:back")],
             ],
         ),
@@ -1419,7 +1434,10 @@ class MartaAgent(BaseAgent):
                     InlineKeyboardButton("🔻 Позиции ключей",  callback_data="mmenu_run:seo_check"),
                     InlineKeyboardButton("🎯 Ставки рекламы",  callback_data="mmenu_run:bid_adjust"),
                 ],
-                [InlineKeyboardButton("💲 Применить рекомендованные цены", callback_data="mmenu_run:apply_prices")],
+                [
+                    InlineKeyboardButton("📐 Маржа товара",   callback_data="mmenu_run:margin"),
+                    InlineKeyboardButton("💲 Применить цены", callback_data="mmenu_run:apply_prices"),
+                ],
                 [InlineKeyboardButton("◀️ Назад",             callback_data="mmenu:back")],
             ],
         ),
@@ -1443,27 +1461,24 @@ class MartaAgent(BaseAgent):
             ],
         ),
         "content": (
-            "✍️ <b>Контент и исследования</b>\n\n"
-            "<b>Элина</b> — пишет тексты, посты, SEO-описания\n"
-            "<b>Каспер</b> — исследует рынок, ниши, конкурентов\n"
-            "<b>Алекс</b> — ставит напоминания\n\n"
-            "Просто напиши задание — Марта роутнёт к нужному агенту:\n"
-            "• <i>«напиши продающий текст для карточки»</i>\n"
-            "• <i>«исследуй нишу детских игрушек»</i>\n"
-            "• <i>«напомни через 2 часа проверить отчёт»</i>",
+            "✍️ <b>Контент и исследования</b>\nВыбери действие:",
             [
-                [InlineKeyboardButton("◀️ Назад", callback_data="mmenu:back")],
+                [InlineKeyboardButton("✍️ Написать текст (Элина)",    callback_data="mmenu_run:write")],
+                [
+                    InlineKeyboardButton("📝 Пост",                    callback_data="mmenu_run:post"),
+                    InlineKeyboardButton("🔤 SEO карточки",            callback_data="mmenu_run:seo_elina"),
+                ],
+                [InlineKeyboardButton("🔍 Исследование (Каспер)",      callback_data="mmenu_run:research")],
+                [InlineKeyboardButton("⏰ Напоминание (Алекс)",        callback_data="mmenu_run:remind")],
+                [InlineKeyboardButton("◀️ Назад",                      callback_data="mmenu:back")],
             ],
         ),
         "dev": (
-            "👨‍💻 <b>Разработка — Кевин</b>\n\n"
-            "Кевин пишет код, скрипты, делает PR на GitHub, деплоит на Pages.\n\n"
-            "Просто напиши Марте задание:\n"
-            "• <i>«напиши скрипт для парсинга CSV»</i>\n"
-            "• <i>«создай репо ai-office-tools»</i>\n"
-            "• <i>«сделай PR с фичей X»</i>",
+            "👨‍💻 <b>Разработка — Кевин</b>\nВыбери действие:",
             [
-                [InlineKeyboardButton("◀️ Назад", callback_data="mmenu:back")],
+                [InlineKeyboardButton("👨‍💻 Написать код / скрипт",   callback_data="mmenu_run:code")],
+                [InlineKeyboardButton("📋 Спланировать фичу",         callback_data="mmenu_run:plan")],
+                [InlineKeyboardButton("◀️ Назад",                     callback_data="mmenu:back")],
             ],
         ),
         "tenders": (
