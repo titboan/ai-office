@@ -1218,39 +1218,70 @@ class MartaAgent(BaseAgent):
             reply_to_message_id=update.message.message_id,
         )
 
+    _LOGS_KEYBOARD = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔴 Все ошибки",    callback_data="logs:all"),
+            InlineKeyboardButton("📡 Реклама WB",    callback_data="logs:adv"),
+        ],
+        [
+            InlineKeyboardButton("🔄 Синхронизация", callback_data="logs:sync"),
+            InlineKeyboardButton("🤖 Claude API",    callback_data="logs:claude"),
+        ],
+        [
+            InlineKeyboardButton("🛒 Макс",          callback_data="logs:макс"),
+            InlineKeyboardButton("📊 Питер",         callback_data="logs:питер"),
+        ],
+        [
+            InlineKeyboardButton("🔁 Обновить",      callback_data="logs:all"),
+        ],
+    ])
+
+    async def _render_logs(self, keyword: str | None, hours: int = 24) -> str:
+        """Формирует текст лога для отправки."""
+        from db import get_recent_errors
+        rows = await get_recent_errors(hours=hours, limit=50)
+        if keyword:
+            kw = keyword.lower()
+            rows = [r for r in rows if kw in (r["message"] or "").lower()
+                    or kw in (r["logger_name"] or "").lower()]
+        if not rows:
+            note = f" по «{keyword}»" if keyword else ""
+            return f"✅ Ошибок за {hours}ч{note} нет — всё чисто."
+        label = f"«{keyword}»" if keyword else "все"
+        lines = [f"🔴 <b>Ошибки {label} за {hours}ч</b> — {len(rows)} записей:\n"]
+        for r in rows[:12]:
+            ts = r["ts"].strftime("%d.%m %H:%M") if r["ts"] else "?"
+            msg = (r["message"] or "")[:250]
+            lines.append(f"<code>{ts}</code> {msg}")
+        return "\n\n".join(lines)
+
     async def cmd_logs(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """/logs [фильтр] — последние ошибки из agent_logs. Например: /logs adv"""
-        from db import get_recent_errors
-
-        hours = 24
+        """/logs [фильтр] — последние ошибки. Пример: /logs adv"""
         keyword = context.args[0].lower() if context.args else None
-
-        rows = await get_recent_errors(hours=hours, limit=50)
-
-        if keyword:
-            rows = [r for r in rows if keyword in (r["message"] or "").lower()
-                    or keyword in (r["logger_name"] or "").lower()]
-
-        if not rows:
-            note = f" по запросу «{keyword}»" if keyword else ""
-            await update.message.reply_text(f"✅ Ошибок за последние {hours}ч{note} не найдено.")
-            return
-
-        lines = [f"🔴 **Ошибки за {hours}ч** ({len(rows)} записей):\n"]
-        for r in rows[:15]:
-            ts = r["ts"].strftime("%d.%m %H:%M:%S") if r["ts"] else "?"
-            msg = (r["message"] or "")[:200]
-            lvl = r["level"] or "?"
-            lines.append(f"`{ts}` [{lvl}]\n{msg}")
-            if r.get("exc_text"):
-                lines.append(f"```\n{r['exc_text'][:300]}\n```")
-
-        await _send_rich(
-            self.bot_token, update.effective_chat.id, "\n\n".join(lines),
-            reply_to_message_id=update.message.message_id,
+        text = await self._render_logs(keyword)
+        await update.message.reply_text(
+            text, parse_mode="HTML", reply_markup=self._LOGS_KEYBOARD,
         )
+
+    async def _handle_logs_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Callback для кнопок /logs (logs:all, logs:adv, …)."""
+        query = update.callback_query
+        await query.answer()
+        _, keyword = query.data.split(":", 1)
+        kw = None if keyword == "all" else keyword
+        text = await self._render_logs(kw)
+        try:
+            await query.message.edit_text(
+                text, parse_mode="HTML", reply_markup=self._LOGS_KEYBOARD,
+            )
+        except Exception:
+            await query.message.reply_text(
+                text, parse_mode="HTML", reply_markup=self._LOGS_KEYBOARD,
+            )
 
     async def cmd_cancel(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -2017,4 +2048,5 @@ class MartaAgent(BaseAgent):
         ))
         self.app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         self.app.add_handler(CallbackQueryHandler(self._handle_image_action, pattern="^img_action:"))
+        self.app.add_handler(CallbackQueryHandler(self._handle_logs_callback, pattern="^logs:"))
         self.app.add_handler(CallbackQueryHandler(self._handle_infographic_callback, pattern="^infographic_"))
