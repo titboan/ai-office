@@ -648,13 +648,43 @@ class WBClient:
 
         total_nm = sum(len(r["product_stats"]) for r in results)
         if total_nm == 0 and results:
-            logger.error(
-                f"[WB.get_ad_stats] ДИАГНОЗ: {len(results)} дней статистики загружены, "
-                f"но nm-разбивки нет ни в одном. "
-                f"Причина: кампании WB не возвращают apps[].nm[] — "
-                f"проверь тип кампаний (нужен тип 8=Авто). "
-                f"WB без разбивки по товарам."
-            )
+            # Fallback: кампании не дают nm через fullstats (типы 4/5/6/9).
+            # Получаем nm_id для каждой кампании через /adv/v0/advert?id= и
+            # распределяем расход равномерно по товарам кампании.
+            campaigns_no_nm = list({r["campaign_id"] for r in results if not r["product_stats"]})
+            logger.info(f"[WB.get_ad_stats] fullstats без nm, запрашиваем nm_id "
+                        f"через /adv/v0/advert для {len(campaigns_no_nm)} кампаний…")
+            campaign_nms = await self.get_campaigns_nms(campaigns_no_nm)
+
+            for r in results:
+                if r["product_stats"]:
+                    continue
+                nms = campaign_nms.get(r["campaign_id"]) or []
+                if not nms:
+                    continue
+                n = len(nms)
+                spend_each = round(r["spend"] / n, 4) if n else 0
+                for nm_id in nms:
+                    r["product_stats"].append({
+                        "product_id":   nm_id,
+                        "views":        r["views"] // n if n else 0,
+                        "clicks":       r["clicks"] // n if n else 0,
+                        "ctr":          r["ctr"],
+                        "spend":        spend_each,
+                        "orders_count": 0,
+                        "estimated":    True,  # пометка: данные расчётные
+                    })
+
+            total_nm = sum(len(r["product_stats"]) for r in results)
+            if total_nm == 0:
+                logger.error(
+                    f"[WB.get_ad_stats] нет nm-данных даже после /adv/v0/advert — "
+                    f"campaign_nms пустой. Проверь токен или campaign detail API."
+                )
+            else:
+                logger.info(f"[WB.get_ad_stats] fallback через /adv/v0/advert: "
+                            f"получили nm для {len(campaign_nms)} кампаний, {total_nm} nm-записей")
+
         logger.info(f"[WB.get_ad_stats] итого записей: {len(results)}, nm-записей: {total_nm}")
         return results
 
@@ -868,6 +898,50 @@ class WBClient:
                 break
         logger.info(f"[WB.get_funnel_stats] {date_from}–{date_to}: {len(results)} записей")
         return results
+
+    async def get_campaigns_nms(self, campaign_ids: list[str]) -> dict[str, list[str]]:
+        """Получить nm_id товаров для каждой кампании через /adv/v0/advert.
+
+        Для кампаний типов 4/5/6/9 (поиск/каталог/карточка) WB не возвращает
+        nm-разбивку в fullstats, но хранит список рекламируемых nm_id в поле
+        params[].nms[]. Используется как fallback для распределения расходов.
+
+        Возвращает {campaign_id: [nm_id_str, ...]}.
+        """
+        import json as _json
+        result: dict[str, list[str]] = {}
+        url = "https://advert-api.wildberries.ru/adv/v0/advert"
+        headers = {"Authorization": self._token}
+
+        for i, cid in enumerate(campaign_ids):
+            if i > 0:
+                await asyncio.sleep(0.25)  # 4 запроса/сек — безопасно для WB
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        url, headers=headers, params={"id": cid}, timeout=_TIMEOUT
+                    ) as resp:
+                        if resp.status != 200:
+                            logger.warning(f"[WB.get_campaigns_nms] campaign {cid}: HTTP {resp.status}")
+                            continue
+                        data = _json.loads(await resp.text())
+                ctype = int(data.get("type") or 0)
+                params_key = "unitedParams" if ctype == 8 else "params"
+                nms: list[str] = []
+                for p in (data.get(params_key) or []):
+                    for nm in (p.get("nms") or []):
+                        if nm:
+                            nms.append(str(nm))
+                if nms:
+                    result[cid] = nms
+                    logger.info(f"[WB.get_campaigns_nms] кампания {cid} (type={ctype}): {len(nms)} nm_id")
+                else:
+                    logger.warning(f"[WB.get_campaigns_nms] кампания {cid} (type={ctype}): nms пустые")
+            except Exception as e:
+                logger.error(f"[WB.get_campaigns_nms] campaign {cid}: {e}")
+
+        logger.info(f"[WB.get_campaigns_nms] итого: {len(result)}/{len(campaign_ids)} кампаний с nm_id")
+        return result
 
     async def get_campaign_cpm(self, campaign_id: str) -> dict | None:
         """Получить тип, subject_id и текущую CPM-ставку кампании.
