@@ -231,9 +231,12 @@ async def _create_schema() -> None:
         """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS product_costs (
-                wb_article  TEXT PRIMARY KEY,
-                cost        NUMERIC NOT NULL,
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+                id          BIGSERIAL    PRIMARY KEY,
+                mapping_id  BIGINT       REFERENCES product_mapping(id),
+                marketplace TEXT,
+                cost        NUMERIC      NOT NULL,
+                updated_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
+                UNIQUE(mapping_id, marketplace)
             )
         """)
         await conn.execute("""
@@ -527,6 +530,21 @@ async def _create_schema() -> None:
             ON marketplace_shops (chat_id, marketplace, COALESCE(client_id, ''))
         """)
 
+        # product_costs: миграция со старой схемы (wb_article PK) на новую (mapping_id + marketplace)
+        await conn.execute("""
+            ALTER TABLE product_costs
+            ADD COLUMN IF NOT EXISTS mapping_id  BIGINT REFERENCES product_mapping(id)
+        """)
+        await conn.execute("""
+            ALTER TABLE product_costs
+            ADD COLUMN IF NOT EXISTS marketplace  TEXT
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS product_costs_mapping_marketplace_key
+            ON product_costs (mapping_id, marketplace)
+            WHERE mapping_id IS NOT NULL AND marketplace IS NOT NULL
+        """)
+
         # 2. Добавить shop_id в критичные таблицы
         await conn.execute("""
             ALTER TABLE marketplace_stocks
@@ -660,7 +678,7 @@ async def _create_schema() -> None:
             ON user_plans (chat_id, status)
         """)
 
-        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots + multi-shop + orders-shop-id + user_plans)")
+        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots + multi-shop + orders-shop-id + product-costs-v2 + user_plans)")
 
 async def save_project(
     chat_id: int,
