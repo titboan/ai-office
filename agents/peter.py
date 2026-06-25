@@ -885,11 +885,21 @@ class PeterAgent(BaseAgent):
             try:
                 data = await self._collect_data(chat_id, days=_days)
                 adv_data = await self._collect_advanced_data(chat_id, days=_days)
+
+                funnel_note = ""
+                if not adv_data.get("funnel"):
+                    funnel_note = (
+                        "\n\nВОРОНКА: данных в product_funnel_stats нет — НЕ строй воронку "
+                        "из рекламных данных и НЕ придумывай цифры. Скажи пользователю "
+                        "запустить /sync_funnel у Макса, чтобы загрузить реальные данные воронки."
+                    )
+
                 data_str = (
                     f"\n\nБАЗОВЫЕ ДАННЫЕ ({_days} дней):\n"
                     f"{json.dumps(data, ensure_ascii=False, default=str, indent=2)}\n\n"
                     f"РАСШИРЕННЫЕ ДАННЫЕ (тренд, CTR/ROAS, остатки):\n"
                     f"{json.dumps(adv_data, ensure_ascii=False, default=str, indent=2)}"
+                    f"{funnel_note}"
                 )
             except Exception as e:
                 logger.warning(f"[Питер] handle_task: ошибка сбора данных: {e}")
