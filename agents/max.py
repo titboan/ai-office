@@ -1471,6 +1471,7 @@ class MaxAgent(BaseAgent):
 
             if mp == "wb":
                 try:
+                    stats_token = shop.get("statistics_token") or ""
                     client = WBClient(shop["api_token"])
                     ad_stats = await client.get_ad_stats(date_from=date_from_adv_wb, date_to=date_to_adv)
                     prod_count = 0

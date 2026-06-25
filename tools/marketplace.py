@@ -953,10 +953,11 @@ class WBClient:
                     async with session.get(
                         url, headers=headers, params={"id": cid}, timeout=_TIMEOUT
                     ) as resp:
+                        raw = await resp.text()
                         if resp.status != 200:
-                            logger.warning(f"[WB.get_campaigns_nms] campaign {cid}: HTTP {resp.status}")
+                            logger.error(f"[WB.get_campaigns_nms] campaign {cid}: HTTP {resp.status} — {raw[:200]}")
                             continue
-                        data = _json.loads(await resp.text())
+                        data = _json.loads(raw)
                 ctype = int(data.get("type") or 0)
                 params_key = "unitedParams" if ctype == 8 else "params"
                 nms: list[str] = []
@@ -968,7 +969,7 @@ class WBClient:
                     result[cid] = nms
                     logger.info(f"[WB.get_campaigns_nms] кампания {cid} (type={ctype}): {len(nms)} nm_id")
                 else:
-                    logger.warning(f"[WB.get_campaigns_nms] кампания {cid} (type={ctype}): nms пустые")
+                    logger.error(f"[WB.get_campaigns_nms] кампания {cid} (type={ctype}): nms пустые, ответ: {str(data)[:300]}")
             except Exception as e:
                 logger.error(f"[WB.get_campaigns_nms] campaign {cid}: {e}")
 
