@@ -243,7 +243,24 @@ class MaxAgent(BaseAgent):
             pass
         if task.startswith("__"):
             return await self._dispatch_queue_task(task, self._current_chat_id or 0)
-        return await self.think(task, chat_id=0, is_task=True)
+
+        # Маппинг натуральных фраз (от Марты/цепочки) на keyword-команды
+        t = task.lower()
+        chat_id = self._current_chat_id or 0
+        if any(w in t for w in ("отзыв", "review", "pending", "feedback", "модерац")):
+            return await self._dispatch_queue_task("__pending__", chat_id)
+        if any(w in t for w in ("синхрониз", "sync", "заказ", "остатк", "обнов")):
+            return await self._dispatch_queue_task("__sync__", chat_id)
+        if any(w in t for w in ("статус данных", "data_status", "свежесть данных")):
+            return await self._dispatch_queue_task("__data_status__", chat_id)
+        if any(w in t for w in ("маржа", "margin", "рентабельность")):
+            return await self._dispatch_queue_task("__margin__", chat_id)
+        if any(w in t for w in ("товар", "каталог", "артикул", "себестоимость")):
+            return await self._dispatch_queue_task("__products__", chat_id)
+        if any(w in t for w in ("kpi", "рейтинг магазина", "рейтинг продавца", "штраф")):
+            return await self._dispatch_queue_task("__shop_kpi__", chat_id)
+
+        return await self.think(task, chat_id=chat_id, is_task=True)
 
     async def _dispatch_queue_task(self, task: str, chat_id: int) -> str:
         """Dispatch __keyword__ prefixed tasks coming from Marta proxy."""
