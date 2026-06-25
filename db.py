@@ -540,6 +540,10 @@ async def _create_schema() -> None:
             ALTER TABLE marketplace_fin_adv
             ADD COLUMN IF NOT EXISTS shop_id BIGINT NOT NULL DEFAULT 0
         """)
+        await conn.execute("""
+            ALTER TABLE marketplace_orders
+            ADD COLUMN IF NOT EXISTS shop_id BIGINT NOT NULL DEFAULT 0
+        """)
 
         # 3. Заполнить shop_id существующих записей
         await conn.execute("""
@@ -565,6 +569,14 @@ async def _create_schema() -> None:
                  WHERE s.chat_id = mfa.chat_id AND s.marketplace = mfa.marketplace
                  LIMIT 1), 0)
             WHERE mfa.shop_id = 0
+        """)
+        await conn.execute("""
+            UPDATE marketplace_orders mo
+            SET shop_id = COALESCE(
+                (SELECT id FROM marketplace_shops s
+                 WHERE s.chat_id = mo.chat_id AND s.marketplace = mo.marketplace
+                 LIMIT 1), 0)
+            WHERE mo.shop_id = 0
         """)
 
         # 4. Обновить UNIQUE-ограничения: включить shop_id
@@ -648,7 +660,7 @@ async def _create_schema() -> None:
             ON user_plans (chat_id, status)
         """)
 
-        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots + multi-shop + user_plans)")
+        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots + multi-shop + orders-shop-id + user_plans)")
 
 async def save_project(
     chat_id: int,
