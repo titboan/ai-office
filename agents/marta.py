@@ -1218,6 +1218,40 @@ class MartaAgent(BaseAgent):
             reply_to_message_id=update.message.message_id,
         )
 
+    async def cmd_logs(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """/logs [фильтр] — последние ошибки из agent_logs. Например: /logs adv"""
+        from db import get_recent_errors
+
+        hours = 24
+        keyword = context.args[0].lower() if context.args else None
+
+        rows = await get_recent_errors(hours=hours, limit=50)
+
+        if keyword:
+            rows = [r for r in rows if keyword in (r["message"] or "").lower()
+                    or keyword in (r["logger_name"] or "").lower()]
+
+        if not rows:
+            note = f" по запросу «{keyword}»" if keyword else ""
+            await update.message.reply_text(f"✅ Ошибок за последние {hours}ч{note} не найдено.")
+            return
+
+        lines = [f"🔴 **Ошибки за {hours}ч** ({len(rows)} записей):\n"]
+        for r in rows[:15]:
+            ts = r["ts"].strftime("%d.%m %H:%M:%S") if r["ts"] else "?"
+            msg = (r["message"] or "")[:200]
+            lvl = r["level"] or "?"
+            lines.append(f"`{ts}` [{lvl}]\n{msg}")
+            if r.get("exc_text"):
+                lines.append(f"```\n{r['exc_text'][:300]}\n```")
+
+        await _send_rich(
+            self.bot_token, update.effective_chat.id, "\n\n".join(lines),
+            reply_to_message_id=update.message.message_id,
+        )
+
     async def cmd_cancel(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -1496,6 +1530,10 @@ class MartaAgent(BaseAgent):
                     InlineKeyboardButton("📊 Статус очереди", callback_data="mmenu_run:queue_status"),
                     InlineKeyboardButton("📜 История задач",  callback_data="mmenu_run:queue_history"),
                 ],
+                [
+                    InlineKeyboardButton("🔴 Ошибки (24ч)",   callback_data="mmenu_run:logs_all"),
+                    InlineKeyboardButton("📡 Ошибки WB рекл", callback_data="mmenu_run:logs_adv"),
+                ],
                 [InlineKeyboardButton("◀️ Назад",           callback_data="mmenu:back")],
             ],
         ),
@@ -1589,6 +1627,28 @@ class MartaAgent(BaseAgent):
                 await query.message.reply_text(text, parse_mode="HTML")
                 return
 
+            if cmd in ("logs_all", "logs_adv"):
+                from db import get_recent_errors
+                keyword = "adv" if cmd == "logs_adv" else None
+                rows_log = await get_recent_errors(hours=24, limit=50)
+                if keyword:
+                    rows_log = [r for r in rows_log
+                                if keyword in (r["message"] or "").lower()
+                                or "wb" in (r["message"] or "").lower()]
+                if not rows_log:
+                    note = " по WB рекламе" if cmd == "logs_adv" else ""
+                    await query.message.reply_text(
+                        f"✅ Ошибок за 24ч{note} не найдено — всё чисто.", parse_mode="HTML"
+                    )
+                else:
+                    lines = [f"🔴 <b>{'Ошибки WB рекламы' if cmd == 'logs_adv' else 'Ошибки'} (24ч) — {len(rows_log)} записей</b>\n"]
+                    for r in rows_log[:10]:
+                        ts = r["ts"].strftime("%d.%m %H:%M") if r["ts"] else "?"
+                        msg = (r["message"] or "")[:300]
+                        lines.append(f"<code>{ts}</code> [{r['level']}]\n{msg}")
+                    await query.message.reply_text("\n\n".join(lines), parse_mode="HTML")
+                return
+
             # Все остальные команды — передаём агенту
             action = self._MMENU_ACTIONS.get(cmd)
             if not action:
@@ -1614,6 +1674,7 @@ class MartaAgent(BaseAgent):
             BotCommand("menu", "🗂️ Быстрое меню всех команд"),
             BotCommand("status", "Состояние офиса и активные задачи"),
             BotCommand("history", "Последние 10 задач"),
+            BotCommand("logs", "🔴 Ошибки за 24ч (/logs adv — только реклама)"),
             # ── Питер ─────────────────────────────────────────────────────
             BotCommand("report", "📊 Отчёт по продажам"),
             BotCommand("order", "📬 Заказать ли у поставщика (30/60/90 дней)"),
@@ -1899,6 +1960,7 @@ class MartaAgent(BaseAgent):
         self.app.add_handler(CommandHandler("status", self.cmd_status))
         self.app.add_handler(CommandHandler("cancel", self.cmd_cancel))
         self.app.add_handler(CommandHandler("history", self.cmd_history))
+        self.app.add_handler(CommandHandler("logs", self.cmd_logs))
         # ── Proxy-команды Питера ─────────────────────────────────────────
         self.app.add_handler(CommandHandler("report", self.cmd_proxy_report))
         self.app.add_handler(CommandHandler("order", self.cmd_proxy_order))
