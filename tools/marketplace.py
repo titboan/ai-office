@@ -208,7 +208,10 @@ class WBClient:
             article = str(item.get("supplierArticle") or "").strip()
             nm_id = str(item.get("nmId") or "").strip()
             if article and nm_id:
-                result[article.lower()] = nm_id
+                # WB непоследователен: одни артикулы используют ',' другие '.' как разделитель.
+                # Нормализуем к точке чтобы 'ГБ2,5' и 'ГБ2.5' совпадали.
+                key = article.lower().replace(",", ".")
+                result[key] = nm_id
         logger.info(f"[WB.get_nm_id_mapping] маппинг: {len(result)} артикулов → nmId")
         return result
 
@@ -680,42 +683,13 @@ class WBClient:
 
         total_nm = sum(len(r["product_stats"]) for r in results)
         if total_nm == 0 and results:
-            # Fallback: кампании не дают nm через fullstats (типы 4/5/6/9).
-            # Получаем nm_id для каждой кампании через /adv/v0/advert?id= и
-            # распределяем расход равномерно по товарам кампании.
-            campaigns_no_nm = list({r["campaign_id"] for r in results if not r["product_stats"]})
-            logger.info(f"[WB.get_ad_stats] fullstats без nm, запрашиваем nm_id "
-                        f"через /adv/v0/advert для {len(campaigns_no_nm)} кампаний…")
-            campaign_nms = await self.get_campaigns_nms(campaigns_no_nm)
-
-            for r in results:
-                if r["product_stats"]:
-                    continue
-                nms = campaign_nms.get(r["campaign_id"]) or []
-                if not nms:
-                    continue
-                n = len(nms)
-                spend_each = round(r["spend"] / n, 4) if n else 0
-                for nm_id in nms:
-                    r["product_stats"].append({
-                        "product_id":   nm_id,
-                        "views":        r["views"] // n if n else 0,
-                        "clicks":       r["clicks"] // n if n else 0,
-                        "ctr":          r["ctr"],
-                        "spend":        spend_each,
-                        "orders_count": 0,
-                        "estimated":    True,  # пометка: данные расчётные
-                    })
-
-            total_nm = sum(len(r["product_stats"]) for r in results)
-            if total_nm == 0:
-                logger.error(
-                    f"[WB.get_ad_stats] нет nm-данных даже после /adv/v0/advert — "
-                    f"campaign_nms пустой. Проверь токен или campaign detail API."
-                )
-            else:
-                logger.info(f"[WB.get_ad_stats] fallback через /adv/v0/advert: "
-                            f"получили nm для {len(campaign_nms)} кампаний, {total_nm} nm-записей")
+            # WB не возвращает nm-разбивку для кампаний типов 4/5/6/9 через fullstats.
+            # /adv/v0/advert и /adv/v1/promotion/adverts — оба вернули 404 (мертвы с 2025).
+            # Сохраняем только агрегированную статистику по кампании без разбивки по товарам.
+            logger.info(
+                f"[WB.get_ad_stats] кампании типов 4/5/6/9 — nm-разбивка недоступна "
+                f"(WB Ad API v0/v1 не работают). Сохраняем агрегат без product_stats."
+            )
 
         logger.info(f"[WB.get_ad_stats] итого записей: {len(results)}, nm-записей: {total_nm}")
         return results

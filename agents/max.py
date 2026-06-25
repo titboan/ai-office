@@ -1511,7 +1511,7 @@ class MaxAgent(BaseAgent):
                             updated_count = 0
                             async with pool.acquire() as conn:
                                 for row in needs_sync:
-                                    article_key = (row["wb_article"] or "").lower()
+                                    article_key = (row["wb_article"] or "").lower().replace(",", ".")
                                     nm_id = nm_map.get(article_key)
                                     if not nm_id:
                                         logger.error(
