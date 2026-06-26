@@ -5031,44 +5031,38 @@ class MaxAgent(BaseAgent):
         lines.append("\n<i>Для управления кампанией используй /campaigns в боте Макса.</i>")
         return "\n".join(lines)
 
-    async def cmd_campaigns(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/campaigns — управление рекламными кампаниями Ozon с кнопками."""
+    async def _get_campaign_cards(self, chat_id: int) -> list[tuple[str, object]]:
+        """Возвращает карточки кампаний: list[(text, InlineKeyboardMarkup|None)].
+
+        Используется как cmd_campaigns, так и Мартой для отправки через свой бот.
+        """
         from db import get_marketplace_shops
         from tools.marketplace import OzonPerformanceClient
 
-        chat_id = update.effective_user.id
         shops = await get_marketplace_shops(chat_id)
         ozon_shops = [s for s in shops if s["marketplace"] == "ozon" and s.get("ozon_client_id") and s.get("ozon_perf_secret")]
         if not ozon_shops:
-            await update.message.reply_text(
-                "⚠️ Нет Ozon-магазинов с Performance API.\nДобавь через /add_shop ozon.",
-                parse_mode="HTML",
-            )
-            return
+            return [("⚠️ Нет Ozon-магазинов с Performance API.\nДобавь через /add_shop ozon.", None)]
 
-        await update.message.reply_text("⏳ Загружаю кампании…")
         redis = await self._get_redis()
-
-        STATE_LABEL = {
+        STATE_ICON = {
             "CAMPAIGN_STATE_RUNNING":  "▶️",
             "CAMPAIGN_STATE_STOPPED":  "⏸️",
             "CAMPAIGN_STATE_INACTIVE": "⏸️",
             "CAMPAIGN_STATE_FINISHED": "✅",
         }
-
+        cards = []
         for shop in ozon_shops:
             client = OzonPerformanceClient(shop["ozon_client_id"], shop["ozon_perf_secret"], redis)
             campaigns = await client.get_campaigns()
             if not campaigns:
                 continue
-
             shop_id   = shop["id"]
             shop_name = shop.get("shop_name") or "Ozon"
-
             for c in campaigns[:10]:
-                state  = c["state"]
-                icon   = STATE_LABEL.get(state, "❓")
-                is_active = (state == "CAMPAIGN_STATE_RUNNING")
+                state      = c["state"]
+                icon       = STATE_ICON.get(state, "❓")
+                is_active  = (state == "CAMPAIGN_STATE_RUNNING")
                 budget_str = f"\nБюджет: {c['budget']:,.0f}₽/день" if c["budget"] else ""
                 text = (
                     f"🏪 <b>{shop_name}</b>\n"
@@ -5085,49 +5079,61 @@ class MaxAgent(BaseAgent):
                     ]])
                 else:
                     kb = None
+                cards.append((text, kb))
 
-                await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+        if not cards:
+            cards = [("📭 Кампаний нет или Performance API не настроен.", None)]
+        return cards
 
-    async def _handle_camp_callback(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
-        """Обработка кнопок camp:pause/activate."""
-        query = update.callback_query
-        await query.answer()
-        # Формат: camp:{action}:{shop_id}:{campaign_id}
-        parts = query.data.split(":", 3)
-        if len(parts) != 4:
-            return
-        _, action, shop_id_str, campaign_id = parts
-        chat_id = query.from_user.id
-
+    async def _execute_camp_action(self, shop_id_str: str, action: str, campaign_id: str, chat_id: int) -> tuple[bool, str]:
+        """Выполнить действие над кампанией Ozon. Возвращает (ok, result_label)."""
         from db import get_marketplace_shops
         from tools.marketplace import OzonPerformanceClient
 
         shops = await get_marketplace_shops(chat_id)
         shop  = next((s for s in shops if str(s["id"]) == shop_id_str), None)
         if not shop or not shop.get("ozon_client_id"):
-            await query.edit_message_text(query.message.text + "\n\n❌ Магазин не найден.", parse_mode="HTML")
-            return
+            return False, "❌ Магазин не найден"
 
         redis = await self._get_redis()
         client = OzonPerformanceClient(shop["ozon_client_id"], shop["ozon_perf_secret"], redis)
 
         if action == "pause":
             ok = await client.pause_campaign(campaign_id)
-            result_label = "⏸️ Поставлена на паузу" if ok else "❌ Ошибка паузы"
+            label = "⏸️ Поставлена на паузу" if ok else "❌ Ошибка паузы"
         elif action == "activate":
             ok = await client.activate_campaign(campaign_id)
-            result_label = "▶️ Запущена" if ok else "❌ Ошибка запуска"
+            label = "▶️ Запущена" if ok else "❌ Ошибка запуска"
         else:
-            return
+            return False, "❌ Неизвестное действие"
 
+        logger.info(f"[Макс/camp] chat={chat_id} action={action} campaign={campaign_id} ok={ok}")
+        return ok, label
+
+    async def cmd_campaigns(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/campaigns — управление рекламными кампаниями Ozon с кнопками."""
+        chat_id = update.effective_user.id
+        await update.message.reply_text("⏳ Загружаю кампании…")
+        cards = await self._get_campaign_cards(chat_id)
+        for text, kb in cards:
+            await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+
+    async def _handle_camp_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Обработка кнопок camp:pause/activate (Max's bot)."""
+        query = update.callback_query
+        await query.answer()
+        parts = query.data.split(":", 3)
+        if len(parts) != 4:
+            return
+        _, action, shop_id_str, campaign_id = parts
+        _, label = await self._execute_camp_action(shop_id_str, action, campaign_id, query.from_user.id)
         await query.edit_message_text(
-            query.message.text + f"\n\n{result_label}",
+            query.message.text + f"\n\n{label}",
             parse_mode="HTML",
             reply_markup=None,
         )
-        logger.info(f"[Макс/camp] chat={chat_id} action={action} campaign={campaign_id} ok={ok}")
 
     async def _bid_adjust_text(self, chat_id: int) -> str:
         suggestions = await self._collect_bid_suggestions(chat_id)
