@@ -61,6 +61,12 @@ _CONTINUE_PROJECT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ── Детектирование «покажи остальные» — продолжение алерта остатков ──────────
+_SHOW_MORE_RE = re.compile(
+    r"остальн|покажи\s+(?:все|всё|ещё)|показать\s+(?:все|всё)|следующ|ещё\s+позиц|все\s+позиц",
+    re.IGNORECASE,
+)
+
 
 def _extract_project_name(text: str) -> str:
     """Извлечь название проекта из текста запроса.
@@ -597,6 +603,22 @@ class MartaAgent(BaseAgent):
                     proj_list = "(нет сохранённых проектов)"
                 await reply_func(f"Проект '{proj_name}' не найден. Доступные проекты:\n{proj_list}")
                 return
+
+        # ── «Остальные покажи» — продолжение алерта остатков ─────────────────
+        if _SHOW_MORE_RE.search(user_text):
+            overflow_raw = await self._redis_get(f"stock_overflow:{chat_id}")
+            if overflow_raw:
+                import json as _json
+                from telegram import Bot as _TGBot
+                try:
+                    overflow_items = _json.loads(overflow_raw)
+                    await self._redis_set(f"stock_overflow:{chat_id}", "", ttl=1)
+                    text = "📋 <b>Ещё позиции по остаткам:</b>\n\n" + "\n\n".join(overflow_items)
+                    tg_bot = _TGBot(token=self.bot_token)
+                    await tg_bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+                    return
+                except Exception as _e:
+                    logger.warning(f"[Марта] stock_overflow parse error: {_e}")
 
         # ── Проверяем нужна ли цепочка агентов ───────────────────────────────
         if not skip_chain:

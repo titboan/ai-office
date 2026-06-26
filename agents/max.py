@@ -4326,8 +4326,10 @@ class MaxAgent(BaseAgent):
     async def _check_stock_alerts(self, chat_id: int, *, deduplicate: bool = False) -> None:
         """Проверяет остатки и шлёт алерт если stock_days < STOCK_ALERT_DAYS_THRESHOLD или stock = 0.
 
+        Учитывает товары в пути (in_transit). Сохраняет overflow в Redis для «Остальные покажи».
         deduplicate=True: пропускает товары, по которым алерт уже отправлялся сегодня (Redis TTL 23 ч).
         """
+        import json as _json
         from config import config as _cfg
         import datetime
         threshold   = getattr(_cfg, "STOCK_ALERT_DAYS_THRESHOLD", 21)
@@ -4335,6 +4337,7 @@ class MaxAgent(BaseAgent):
         safety_days = getattr(_cfg, "SUPPLY_SAFETY_STOCK_DAYS",    14)
         try:
             from db import get_pool
+            from telegram import Bot as _TGBot
             pool = await get_pool()
             async with pool.acquire() as conn:
                 rows = await conn.fetch("""
@@ -4342,11 +4345,17 @@ class MaxAgent(BaseAgent):
                            COALESCE(m.display_name, s.product_id) AS name,
                            SUM(s.stock)::int AS total_stock,
                            COALESCE(
+                               (SELECT qty FROM marketplace_in_transit it
+                                WHERE it.chat_id = $1
+                                  AND it.marketplace = s.marketplace
+                                  AND it.product_id = s.product_id
+                                LIMIT 1), 0
+                           )::int AS in_transit,
+                           COALESCE(
                                (SELECT SUM(o.quantity) / 14.0
                                 FROM marketplace_orders o
                                 WHERE o.chat_id = $1
                                   AND o.marketplace = s.marketplace
-                                  -- marketplace_stocks хранит ozon_offer_id, marketplace_orders — ozon_sku
                                   AND o.product_id  = CASE WHEN s.marketplace = 'ozon'
                                                             THEN COALESCE(m.ozon_sku, s.product_id)
                                                             ELSE s.product_id END
@@ -4363,43 +4372,64 @@ class MaxAgent(BaseAgent):
                 """, chat_id)
 
             today = datetime.date.today()
-            alerts = []
+            critical_items: list[str] = []
+            low_items: list[str] = []
+
             for r in rows:
-                stock = int(r["total_stock"] or 0)
-                vel   = float(r["daily_velocity"] or 0)
-                days_left = (stock / vel) if vel > 0 else (999 if stock > 0 else 0)
-                mp_label  = "🟣 WB" if r["marketplace"] == "wb" else "🔵 Ozon"
+                stock      = int(r["total_stock"] or 0)
+                in_transit = int(r["in_transit"] or 0)
+                vel        = float(r["daily_velocity"] or 0)
+                days_left  = (stock / vel) if vel > 0 else (999 if stock > 0 else 0)
+                mp_label   = "🟣 WB" if r["marketplace"] == "wb" else "🔵 Ozon"
 
                 if stock == 0:
                     severity = "critical"
                     if vel > 0:
-                        qty_to_order = int((lead_time + safety_days) * vel)
+                        raw_order    = int((lead_time + safety_days) * vel)
+                        qty_to_order = max(0, raw_order - in_transit)
+                        transit_part = f"\n  🚚 В пути: <b>{in_transit} шт</b> — вычтено из заказа" if in_transit > 0 else ""
+                        order_note   = f" <i>(с учётом {in_transit} в пути)</i>" if in_transit > 0 else f" <i>({lead_time} дн доставка + {safety_days} дн запас)</i>"
                         line = (
                             f"{mp_label} <b>{r['name']}</b>\n"
-                            f"  ❌ Нет остатков (продажи ~{vel:.1f} шт/день)\n"
-                            f"  🚚 Заказать сейчас: <b>{qty_to_order} шт</b>"
+                            f"  ❌ Нет остатков · ~{vel:.1f} шт/день"
+                            f"{transit_part}\n"
+                            f"  📦 Заказать сейчас: <b>{qty_to_order} шт</b>{order_note}"
                         )
                     else:
                         line = f"{mp_label} <b>{r['name']}</b> — ❌ нет остатков, продаж нет"
+                    target_list = critical_items
+
                 elif days_left < threshold:
-                    severity = "low"
+                    severity      = "low"
                     days_to_order = max(0, int(days_left) - lead_time)
                     stockout_date = today + datetime.timedelta(days=int(days_left))
                     order_by_date = today + datetime.timedelta(days=days_to_order)
-                    qty_to_order  = int((lead_time + safety_days) * vel) if vel > 0 else 0
-                    urgency = "❗ Заказать сейчас" if days_to_order == 0 else f"🗓 Заказать до {order_by_date.strftime('%d.%m')}"
-                    if qty_to_order > 0:
+                    raw_order     = int((lead_time + safety_days) * vel) if vel > 0 else 0
+                    qty_to_order  = max(0, raw_order - in_transit)
+                    urgency       = "❗ Заказать сейчас" if days_to_order == 0 else f"🗓 Заказать до {order_by_date.strftime('%d.%m')}"
+                    transit_part  = f"\n  🚚 В пути: <b>{in_transit} шт</b> — вычтено из заказа" if in_transit > 0 else ""
+
+                    if raw_order > 0 and in_transit >= raw_order:
                         line = (
                             f"{mp_label} <b>{r['name']}</b>\n"
-                            f"  📦 Остаток: {stock} шт → ~{int(days_left)} дн.\n"
-                            f"  📊 Продажи: ~{vel:.1f} шт/день · стокаут {stockout_date.strftime('%d.%m')}\n"
-                            f"  {urgency}: <b>{qty_to_order} шт</b>"
+                            f"  📦 {stock} шт · ~{int(days_left)} дн · стокаут {stockout_date.strftime('%d.%m')}\n"
+                            f"  🚚 В пути {in_transit} шт — покроет потребность ✅"
+                        )
+                    elif qty_to_order > 0:
+                        order_note = f" <i>(с учётом {in_transit} в пути)</i>" if in_transit > 0 else ""
+                        line = (
+                            f"{mp_label} <b>{r['name']}</b>\n"
+                            f"  📦 {stock} шт · ~{int(days_left)} дн · стокаут {stockout_date.strftime('%d.%m')}\n"
+                            f"  📊 ~{vel:.1f} шт/день"
+                            f"{transit_part}\n"
+                            f"  {urgency}: <b>{qty_to_order} шт</b>{order_note}"
                         )
                     else:
                         line = (
                             f"{mp_label} <b>{r['name']}</b>\n"
-                            f"  📦 Остаток: {stock} шт → ~{int(days_left)} дн. (нет данных о продажах)"
+                            f"  📦 {stock} шт · ~{int(days_left)} дн (нет данных о продажах)"
                         )
+                    target_list = low_items
                 else:
                     continue
 
@@ -4409,17 +4439,49 @@ class MaxAgent(BaseAgent):
                         continue
                     await self._redis_set(rkey, "1", ttl=23 * 3600)
 
-                alerts.append(line)
+                target_list.append(line)
 
-            if not alerts:
+            all_items = critical_items + low_items
+            if not all_items:
                 return
 
-            header = "⚠️ <b>Алерт остатков:</b>\n\n"
-            text = header + "\n\n".join(alerts[:10])
-            if len(alerts) > 10:
-                text += f"\n\n…и ещё {len(alerts) - 10} позиций"
-            await self.app.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
-            logger.info(f"[Макс/stock_alerts] chat={chat_id} алертов: {len(alerts)}")
+            # Первые 8 позиций — в основное сообщение, остальные — в Redis для «Остальные покажи»
+            FIRST_N = 8
+            visible  = all_items[:FIRST_N]
+            overflow = all_items[FIRST_N:]
+
+            if overflow:
+                await self._redis_set(
+                    f"stock_overflow:{chat_id}",
+                    _json.dumps(overflow, ensure_ascii=False),
+                    ttl=24 * 3600,
+                )
+
+            # Строим текст с секциями
+            lines: list[str] = []
+            if critical_items:
+                critical_visible = [x for x in visible if x in critical_items]
+                if critical_visible:
+                    lines.append("🔴 <b>Нет остатков — срочная поставка:</b>\n")
+                    lines.extend(critical_visible)
+            if low_items:
+                low_visible = [x for x in visible if x in low_items]
+                if low_visible:
+                    if critical_items and any(x in critical_items for x in visible):
+                        lines.append("")
+                    lines.append("⚠️ <b>Заканчивается — нужна поставка:</b>\n")
+                    lines.extend(low_visible)
+
+            lines.append(f"\n<i>Расчёт: {lead_time} дн доставка + {safety_days} дн запас безопасности</i>")
+
+            if overflow:
+                lines.append(f"\n📋 <i>Ещё {len(overflow)} позиций — напиши «Остальные покажи»</i>")
+
+            text = "\n\n".join(lines)
+
+            marta_bot = _TGBot(token=_cfg.MARTA_BOT_TOKEN)
+            await marta_bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            logger.info(f"[Макс/stock_alerts] chat={chat_id} алертов: {len(all_items)} (показано: {len(visible)}, overflow: {len(overflow)})")
         except Exception as e:
             logger.error(f"[Макс/stock_alerts] ошибка: {e}", exc_info=True)
 
