@@ -2381,7 +2381,11 @@ class OzonClient:
             return False
 
     async def get_shop_kpi(self) -> dict:
-        """Рейтинг продавца Ozon через /v1/rating/summary."""
+        """Рейтинг продавца Ozon через /v1/rating/summary.
+
+        Реальная структура ответа: {"groups": [{"group_name": "...", "items": [...]}]}
+        Каждый item: {"current_value": float, "name": str, "value_type": str, ...}
+        """
         import json as _json
         url = f"{self._BASE}/v1/rating/summary"
         try:
@@ -2389,42 +2393,44 @@ class OzonClient:
                 async with session.post(url, headers=self._headers(), json={}, timeout=_TIMEOUT) as resp:
                     raw = await resp.text()
                     if resp.status != 200:
-                        logger.error(f"[Ozon.get_shop_kpi] HTTP {resp.status}: {raw[:200]}")
+                        logger.error(f"[Ozon.get_shop_kpi] HTTP {resp.status}: {raw[:300]}")
                         return {}
                     data = _json.loads(raw)
-            logger.info(f"[Ozon.get_shop_kpi] raw: {raw[:400]}")
-            # Ozon может вернуть данные в data["result"] или напрямую в data
-            result = data.get("result") or data
-            groups_list = result.get("groups") or data.get("groups") or []
-            groups = {g.get("key"): g for g in groups_list}
-            logger.info(f"[Ozon.get_shop_kpi] group keys: {list(groups.keys())}")
 
-            def _gval(g: dict) -> float:
-                return float(g.get("value") or g.get("current_value") or g.get("score") or 0)
+            groups_list = data.get("groups") or (data.get("result") or {}).get("groups") or []
 
-            rating_val = (
-                result.get("total_score") or result.get("rating") or
-                data.get("total_score") or data.get("rating") or 0
+            # Собираем все items плоским списком с привязкой к group_name
+            all_items: list[dict] = []
+            for g in groups_list:
+                gname = (g.get("group_name") or "").lower()
+                for item in (g.get("items") or []):
+                    all_items.append({**item, "_group": gname})
+
+            def _first_val(keywords: list[str], field: str = "current_value") -> float:
+                """Первый item у которого group_name или name содержит любое из keywords."""
+                for item in all_items:
+                    text = item.get("_group", "") + " " + (item.get("name") or "").lower()
+                    if any(kw in text for kw in keywords):
+                        return float(item.get(field) or item.get("current_value") or 0)
+                return 0.0
+
+            rating_val   = _first_val(["оценка", "рейтинг", "review"])
+            cancellation = _first_val(["отмен", "cancel"])
+            return_pct   = _first_val(["возврат", "return"])
+            # штрафы часто целые числа
+            penalty      = int(_first_val(["штраф", "нарушен", "penalty", "fine"]))
+
+            logger.info(
+                f"[Ozon.get_shop_kpi] rating={rating_val} cancel={cancellation} "
+                f"return={return_pct} penalty={penalty} "
+                f"groups={[g.get('group_name') for g in groups_list]}"
             )
-            # Ключи групп могут быть cancellation_rate/cancellations/cancel и т.п.
-            cancellation = _gval(
-                groups.get("cancellation_rate") or groups.get("cancellations") or
-                groups.get("cancel") or {}
-            )
-            return_pct = _gval(
-                groups.get("return_rate") or groups.get("returns") or
-                groups.get("return") or {}
-            )
-            penalty = int(_gval(
-                groups.get("penalty") or groups.get("fines") or
-                groups.get("fine") or {}
-            ))
             return {
-                "rating":           float(rating_val),
-                "return_pct":       float(return_pct),
-                "cancellation_pct": float(cancellation),
+                "rating":           rating_val,
+                "return_pct":       return_pct,
+                "cancellation_pct": cancellation,
                 "penalty_count":    penalty,
-                "extra_data":       result,
+                "extra_data":       {"groups": groups_list},
             }
         except Exception as e:
             logger.error(f"[Ozon.get_shop_kpi] {e}", exc_info=True)
