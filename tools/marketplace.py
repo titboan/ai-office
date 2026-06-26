@@ -2221,6 +2221,128 @@ class OzonClient:
         logger.info(f"[Ozon.get_promotions] {len(results)} акций")
         return results
 
+    async def get_available_promotions(self) -> list[dict]:
+        """Доступные акции для вступления через /v1/actions."""
+        import json as _json
+        url = f"{self._BASE}/v1/actions"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self._headers(), timeout=_TIMEOUT) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[Ozon.get_available_promotions] HTTP {resp.status}: {raw[:200]}")
+                        return []
+                    data = _json.loads(raw)
+            results = []
+            for a in (data.get("result") or {}).get("actions", []):
+                action_id = str(a.get("id", ""))
+                if not action_id:
+                    continue
+                results.append({
+                    "action_id":    action_id,
+                    "title":        a.get("title") or "",
+                    "discount_pct": float(a.get("discount_value") or 0),
+                    "start_date":   (a.get("date_start") or "")[:10],
+                    "end_date":     (a.get("date_end") or "")[:10],
+                    "freeze_date":  (a.get("freeze_date") or "")[:10],
+                    "order_amount": int(a.get("potential_products_count") or 0),
+                })
+            logger.info(f"[Ozon.get_available_promotions] {len(results)} акций")
+            return results
+        except Exception as e:
+            logger.error(f"[Ozon.get_available_promotions] {e}", exc_info=True)
+            return []
+
+    async def get_action_products(self, action_id: str) -> list[dict]:
+        """Товары, доступные для вступления в акцию, через /v1/actions/products."""
+        import json as _json
+        url  = f"{self._BASE}/v1/actions/products"
+        page = 0
+        results = []
+        try:
+            async with aiohttp.ClientSession() as session:
+                while True:
+                    async with session.post(
+                        url,
+                        headers=self._headers(),
+                        json={"action_id": int(action_id), "limit": 100, "offset": page * 100},
+                        timeout=_TIMEOUT,
+                    ) as resp:
+                        raw = await resp.text()
+                        if resp.status != 200:
+                            logger.error(f"[Ozon.get_action_products] HTTP {resp.status}: {raw[:200]}")
+                            break
+                        data = _json.loads(raw)
+                    items = (data.get("result") or {}).get("products") or []
+                    for it in items:
+                        results.append({
+                            "product_id":    str(it.get("id", "")),
+                            "offer_id":      str(it.get("offer_id", "")),
+                            "name":          it.get("name") or "",
+                            "price":         float(it.get("price") or 0),
+                            "action_price":  float(it.get("action_price") or 0),
+                            "max_action_price": float(it.get("max_action_price") or 0),
+                            "add_mode":      it.get("add_mode") or "",
+                        })
+                    total = (data.get("result") or {}).get("total") or 0
+                    if len(results) >= total or not items:
+                        break
+                    page += 1
+        except Exception as e:
+            logger.error(f"[Ozon.get_action_products] {e}", exc_info=True)
+        return results
+
+    async def join_promotion(self, action_id: str, products: list[dict]) -> tuple[int, int]:
+        """Вступить в акцию. products = [{"product_id": int, "action_price": float}, ...].
+
+        Возвращает (added_count, rejected_count).
+        """
+        import json as _json
+        url = f"{self._BASE}/v1/actions/products/activate"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    headers=self._headers(),
+                    json={"action_id": int(action_id), "products": products},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[Ozon.join_promotion] HTTP {resp.status}: {raw[:200]}")
+                        return 0, len(products)
+                    data = _json.loads(raw)
+            result = data.get("result") or {}
+            added    = int(result.get("product_count") or 0)
+            rejected = int(result.get("rejected") or 0)
+            logger.info(f"[Ozon.join_promotion] action={action_id} added={added} rejected={rejected}")
+            return added, rejected
+        except Exception as e:
+            logger.error(f"[Ozon.join_promotion] {e}", exc_info=True)
+            return 0, len(products)
+
+    async def exit_promotion(self, action_id: str, product_ids: list[int]) -> bool:
+        """Выйти из акции для указанных товаров через /v1/actions/products/deactivate."""
+        import json as _json
+        url = f"{self._BASE}/v1/actions/products/deactivate"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    headers=self._headers(),
+                    json={"action_id": int(action_id), "product_ids": product_ids},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[Ozon.exit_promotion] HTTP {resp.status}: {raw[:200]}")
+                        return False
+                    logger.info(f"[Ozon.exit_promotion] action={action_id} products={len(product_ids)}")
+                    return True
+        except Exception as e:
+            logger.error(f"[Ozon.exit_promotion] {e}", exc_info=True)
+            return False
+
     async def get_shop_kpi(self) -> dict:
         """Рейтинг продавца Ozon через /v1/rating/summary."""
         import json as _json

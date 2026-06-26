@@ -5153,6 +5153,159 @@ class MaxAgent(BaseAgent):
         lines.append("\n<i>Для применения: /bid_adjust (кнопки выйдут через Марту в Phase 2).</i>")
         return "\n".join(lines)
 
+    async def _analyze_promotion_margin(self, chat_id: int, shop, action: dict) -> list[dict]:
+        """Расчёт влияния акции на маржу по каждому товару.
+
+        Возвращает список с полями: offer_id, name, price, action_price,
+        cost, gross_margin_now, gross_margin_promo, margin_delta_pp, recommend_join.
+        """
+        from db import get_pool
+        from tools.marketplace import OzonClient
+
+        client = OzonClient(shop["api_token"], shop.get("client_id") or "")
+        products = await client.get_action_products(action["action_id"])
+        if not products:
+            return []
+
+        offer_ids = [p["offer_id"] for p in products if p["offer_id"]]
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            cost_rows = await conn.fetch("""
+                SELECT pm.ozon_offer_id, pc.cost
+                FROM product_mapping pm
+                JOIN product_costs pc ON pc.mapping_id = pm.id AND pc.marketplace = 'ozon'
+                WHERE pm.chat_id = $1 AND pm.ozon_offer_id = ANY($2::text[])
+            """, chat_id, offer_ids)
+
+        costs = {r["ozon_offer_id"]: float(r["cost"]) for r in cost_rows}
+
+        results = []
+        for p in products[:20]:
+            oid   = p["offer_id"]
+            price = p["price"] or p["action_price"] or 0
+            aprx  = p["action_price"] or p["max_action_price"] or 0
+            cost  = costs.get(oid, 0)
+            if price <= 0 or aprx <= 0:
+                continue
+
+            # Комиссия Ozon ≈ 15% (грубая оценка; точная — из финотчёта)
+            OZON_FEE = 0.15
+            payout_now   = price  * (1 - OZON_FEE)
+            payout_promo = aprx   * (1 - OZON_FEE)
+            margin_now   = (payout_now   - cost) / payout_now   * 100 if payout_now   > 0 else 0
+            margin_promo = (payout_promo - cost) / payout_promo * 100 if payout_promo > 0 else 0
+            delta        = round(margin_promo - margin_now, 1)
+
+            results.append({
+                "offer_id":          oid,
+                "name":              p["name"][:50] or oid,
+                "price":             price,
+                "action_price":      aprx,
+                "cost":              cost,
+                "gross_margin_now":  round(margin_now, 1),
+                "gross_margin_promo":round(margin_promo, 1),
+                "margin_delta_pp":   delta,
+                "recommend_join":    delta > -15 and margin_promo > 10,
+            })
+        return results
+
+    async def cmd_promotions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/promotions — доступные акции Ozon с анализом маржи."""
+        from db import get_marketplace_shops
+        from tools.marketplace import OzonClient
+
+        chat_id = update.effective_user.id
+        shops   = await get_marketplace_shops(chat_id)
+        ozon    = next((s for s in shops if s["marketplace"] == "ozon"), None)
+        if not ozon:
+            await update.message.reply_text("⚠️ Магазин Ozon не подключён.", parse_mode="HTML")
+            return
+
+        await update.message.reply_text("⏳ Загружаю акции Ozon…")
+        client  = OzonClient(ozon["api_token"], ozon.get("client_id") or "")
+        actions = await client.get_available_promotions()
+
+        if not actions:
+            await update.message.reply_text("📭 Доступных акций нет.", parse_mode="HTML")
+            return
+
+        for a in actions[:6]:
+            margin_items = await self._analyze_promotion_margin(chat_id, ozon, a)
+            if margin_items:
+                avg_delta = sum(i["margin_delta_pp"] for i in margin_items) / len(margin_items)
+                join_all  = all(i["recommend_join"] for i in margin_items)
+                rec_icon  = "✅" if join_all else ("⚠️" if avg_delta > -20 else "❌")
+                rec_text  = "Участвовать выгодно" if join_all else (
+                    f"Маржа снизится на {abs(avg_delta):.0f} п.п. — взвесьте объём")
+
+                lines = [
+                    f"🎁 <b>{a['title']}</b>",
+                    f"Скидка: <b>{a['discount_pct']:.0f}%</b>  ·  {a['start_date']} — {a['end_date']}",
+                    "",
+                ]
+                for it in margin_items[:5]:
+                    lines.append(
+                        f"• {it['name']}\n"
+                        f"  {it['price']:,.0f}₽ → {it['action_price']:,.0f}₽  "
+                        f"| Маржа: {it['gross_margin_now']:.0f}% → {it['gross_margin_promo']:.0f}% "
+                        f"({it['margin_delta_pp']:+.0f} п.п.)"
+                    )
+                lines += ["", f"{rec_icon} Рекомендация: {rec_text}"]
+                text = "\n".join(lines)
+            else:
+                text = f"🎁 <b>{a['title']}</b>\nСкидка: {a['discount_pct']:.0f}%  ·  {a['start_date']} — {a['end_date']}\n\n<i>Данных о себестоимости нет — расчёт маржи недоступен</i>"
+
+            shop_id  = ozon["id"]
+            act_id   = a["action_id"]
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Войти в акцию", callback_data=f"promo:join:{shop_id}:{act_id}"),
+                InlineKeyboardButton("❌ Пропустить",    callback_data=f"promo:skip:{shop_id}:{act_id}"),
+            ]])
+            await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+    async def _handle_promo_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка кнопок promo:join/skip."""
+        query = update.callback_query
+        await query.answer()
+        parts = query.data.split(":", 3)
+        if len(parts) != 4:
+            return
+        _, action_str, shop_id_str, act_id = parts
+        chat_id = query.from_user.id
+
+        if action_str == "skip":
+            await query.edit_message_text(
+                query.message.text + "\n\n⏭️ Акция пропущена", parse_mode="HTML", reply_markup=None
+            )
+            return
+
+        from db import get_marketplace_shops
+        from tools.marketplace import OzonClient
+
+        shops = await get_marketplace_shops(chat_id)
+        shop  = next((s for s in shops if str(s["id"]) == shop_id_str), None)
+        if not shop:
+            await query.edit_message_text(query.message.text + "\n\n❌ Магазин не найден", parse_mode="HTML")
+            return
+
+        client   = OzonClient(shop["api_token"], shop.get("client_id") or "")
+        products = await client.get_action_products(act_id)
+        if not products:
+            await query.edit_message_text(query.message.text + "\n\n❌ Нет товаров для вступления", parse_mode="HTML")
+            return
+
+        items = [{"product_id": int(p["product_id"]), "action_price": p["action_price"]} for p in products if p["product_id"]]
+        added, rejected = await client.join_promotion(act_id, items)
+
+        label = f"✅ Вступили в акцию: {added} товаров"
+        if rejected:
+            label += f", отклонено: {rejected}"
+        await query.edit_message_text(
+            query.message.text + f"\n\n{label}", parse_mode="HTML", reply_markup=None
+        )
+        logger.info(f"[Макс/promo] chat={chat_id} action={act_id} added={added} rejected={rejected}")
+
     async def cmd_bid_adjust(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -5684,7 +5837,11 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(
             CallbackQueryHandler(self._handle_camp_callback, pattern=r"^camp:")
         )
-        self.app.add_handler(CommandHandler("campaigns", self.cmd_campaigns))
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_promo_callback, pattern=r"^promo:")
+        )
+        self.app.add_handler(CommandHandler("campaigns",  self.cmd_campaigns))
+        self.app.add_handler(CommandHandler("promotions", self.cmd_promotions))
 
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_edit_reply),

@@ -1501,6 +1501,7 @@ class MartaAgent(BaseAgent):
                 ],
                 [
                     InlineKeyboardButton("📣 Кампании Ozon",   callback_data="mmenu_run:campaigns"),
+                    InlineKeyboardButton("🎁 Акции Ozon",      callback_data="mmenu_run:promotions"),
                 ],
                 [
                     InlineKeyboardButton("📐 Маржа товара",   callback_data="mmenu_run:margin"),
@@ -1738,7 +1739,8 @@ class MartaAgent(BaseAgent):
             BotCommand("shops", "🏪 Мои магазины"),
             BotCommand("seo_check", "🔻 Падение позиций ключей"),
             BotCommand("bid_adjust", "🎯 Рекомендации по ставкам"),
-            BotCommand("campaigns", "📣 Управление кампаниями Ozon"),
+            BotCommand("campaigns",  "📣 Управление кампаниями Ozon"),
+            BotCommand("promotions", "🎁 Акции Ozon — анализ маржи"),
             BotCommand("margin", "📐 Проверить маржу товара"),
             BotCommand("apply_prices", "✅ Применить рекомендованные цены"),
             # ── Другие агенты ─────────────────────────────────────────────
@@ -1879,6 +1881,28 @@ class MartaAgent(BaseAgent):
 
     async def cmd_proxy_bid_adjust(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "max", "__bid_adjust__")
+
+    async def cmd_proxy_promotions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показывает акции Ozon с анализом маржи через Марту."""
+        chat_id = update.effective_chat.id
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent is None:
+            await self._proxy_cmd(update, context, "max", "__promotions__")
+            return
+        await update.message.reply_text("⏳ Загружаю акции Ozon…")
+        await max_agent.cmd_promotions.__func__(max_agent, update, context)
+
+    async def _handle_promo_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка кнопок promo: через бот Марты."""
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent._handle_promo_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(
+                query.message.text + "\n\n❌ Агент Макс недоступен", parse_mode="HTML"
+            )
 
     async def cmd_proxy_campaigns(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Показывает кампании Ozon с кнопками через Марту (прямой вызов без очереди)."""
@@ -2064,9 +2088,13 @@ class MartaAgent(BaseAgent):
         self.app.add_handler(CommandHandler("shops", self.cmd_proxy_shops))
         self.app.add_handler(CommandHandler("seo_check", self.cmd_proxy_seo_check))
         self.app.add_handler(CommandHandler("bid_adjust", self.cmd_proxy_bid_adjust))
-        self.app.add_handler(CommandHandler("campaigns",  self.cmd_proxy_campaigns))
+        self.app.add_handler(CommandHandler("campaigns",   self.cmd_proxy_campaigns))
+        self.app.add_handler(CommandHandler("promotions",  self.cmd_proxy_promotions))
         self.app.add_handler(
             CallbackQueryHandler(self._handle_camp_callback, pattern=r"^camp:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_promo_callback, pattern=r"^promo:")
         )
         self.app.add_handler(CommandHandler("margin", self.cmd_proxy_margin))
         self.app.add_handler(CommandHandler("apply_prices", self.cmd_proxy_apply_prices))
