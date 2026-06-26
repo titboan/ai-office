@@ -49,7 +49,10 @@ async def _request(
                     await asyncio.sleep(_RETRY_DELAY * attempt)
                     continue
                 raw = await resp.text()
-                logger.error(f"[marketplace] {label} HTTP {resp.status}: {raw[:200]}")
+                if resp.status == 403:
+                    logger.warning(f"[marketplace] {label} HTTP 403: {raw[:200]}")
+                else:
+                    logger.error(f"[marketplace] {label} HTTP {resp.status}: {raw[:200]}")
                 return None
         except asyncio.TimeoutError:
             logger.error(f"[marketplace] timeout: {method} {url}")
