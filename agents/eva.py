@@ -648,11 +648,11 @@ class EvaAgent(BaseAgent):
 
     def _help_text(self) -> str:
         return (
-            "📰 <b>Ева</b> — личный секретарь\n\n"
+            "📰 **Ева** — личный секретарь\n\n"
             "Каждый день в 09:30 МСК автоматически:\n"
             "• дайджест Telegram-каналов → в этот чат\n"
             "• дайджест почты → в этот чат\n\n"
-            "📌 <b>Команды:</b>\n"
+            "📌 **Команды:**\n"
             "/digest [3d|12h|YYYY-MM-DD] — дайджест каналов прямо сейчас\n"
             "/email_digest [Nd] — дайджест почты прямо сейчас\n"
             "/sort_emails [Nd] — разложить письма по папкам (Eva-Urgent/Work/Markets/Newsletter)\n"

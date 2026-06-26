@@ -1517,20 +1517,20 @@ class MartaAgent(BaseAgent):
                     InlineKeyboardButton("🔍 Аудит",          callback_data="mmenu_run:audit"),
                 ],
                 [
-                    InlineKeyboardButton("📣 ДРР / ROAS",     callback_data="mmenu_run:drr"),
-                    InlineKeyboardButton("🔻 Воронка",        callback_data="mmenu_run:funnel"),
+                    InlineKeyboardButton("📣 ДРР / ROAS",         callback_data="mmenu_run:drr"),
+                    InlineKeyboardButton("📊 Воронка (анализ)",   callback_data="mmenu_run:funnel"),
                 ],
                 [
-                    InlineKeyboardButton("📦 Поставки",       callback_data="mmenu_run:supply"),
-                    InlineKeyboardButton("📬 Заказ",          callback_data="mmenu_run:order"),
+                    InlineKeyboardButton("📦 Поставки",           callback_data="mmenu_run:supply"),
+                    InlineKeyboardButton("📬 Заказ",              callback_data="mmenu_run:order"),
                 ],
                 [
-                    InlineKeyboardButton("🔤 ABC-анализ",     callback_data="mmenu_run:abc"),
-                    InlineKeyboardButton("↩️ Возвраты",       callback_data="mmenu_run:returns"),
+                    InlineKeyboardButton("🔤 ABC-анализ",         callback_data="mmenu_run:abc"),
+                    InlineKeyboardButton("📊 Возвраты (анализ)",  callback_data="mmenu_run:returns"),
                 ],
                 [
-                    InlineKeyboardButton("🔤 SEO карточек",   callback_data="mmenu_run:seo_audit"),
-                    InlineKeyboardButton("💬 Свободный вопрос", callback_data="mmenu_run:analyze"),
+                    InlineKeyboardButton("🔤 SEO-аудит (Питер)", callback_data="mmenu_run:seo_audit"),
+                    InlineKeyboardButton("💬 Свободный вопрос",   callback_data="mmenu_run:analyze"),
                 ],
                 [InlineKeyboardButton("◀️ Назад",             callback_data="mmenu:back")],
             ],
@@ -1576,8 +1576,8 @@ class MartaAgent(BaseAgent):
                     InlineKeyboardButton("📣 Реклама",    callback_data="mmenu_run:sync_adv"),
                 ],
                 [
-                    InlineKeyboardButton("🔻 Воронка",    callback_data="mmenu_run:sync_funnel"),
-                    InlineKeyboardButton("↩️ Возвраты",  callback_data="mmenu_run:sync_returns"),
+                    InlineKeyboardButton("🔄 Воронка (данные)",   callback_data="mmenu_run:sync_funnel"),
+                    InlineKeyboardButton("🔄 Возвраты (данные)",  callback_data="mmenu_run:sync_returns"),
                 ],
                 [
                     InlineKeyboardButton("🃏 Карточки",   callback_data="mmenu_run:sync_cards"),
@@ -1592,7 +1592,7 @@ class MartaAgent(BaseAgent):
                 [InlineKeyboardButton("✍️ Написать текст (Элина)",    callback_data="mmenu_run:write")],
                 [
                     InlineKeyboardButton("📝 Пост",                    callback_data="mmenu_run:post"),
-                    InlineKeyboardButton("🔤 SEO карточки",            callback_data="mmenu_run:seo_elina"),
+                    InlineKeyboardButton("✍️ SEO тексты (Элина)",       callback_data="mmenu_run:seo_elina"),
                 ],
                 [InlineKeyboardButton("🔍 Исследование (Каспер)",      callback_data="mmenu_run:research")],
                 [InlineKeyboardButton("⏰ Напоминание (Алекс)",        callback_data="mmenu_run:remind")],
