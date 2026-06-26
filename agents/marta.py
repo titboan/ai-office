@@ -734,6 +734,17 @@ class MartaAgent(BaseAgent):
         try:
             await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
+            # Если пользователь в онбординг-флоу Макса — передаём ему текст (ввод токенов и т.д.)
+            max_agent = getattr(self, "_max_agent", None)
+            if max_agent:
+                try:
+                    onboard_raw = await max_agent._redis_get(max_agent._onboard_key(chat_id))
+                    if onboard_raw and onboard_raw not in (b"", ""):
+                        await max_agent._handle_onboard_text.__func__(max_agent, update, context)
+                        return
+                except Exception:
+                    pass
+
             _kb = self._main_keyboard()
 
             async def reply(text, parse_mode=None, **kw):
@@ -1966,6 +1977,105 @@ class MartaAgent(BaseAgent):
     async def cmd_proxy_apply_prices(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "max", "применить рекомендованные цены от Питера — apply_prices")
 
+    # ── Онбординг и управление магазинами (все входы через Марту) ────────────
+
+    async def cmd_proxy_add_shop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Добавление нового магазина WB/Ozon — делегируем Максу напрямую (интерактивный флоу)."""
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent.cmd_add_shop.__func__(max_agent, update, context)
+        else:
+            await update.message.reply_text("⚠️ Агент Макс недоступен, попробуй позже.")
+
+    async def cmd_proxy_set_performance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Привязать Ozon Performance credentials — делегируем Максу."""
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent.cmd_set_performance.__func__(max_agent, update, context)
+        else:
+            await update.message.reply_text("⚠️ Агент Макс недоступен, попробуй позже.")
+
+    async def _handle_onboard_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка кнопок онбординга onboard: — делегируем Максу."""
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent._handle_onboard_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text("❌ Агент Макс недоступен")
+
+    async def cmd_proxy_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Справка — делегируем Максу (у него полный список команд)."""
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent.cmd_help.__func__(max_agent, update, context)
+        else:
+            await self._proxy_cmd(update, context, "max", "__help__")
+
+    async def cmd_proxy_dashboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent.cmd_dashboard.__func__(max_agent, update, context)
+        else:
+            await self._proxy_cmd(update, context, "max", "__dashboard__")
+
+    async def cmd_proxy_map(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent.cmd_map.__func__(max_agent, update, context)
+        else:
+            await self._proxy_cmd(update, context, "max", "__map__")
+
+    async def cmd_proxy_camp(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent.cmd_camp.__func__(max_agent, update, context)
+        else:
+            await self._proxy_cmd(update, context, "max", "__camp__")
+
+    async def cmd_proxy_cost(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent.cmd_cost_wizard.__func__(max_agent, update, context)
+        else:
+            await self._proxy_cmd(update, context, "max", "__cost__")
+
+    async def cmd_proxy_reprice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent.cmd_reprice.__func__(max_agent, update, context)
+        else:
+            await self._proxy_cmd(update, context, "max", "__reprice__")
+
+    async def cmd_proxy_add_product(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent.cmd_add.__func__(max_agent, update, context)
+        else:
+            await self._proxy_cmd(update, context, "max", "__add__")
+
+    async def cmd_proxy_sync_promotions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent.cmd_sync_promotions.__func__(max_agent, update, context)
+        else:
+            await self._proxy_cmd(update, context, "max", "__sync_promotions__")
+
+    async def cmd_proxy_reset_checked(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent.cmd_reset_checked.__func__(max_agent, update, context)
+        else:
+            await self._proxy_cmd(update, context, "max", "__reset_checked__")
+
+    async def cmd_proxy_reset_orders(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent.cmd_reset_orders.__func__(max_agent, update, context)
+        else:
+            await self._proxy_cmd(update, context, "max", "__reset_orders__")
+
     # ── Кевин ────────────────────────────────────────────────────────────────
 
     async def cmd_proxy_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2141,6 +2251,22 @@ class MartaAgent(BaseAgent):
         )
         self.app.add_handler(CommandHandler("margin", self.cmd_proxy_margin))
         self.app.add_handler(CommandHandler("apply_prices", self.cmd_proxy_apply_prices))
+        # ── Онбординг и управление магазинами (все входы через Марту) ────
+        self.app.add_handler(CommandHandler("add_shop",          self.cmd_proxy_add_shop))
+        self.app.add_handler(CommandHandler("set_performance",   self.cmd_proxy_set_performance))
+        self.app.add_handler(CommandHandler("help",              self.cmd_proxy_help))
+        self.app.add_handler(CommandHandler("dashboard",         self.cmd_proxy_dashboard))
+        self.app.add_handler(CommandHandler("map",               self.cmd_proxy_map))
+        self.app.add_handler(CommandHandler("camp",              self.cmd_proxy_camp))
+        self.app.add_handler(CommandHandler("cost",              self.cmd_proxy_cost))
+        self.app.add_handler(CommandHandler("reprice",           self.cmd_proxy_reprice))
+        self.app.add_handler(CommandHandler("add",               self.cmd_proxy_add_product))
+        self.app.add_handler(CommandHandler("sync_promotions",   self.cmd_proxy_sync_promotions))
+        self.app.add_handler(CommandHandler("reset_checked",     self.cmd_proxy_reset_checked))
+        self.app.add_handler(CommandHandler("reset_orders",      self.cmd_proxy_reset_orders))
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_onboard_callback, pattern=r"^onboard:")
+        )
         # ── Proxy-команды других агентов ─────────────────────────────────
         self.app.add_handler(CommandHandler("code", self.cmd_proxy_code))
         self.app.add_handler(CommandHandler("plan", self.cmd_proxy_plan))
