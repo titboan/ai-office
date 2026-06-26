@@ -1308,7 +1308,7 @@ class MartaAgent(BaseAgent):
         _, keyword = query.data.split(":", 1)
 
         if keyword == "back":
-            office_text, office_buttons = self._MMENU_SUBMENUS["office"]
+            office_text, office_buttons = self._MARTA_MENU_SECTIONS["office"]
             try:
                 await query.message.edit_text(
                     office_text,
@@ -1317,8 +1317,9 @@ class MartaAgent(BaseAgent):
                 )
             except Exception:
                 await query.message.delete()
-                await query.message.chat.send_message(
-                    office_text,
+                await query.get_bot().send_message(
+                    chat_id=query.message.chat_id,
+                    text=office_text,
                     parse_mode="HTML",
                     reply_markup=InlineKeyboardMarkup(office_buttons),
                 )
