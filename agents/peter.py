@@ -876,6 +876,9 @@ class PeterAgent(BaseAgent):
                     f"ДАННЫЕ ПО ОСТАТКАМ, В ПУТИ И ПРОДАЖАМ (14 дней):\n"
                     f"stock = на складе МП, in_transit = в пути к складу МП (не суммировать).\n"
                     f"need = нужно для цели (только склад), to_order = заказать у поставщика сверх in_transit.\n"
+                    f"lead_days = {config.SUPPLY_LEAD_TIME_DAYS} — дней от заказа поставщику до поставки на склад МП.\n"
+                    f"total_days_left < lead_days ({config.SUPPLY_LEAD_TIME_DAYS}) → 🔴 КРИТИЧНО (кончится до прихода партии).\n"
+                    f"category — категория товара; для «{', '.join(config.WB_FOOD_CATEGORIES)}» WB-склады ограничены.\n"
                     f"{json.dumps(supply_data, ensure_ascii=False, default=str, indent=2)}"
                 )
             except Exception as e:
@@ -1379,7 +1382,8 @@ class PeterAgent(BaseAgent):
             raw_stocks = await conn.fetch("""
                 SELECT s.marketplace, s.product_id, s.warehouse_name,
                        SUM(s.stock)::int AS stock,
-                       COALESCE(m.display_name, MAX(s.product_name)) AS name
+                       COALESCE(m.display_name, MAX(s.product_name)) AS name,
+                       MAX(m.category) AS category
                 FROM marketplace_stocks s
                 LEFT JOIN product_mapping m
                        ON (s.marketplace = 'wb'   AND m.wb_article    = s.product_id)
@@ -1449,6 +1453,7 @@ class PeterAgent(BaseAgent):
                 cluster_stocks[prod_key] = {
                     "name": name, "marketplace": mp, "daily_rate": daily_rate,
                     "product_id": pid,
+                    "category": row["category"] or "",
                     "clusters": {},
                 }
             entry = cluster_stocks[prod_key]
@@ -1480,13 +1485,18 @@ class PeterAgent(BaseAgent):
                     "need": need_cluster,         # нужно для цели (без учёта в пути)
                 })
 
+            total_days_left = round(total_stock / dr, 1) if dr > 0 else 999
             result.append({
                 "name": prod_data["name"],
                 "marketplace": prod_data["marketplace"],
+                "category": prod_data.get("category", ""),
                 "daily_rate": float(dr),
                 "target_days": TARGET_DAYS,
+                "lead_days": config.SUPPLY_LEAD_TIME_DAYS,
+                "safety_days": config.SUPPLY_SAFETY_STOCK_DAYS,
                 "in_transit": in_transit,        # в пути к складу МП (всего по товару)
                 "total_stock": total_stock,      # на складе сейчас (все кластеры)
+                "total_days_left": total_days_left,  # дней осталось суммарно по всем складам
                 "total_need": total_need,        # нужно отгрузить для цели
                 "to_order": to_order,            # заказать у поставщика сверх in_transit
                 "clusters": clusters_out,
@@ -1515,33 +1525,62 @@ class PeterAgent(BaseAgent):
             await update.message.reply_text(f"❌ Ошибка: {e}")
             return
 
+        lead = config.SUPPLY_LEAD_TIME_DAYS
+        safety = config.SUPPLY_SAFETY_STOCK_DAYS
+        food_wh = ", ".join(config.WB_FOOD_CATEGORY_WAREHOUSES)
+        food_cats = ", ".join(config.WB_FOOD_CATEGORIES)
         prompt = f"""Составь план поставок на ближайшие 30 дней.
 
 ДАННЫЕ ПО ОСТАТКАМ, В ПУТИ И ПРОДАЖАМ (период анализа: {days} дней):
 {json.dumps(supply_data, ensure_ascii=False, indent=2)}
 
-Поля данных:
+ПОЛЯ ДАННЫХ:
 - stock (склад) и in_transit (в пути к складу МП) — ВСЕГДА показывай раздельно, не суммируй
-- need — сколько нужно отгрузить для цели (только по складу), игнорируя in_transit
-- to_order — сколько заказать у поставщика СВЕРХ того что уже в пути (= need - in_transit, мин 0)
+- need — сколько нужно отгрузить для цели (только по складу), без учёта in_transit
+- to_order — сколько заказать у поставщика СВЕРХ in_transit (= need - in_transit, мин 0)
+- lead_days = {lead} — дней от заказа поставщику до прихода на склад МП
+- safety_days = {safety} — страховой буфер (дн)
+- total_days_left — общий запас по всем складам суммарно в днях продаж
+- category — категория товара (если заполнена в product_mapping)
+
+ПРАВИЛА СРОЧНОСТИ (по total_days_left):
+- total_days_left < {lead} → 🔴 КРИТИЧНО — товар кончится до прихода следующей партии, НЕМЕДЛЕННО заказывать у поставщика
+- total_days_left < {lead + safety} → 🟡 СРОЧНО — пора заказывать у поставщика (порог входа в зону риска)
+- total_days_left ≥ {lead + safety} → запас достаточный, но смотри кластеры
+
+ПРАВИЛА СРОЧНОСТИ по кластерам (по days_left кластера):
+- days_left < 7  → 🔴 СРОЧНО (нет запаса на неделю)
+- days_left 7-20 → 🟡 Скоро (внимание)
+- days_left > 20 → 🟢 Норма (пропустить если need = 0)
+- 🟢 кластеры показывай только если у товара есть 🔴/🟡 кластеры
+
+СКЛАДЫ WB ДЛЯ КАТЕГОРИЙ "{food_cats}":
+Для товаров где category содержит одно из [{food_cats}] — рекомендуй поставку ТОЛЬКО на склады: {food_wh}
+Если category пустая — анализируй все WB-склады из данных без ограничений.
+
+РАСПРЕДЕЛЕНИЕ ПО КЛАСТЕРАМ WB (пропорции для расчёта, сколько шт везти на каждый склад):
+МО (Коледино/Подольск) = 45% | Юг (Краснодар) = 13% | СПб (Шушары) = 11%
+Поволжье (Казань) = 7% | Урал (Екатеринбург) = 4% | Остальные = 20%
+
+РАСПРЕДЕЛЕНИЕ ПО КЛАСТЕРАМ OZON:
+Аналогично WB — по данным clusters в supply_data покажи для каждого Ozon-товара:
+- текущий сток по каждому кластеру (дн)
+- что нужно привезти на каждый кластер с учётом его стока
+- итого to_order у поставщика
 
 ФОРМАТ ОТВЕТА (мобильный, без широких таблиц):
 
-**Название товара** (Площадка) — X шт/день
-🚚 В пути: 100 шт (+40 дн покрытие)    ← только если in_transit > 0
+**Название товара** (WB/Ozon, категория) — X шт/день | запас: X дн
+🚚 В пути: 100 шт (обеспечено +X дн)    ← только если in_transit > 0
 🔴 Кластер А: склад 50 шт (3 дн) → нужно 200 шт
 🟡 Кластер Б: склад 120 шт (12 дн) → нужно 80 шт
 🟢 Кластер В: склад 400 шт (40 дн) → норма
-Итого нужно: 280 шт | В пути: 100 шт | Заказать ещё: 180 шт
+Итого нужно: 280 шт | В пути: 100 шт | **Заказать ещё: 180 шт**
 
-ПРАВИЛА:
-- days_left < 7  → 🔴 СРОЧНО
-- days_left 7-20 → 🟡 Скоро
-- days_left > 20 → 🟢 Норма (пропустить если need = 0)
-- 🟢 кластеры показывай только если у товара есть 🔴/🟡 (чтобы видеть полную картину)
-- В конце: топ-3 самых срочных (товар + кластер + сколько шт)
+ПРАВИЛА ОФОРМЛЕНИЯ:
 - Если in_transit = 0 — не показывай строку «В пути»
-- Если данных нет — предупреди и напиши /sync у Макса"""
+- Если данных нет — предупреди и напиши /sync у Макса
+- В конце: топ-3 самых срочных позиций (товар + площадка + кластер + сколько шт и к какому сроку)"""
 
         await update.message.reply_text("🤔 Составляю план поставки…")
         try:
