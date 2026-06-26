@@ -714,8 +714,17 @@ async def _create_schema() -> None:
         await conn.execute("""
             ALTER TABLE wb_campaigns ADD COLUMN IF NOT EXISTS nm_ids TEXT[] DEFAULT '{}'
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_settings (
+                chat_id    BIGINT NOT NULL,
+                key        TEXT   NOT NULL,
+                value      TEXT   NOT NULL,
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (chat_id, key)
+            )
+        """)
 
-        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots + multi-shop + orders-shop-id + product-costs-v2 + user_plans + in_transit + agent_logs + wb_campaigns)")
+        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots + multi-shop + orders-shop-id + product-costs-v2 + user_plans + in_transit + agent_logs + wb_campaigns + user_settings)")
 
 async def save_project(
     chat_id: int,
@@ -1008,6 +1017,32 @@ async def upsert_stock(
                     updated_at     = NOW()
             """,
             chat_id, marketplace, product_id, product_name, warehouse_name or "", stock, reserved, shop_id,
+        )
+
+
+async def get_user_setting(chat_id: int, key: str, default: str | None = None) -> str | None:
+    """Получить пользовательскую настройку. Возвращает default если не задана."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT value FROM user_settings WHERE chat_id = $1 AND key = $2",
+            chat_id, key,
+        )
+        return row["value"] if row else default
+
+
+async def set_user_setting(chat_id: int, key: str, value: str) -> None:
+    """Сохранить пользовательскую настройку (upsert)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO user_settings (chat_id, key, value, updated_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (chat_id, key) DO UPDATE
+                SET value = EXCLUDED.value, updated_at = NOW()
+            """,
+            chat_id, key, value,
         )
 
 
