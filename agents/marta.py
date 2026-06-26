@@ -1266,6 +1266,7 @@ class MartaAgent(BaseAgent):
         ],
         [
             InlineKeyboardButton("🔁 Обновить",      callback_data="logs:all"),
+            InlineKeyboardButton("◀️ Меню",          callback_data="logs:back"),
         ],
     ])
 
@@ -1305,6 +1306,16 @@ class MartaAgent(BaseAgent):
         query = update.callback_query
         await query.answer()
         _, keyword = query.data.split(":", 1)
+
+        if keyword == "back":
+            await query.message.delete()
+            await _send_rich(
+                self.bot_token, query.message.chat_id,
+                "🏢 AI Office — Быстрое меню\n\nВыбери раздел:",
+                reply_markup_dict=self._MARTA_MENU_KEYBOARD.to_dict(),
+            )
+            return
+
         kw = None if keyword == "all" else keyword
         text = await self._render_logs(kw)
         try:
