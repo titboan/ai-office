@@ -1889,7 +1889,7 @@ class MaxAgent(BaseAgent):
             )
 
         if not active:
-            await self.bot.send_message(
+            await self.app.bot.send_message(
                 chat_id=chat_id,
                 text="🎁 Нет активных акций WB/Ozon на сегодня.",
                 parse_mode="HTML",
@@ -1929,7 +1929,7 @@ class MaxAgent(BaseAgent):
                 lines.append(f"  …и ещё {len(not_in_promo) - 8}")
             lines.append("\n💡 <i>Участие в акции = +30-50% видимости в выдаче</i>")
 
-        await self.bot.send_message(
+        await self.app.bot.send_message(
             chat_id=chat_id,
             text="\n".join(lines),
             parse_mode="HTML",
@@ -4412,7 +4412,7 @@ class MaxAgent(BaseAgent):
             text = header + "\n\n".join(alerts[:10])
             if len(alerts) > 10:
                 text += f"\n\n…и ещё {len(alerts) - 10} позиций"
-            await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            await self.app.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
             logger.info(f"[Макс/stock_alerts] chat={chat_id} алертов: {len(alerts)}")
         except Exception as e:
             logger.error(f"[Макс/stock_alerts] ошибка: {e}", exc_info=True)
@@ -4626,7 +4626,7 @@ class MaxAgent(BaseAgent):
                     InlineKeyboardButton("❌ Понял", callback_data=f"rp:{mp}:{pid}:{int(s['current_price'])}:skip"),
                 ]])
 
-            await self.bot.send_message(
+            await self.app.bot.send_message(
                 chat_id=chat_id,
                 text="\n".join(lines),
                 parse_mode="HTML",
@@ -4635,7 +4635,7 @@ class MaxAgent(BaseAgent):
             sent += 1
 
         if sent == 0:
-            await self.bot.send_message(chat_id=chat_id, text="✅ Предложений нет.")
+            await self.app.bot.send_message(chat_id=chat_id, text="✅ Предложений нет.")
 
     async def _handle_reprice_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -4826,7 +4826,7 @@ class MaxAgent(BaseAgent):
             )
             if len(alerts) > 10:
                 text += f"\n…и ещё {len(alerts) - 10} позиций"
-            await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            await self.app.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
             logger.info(f"[Макс/drr_alerts] chat={chat_id} алертов: {len(alerts)}")
 
             if peter is not None:
@@ -4919,7 +4919,7 @@ class MaxAgent(BaseAgent):
             return 0
 
         await self._redis_set(lock_key, "1", ttl=600)
-        await self.bot.send_message(
+        await self.app.bot.send_message(
             chat_id=chat_id,
             text="🤖 <b>Авто-анализ ставок</b>\nПо данным за 7 дней есть предложения по корректировке:",
             parse_mode="HTML",
@@ -4943,7 +4943,7 @@ class MaxAgent(BaseAgent):
                 InlineKeyboardButton(f"✅ {arrow}", callback_data=f"bid:{mp}:{cid}:{d}:{dp}:apply"),
                 InlineKeyboardButton("❌ Пропустить", callback_data=f"bid:{mp}:{cid}:{d}:{dp}:skip"),
             ]])
-            await self.bot.send_message(
+            await self.app.bot.send_message(
                 chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=keyboard
             )
 
