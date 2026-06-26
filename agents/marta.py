@@ -1420,6 +1420,8 @@ class MartaAgent(BaseAgent):
         "seo_check":    ("max", "__seo_check__"),
         "bid_adjust":   ("max", "__bid_adjust__"),
         "campaigns":    ("max", "__campaigns__"),
+        "promotions":   ("max", "__promotions__"),
+        "new_campaign": ("max", "__new_campaign__"),
         "margin":       ("max", "__margin__"),
         "apply_prices": ("max", "применить рекомендованные цены от Питера — apply_prices"),
         "sync":         ("max", "__sync__"),
@@ -1502,6 +1504,7 @@ class MartaAgent(BaseAgent):
                 [
                     InlineKeyboardButton("📣 Кампании Ozon",   callback_data="mmenu_run:campaigns"),
                     InlineKeyboardButton("🎁 Акции Ozon",      callback_data="mmenu_run:promotions"),
+                    InlineKeyboardButton("➕ Новая кампания",   callback_data="mmenu_run:new_campaign"),
                 ],
                 [
                     InlineKeyboardButton("📐 Маржа товара",   callback_data="mmenu_run:margin"),
@@ -1739,8 +1742,9 @@ class MartaAgent(BaseAgent):
             BotCommand("shops", "🏪 Мои магазины"),
             BotCommand("seo_check", "🔻 Падение позиций ключей"),
             BotCommand("bid_adjust", "🎯 Рекомендации по ставкам"),
-            BotCommand("campaigns",  "📣 Управление кампаниями Ozon"),
-            BotCommand("promotions", "🎁 Акции Ozon — анализ маржи"),
+            BotCommand("campaigns",    "📣 Управление кампаниями Ozon"),
+            BotCommand("promotions",   "🎁 Акции Ozon — анализ маржи"),
+            BotCommand("new_campaign", "➕ Создать кампанию Ozon из топ-товаров"),
             BotCommand("margin", "📐 Проверить маржу товара"),
             BotCommand("apply_prices", "✅ Применить рекомендованные цены"),
             # ── Другие агенты ─────────────────────────────────────────────
@@ -1938,6 +1942,24 @@ class MartaAgent(BaseAgent):
             await query.answer()
             await query.edit_message_text(query.message.text + "\n\n❌ Агент Макс недоступен", parse_mode="HTML")
 
+    async def cmd_proxy_new_campaign(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Создать новую рекламную кампанию Ozon через Марту."""
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent.cmd_new_campaign.__func__(max_agent, update, context)
+        else:
+            await self._proxy_cmd(update, context, "max", "__new_campaign__")
+
+    async def _handle_campnew_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка кнопок campnew: через бот Марты."""
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent._handle_campnew_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(query.message.text + "\n\n❌ Агент Макс недоступен", parse_mode="HTML")
+
     async def cmd_proxy_margin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "max", "__margin__")
 
@@ -2084,13 +2106,17 @@ class MartaAgent(BaseAgent):
         self.app.add_handler(CommandHandler("shops", self.cmd_proxy_shops))
         self.app.add_handler(CommandHandler("seo_check", self.cmd_proxy_seo_check))
         self.app.add_handler(CommandHandler("bid_adjust", self.cmd_proxy_bid_adjust))
-        self.app.add_handler(CommandHandler("campaigns",   self.cmd_proxy_campaigns))
-        self.app.add_handler(CommandHandler("promotions",  self.cmd_proxy_promotions))
+        self.app.add_handler(CommandHandler("campaigns",    self.cmd_proxy_campaigns))
+        self.app.add_handler(CommandHandler("promotions",   self.cmd_proxy_promotions))
+        self.app.add_handler(CommandHandler("new_campaign", self.cmd_proxy_new_campaign))
         self.app.add_handler(
             CallbackQueryHandler(self._handle_camp_callback, pattern=r"^camp:")
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_ozbid_callback, pattern=r"^ozbid:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_campnew_callback, pattern=r"^campnew:")
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_promo_callback, pattern=r"^promo:")

@@ -134,6 +134,8 @@ config.SEO_POSITION_DROP_THRESHOLD = 10  # алерт если позиция у
 config.DRR_PAUSE_THRESHOLD_OZON    = 40  # % ДРР — предложить паузу кампании Ozon
 config.DRR_ALERT_THRESHOLD         = 25  # % ДРР — алерт без действия (оба маркетплейса)
 config.DRR_MIN_SPEND_FOR_ACTION    = 200 # ₽ минимальный расход за 7д для предложения
+config.OZON_CAMPAIGN_INITIAL_BID   = 30  # ₽ начальная ставка per-SKU для новых кампаний
+config.OZON_CAMPAIGN_DEFAULT_BUDGET = 500 # ₽/день бюджет по умолчанию для новой кампании
 
 # Мониторинг цен конкурентов (WB публичный поиск, еженедельно)
 config.COMPETITOR_SCAN_HOUR_UTC = 6  # 06:00 UTC = 09:00 МСК, каждый понедельник

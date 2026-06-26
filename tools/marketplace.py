@@ -2944,6 +2944,48 @@ class OzonPerformanceClient:
             logger.error(f"[OzonPerf] delete exception: {e}")
             return False
 
+    async def create_campaign(
+        self,
+        title: str,
+        daily_budget: float,
+        adv_type: str = "SKU_SEARCH",
+        from_date: str | None = None,
+    ) -> str | None:
+        """Создать кампанию Ozon Performance. Возвращает campaign_id или None.
+
+        adv_type: SKU_SEARCH (поиск) | SKU_SHELF (полка) | MEDIA_BANNER (медийная).
+        """
+        from datetime import date as _date
+        token = await self._get_token()
+        if not token:
+            return None
+        body = {
+            "title": title,
+            "advObjectType": adv_type,
+            "dailyBudget": str(int(daily_budget)),
+            "fromDate": from_date or _date.today().isoformat(),
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self._BASE}/api/client/campaign",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json=body,
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    if resp.status not in (200, 201):
+                        body_txt = await resp.text()
+                        logger.error(f"[OzonPerf] create_campaign HTTP {resp.status}: {body_txt[:300]}")
+                        return None
+                    data = await resp.json()
+            cid = str(data.get("id") or data.get("campaign_id") or "")
+            if cid:
+                logger.info(f"[OzonPerf] кампания создана id={cid} title={title!r} budget={daily_budget}₽")
+            return cid or None
+        except Exception as e:
+            logger.error(f"[OzonPerf] create_campaign exception: {e}")
+            return None
+
 
 def make_client(shop: dict):
     """Фабрика: dict из marketplace_shops → WBClient или OzonClient."""

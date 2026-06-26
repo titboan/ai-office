@@ -33,20 +33,25 @@
 - Кнопки ✅ Войти / ❌ Пропустить; `promo:` callbacks на Максе и Марте
 - Кнопки «📣 Кампании» и «🎁 Акции» в Меню Марты → Маркетплейсы
 
-### Фаза 5 — Корректировка ставок Ozon per-SKU + удаление кампаний [x]
-- OzonPerformanceClient: `get_campaign_bids()`, `update_campaign_bids()`, `delete_campaign()`
+### Фаза 5 — Корректировка ставок Ozon per-SKU + полный lifecycle кампаний [x]
+- OzonPerformanceClient: `get_campaign_bids()`, `update_campaign_bids()`, `delete_campaign()`, `create_campaign()`
 - `_collect_bid_suggestions`: 3 сценария для Ozon — пауза (ДРР>60%), снизить ставки 20% (ДРР>40%), поднять ставки 15% (ДРР<8%)
 - `auto_bid_suggest`: `ozbid:{shop_id}:{campaign_id}:{direction}:{delta_pct}:{action}` callback для корректировки ставок
 - `_handle_ozbid_callback` — получает текущие bids → множит на коэффициент → PUT /api/client/campaign/{id}/bids
 - `_handle_camp_callback`: подтверждение удаления (`camp:delete` → диалог → `camp:delete_ok`)
 - `_execute_camp_action`: поддержка action="delete"
 - `_get_campaign_cards`: кнопка 🗑️ Удалить для остановленных кампаний
-- Делегирование `ozbid:` и обновлённый `camp:` handler через Марту
+- `/new_campaign` — создание кампании из топ-товаров без активной рекламы (Redis хранит план, `campnew:create/cancel`)
+- `_get_unadvertised_products()` — SQL: продукты с продажами, но без adv_stats за 7 дней
+- `config.py`: OZON_CAMPAIGN_INITIAL_BID=30₽, OZON_CAMPAIGN_DEFAULT_BUDGET=500₽
+- Все новые callbacks (`ozbid:`, `campnew:`) зарегистрированы на Максе и Марте
+- Меню Марты: кнопка «➕ Новая кампания» в разделе Маркетплейсы
 
 ## Файлы
 
 | Файл | Изменения |
 |------|-----------|
-| `tools/marketplace.py` | +4 метода OzonPerformanceClient |
-| `agents/max.py` | обработка `__campaigns__`, callback camp_* |
-| `agents/marta.py` | регистрация camp_* callbacks |
+| `tools/marketplace.py` | +7 методов OzonPerformanceClient (bids, delete, create) |
+| `agents/max.py` | cmd_new_campaign, _handle_ozbid_callback, _handle_campnew_callback, lifecycle delete |
+| `agents/marta.py` | proxy new_campaign, ozbid/campnew callbacks, меню |
+| `config.py` | OZON_CAMPAIGN_INITIAL_BID, OZON_CAMPAIGN_DEFAULT_BUDGET |

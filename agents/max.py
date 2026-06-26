@@ -279,6 +279,10 @@ class MaxAgent(BaseAgent):
             return await self._bid_adjust_text(chat_id)
         if task == "__campaigns__":
             return await self._campaigns_text(chat_id)
+        if task == "__promotions__":
+            return "📌 Используй /promotions для анализа акций Ozon с кнопками."
+        if task == "__new_campaign__":
+            return "📌 Используй /new_campaign для создания кампании из топ-товаров."
         if task == "__margin__" or task.startswith("__margin__ "):
             return await self._margin_check_text(chat_id)
         if task == "__sync__":
@@ -5237,6 +5241,196 @@ class MaxAgent(BaseAgent):
             result = "❌ Не удалось обновить ставки — проверь логи или измени вручную в кабинете."
         await query.edit_message_text(query.message.text + f"\n\n{result}", parse_mode="HTML", reply_markup=None)
 
+    async def _get_unadvertised_products(self, chat_id: int) -> list[dict]:
+        """Продукты Ozon с продажами за 30 дней, у которых нет активной рекламы за 7 дней."""
+        from db import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT
+                    pm.ozon_offer_id,
+                    pm.ozon_sku,
+                    COALESCE(pm.display_name, pm.ozon_offer_id) AS display_name,
+                    SUM(o.quantity)::int               AS qty_30d,
+                    SUM(o.seller_price * o.quantity)::numeric(12,2) AS revenue_30d
+                FROM product_mapping pm
+                JOIN marketplace_orders o ON (
+                    o.product_id = pm.ozon_offer_id
+                    AND o.chat_id = $1
+                    AND o.order_date >= NOW() - INTERVAL '30 days'
+                )
+                WHERE pm.chat_id  = $1
+                  AND pm.ozon_sku IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM product_adv_stats adv
+                      WHERE adv.product_id = pm.ozon_offer_id
+                        AND adv.chat_id    = $1
+                        AND adv.stat_date >= NOW() - INTERVAL '7 days'
+                        AND adv.marketplace = 'ozon'
+                  )
+                GROUP BY pm.ozon_offer_id, pm.ozon_sku, pm.display_name
+                ORDER BY revenue_30d DESC
+                LIMIT 20
+            """, chat_id)
+        return [dict(r) for r in rows]
+
+    async def cmd_new_campaign(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/new_campaign — предложить создание новой рекламной кампании Ozon из топ-продуктов."""
+        import json as _json
+        from db import get_marketplace_shops
+        from tools.marketplace import OzonPerformanceClient
+
+        chat_id = update.effective_user.id
+        shops   = await get_marketplace_shops(chat_id)
+        ozon_perf = next(
+            (s for s in shops if s["marketplace"] == "ozon" and s.get("ozon_client_id") and s.get("ozon_perf_secret")),
+            None,
+        )
+        if not ozon_perf:
+            await update.message.reply_text("⚠️ Нет Ozon-магазина с Performance API.\nДобавь через /add_shop ozon.", parse_mode="HTML")
+            return
+
+        await update.message.reply_text("⏳ Анализирую товары без рекламы…")
+        products = await self._get_unadvertised_products(chat_id)
+
+        if not products:
+            await update.message.reply_text(
+                "✅ Все продаваемые товары Ozon уже охвачены рекламой за последние 7 дней.\n\n"
+                "<i>Если хочешь создать кампанию вручную, зайди в Ozon Performance кабинет.</i>",
+                parse_mode="HTML",
+            )
+            return
+
+        import config as _cfg
+        initial_bid = getattr(_cfg, "OZON_CAMPAIGN_INITIAL_BID", 30)
+        default_budget = getattr(_cfg, "OZON_CAMPAIGN_DEFAULT_BUDGET", 500)
+        top = products[:10]
+        shop_id = str(ozon_perf["id"])
+
+        # Сохраняем план в Redis
+        from datetime import date as _date
+        title = f"AI — {_date.today().strftime('%d.%m.%Y')}"
+        plan = {
+            "title": title,
+            "budget": default_budget,
+            "initial_bid": initial_bid,
+            "products": [
+                {"ozon_sku": p["ozon_sku"], "offer_id": p["ozon_offer_id"], "name": p["display_name"]}
+                for p in top
+            ],
+        }
+        redis = await self._get_redis()
+        redis_key = f"campnew:{chat_id}:{shop_id}"
+        await redis.set(redis_key, _json.dumps(plan), ex=86400)
+
+        total_rev = sum(float(p["revenue_30d"] or 0) for p in top)
+        product_lines = "\n".join(
+            f"• <b>{p['display_name'][:40]}</b> — {float(p['revenue_30d'] or 0):,.0f}₽/мес"
+            for p in top[:8]
+        )
+        text = (
+            f"🎯 <b>Новая кампания Ozon Search</b>\n\n"
+            f"📛 Название: <code>{title}</code>\n"
+            f"💰 Бюджет: <b>{default_budget:,.0f}₽/день</b>\n"
+            f"🎯 Начальная ставка: <b>{initial_bid}₽</b> per SKU\n\n"
+            f"<b>Топ-{len(top)} товаров без рекламы (выручка за 30д):</b>\n"
+            f"{product_lines}\n\n"
+            f"Суммарная выручка выбранных: <b>{total_rev:,.0f}₽</b>\n\n"
+            f"<i>После создания можно скорректировать ставки через /campaigns.</i>"
+        )
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Создать кампанию", callback_data=f"campnew:create:{shop_id}"),
+            InlineKeyboardButton("❌ Отмена", callback_data=f"campnew:cancel:{shop_id}"),
+        ]])
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+
+    async def _handle_campnew_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка campnew:create/cancel:{shop_id}."""
+        import json as _json
+        query = update.callback_query
+        await query.answer()
+        parts = query.data.split(":", 2)
+        if len(parts) != 3:
+            return
+        _, action, shop_id_str = parts
+        chat_id = query.from_user.id
+
+        if action == "cancel":
+            await query.edit_message_text(query.message.text + "\n\n❌ Отменено", parse_mode="HTML", reply_markup=None)
+            return
+
+        redis = await self._get_redis()
+        redis_key = f"campnew:{chat_id}:{shop_id_str}"
+        raw = await redis.get(redis_key)
+        if not raw:
+            await query.edit_message_text(
+                query.message.text + "\n\n⚠️ Сессия истекла. Запусти /new_campaign снова.",
+                parse_mode="HTML", reply_markup=None,
+            )
+            return
+
+        plan = _json.loads(raw)
+        await redis.delete(redis_key)
+
+        from db import get_marketplace_shops
+        from tools.marketplace import OzonPerformanceClient
+
+        shops = await get_marketplace_shops(chat_id)
+        shop  = next((s for s in shops if str(s["id"]) == shop_id_str), None)
+        if not shop or not shop.get("ozon_client_id"):
+            await query.edit_message_text(query.message.text + "\n\n❌ Магазин не найден", parse_mode="HTML", reply_markup=None)
+            return
+
+        perf_redis = await self._get_redis()
+        client = OzonPerformanceClient(shop["ozon_client_id"], shop["ozon_perf_secret"], perf_redis)
+
+        await query.edit_message_text(
+            query.message.text + "\n\n⏳ Создаю кампанию…",
+            parse_mode="HTML", reply_markup=None,
+        )
+
+        campaign_id = await client.create_campaign(
+            title=plan["title"],
+            daily_budget=plan["budget"],
+            adv_type="SKU_SEARCH",
+        )
+        if not campaign_id:
+            await query.edit_message_text(
+                query.message.text.replace("⏳ Создаю кампанию…", "")
+                + "\n\n❌ Не удалось создать кампанию. Проверь логи или создай вручную в кабинете.",
+                parse_mode="HTML",
+            )
+            return
+
+        # Добавляем товары в кампанию через ставки
+        initial_bid = float(plan.get("initial_bid") or 30)
+        bids = [
+            {"product_id": p["ozon_sku"], "bid": initial_bid}
+            for p in plan["products"]
+            if p.get("ozon_sku")
+        ]
+        bids_ok = False
+        if bids:
+            bids_ok = await client.update_campaign_bids(campaign_id, bids)
+
+        result_lines = [
+            f"✅ Кампания <b>{plan['title']}</b> создана!",
+            f"ID: <code>{campaign_id}</code>",
+            f"Бюджет: {plan['budget']:,.0f}₽/день",
+        ]
+        if bids_ok:
+            result_lines.append(f"Добавлено товаров: {len(bids)} с начальной ставкой {initial_bid:.0f}₽")
+        elif bids:
+            result_lines.append("⚠️ Товары не добавлены автоматически — добавь вручную в кабинете.")
+        result_lines.append("\n<i>Статус кампании: /campaigns</i>")
+
+        await query.edit_message_text(
+            query.message.text.replace("⏳ Создаю кампанию…", "")
+            + "\n\n" + "\n".join(result_lines),
+            parse_mode="HTML",
+        )
+        logger.info(f"[Макс/campnew] chat={chat_id} campaign={campaign_id} bids_ok={bids_ok}")
+
     async def _bid_adjust_text(self, chat_id: int) -> str:
         suggestions = await self._collect_bid_suggestions(chat_id)
         if not suggestions:
@@ -5943,10 +6137,14 @@ class MaxAgent(BaseAgent):
             CallbackQueryHandler(self._handle_ozbid_callback, pattern=r"^ozbid:")
         )
         self.app.add_handler(
+            CallbackQueryHandler(self._handle_campnew_callback, pattern=r"^campnew:")
+        )
+        self.app.add_handler(
             CallbackQueryHandler(self._handle_promo_callback, pattern=r"^promo:")
         )
-        self.app.add_handler(CommandHandler("campaigns",  self.cmd_campaigns))
-        self.app.add_handler(CommandHandler("promotions", self.cmd_promotions))
+        self.app.add_handler(CommandHandler("campaigns",    self.cmd_campaigns))
+        self.app.add_handler(CommandHandler("promotions",   self.cmd_promotions))
+        self.app.add_handler(CommandHandler("new_campaign", self.cmd_new_campaign))
 
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_edit_reply),
