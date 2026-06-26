@@ -1419,6 +1419,7 @@ class MartaAgent(BaseAgent):
         "shops":        ("max", "__shops__"),
         "seo_check":    ("max", "__seo_check__"),
         "bid_adjust":   ("max", "__bid_adjust__"),
+        "campaigns":    ("max", "__campaigns__"),
         "margin":       ("max", "__margin__"),
         "apply_prices": ("max", "применить рекомендованные цены от Питера — apply_prices"),
         "sync":         ("max", "__sync__"),
@@ -1497,6 +1498,9 @@ class MartaAgent(BaseAgent):
                 [
                     InlineKeyboardButton("🔻 Позиции ключей",  callback_data="mmenu_run:seo_check"),
                     InlineKeyboardButton("🎯 Ставки рекламы",  callback_data="mmenu_run:bid_adjust"),
+                ],
+                [
+                    InlineKeyboardButton("📣 Кампании Ozon",   callback_data="mmenu_run:campaigns"),
                 ],
                 [
                     InlineKeyboardButton("📐 Маржа товара",   callback_data="mmenu_run:margin"),
@@ -1734,6 +1738,7 @@ class MartaAgent(BaseAgent):
             BotCommand("shops", "🏪 Мои магазины"),
             BotCommand("seo_check", "🔻 Падение позиций ключей"),
             BotCommand("bid_adjust", "🎯 Рекомендации по ставкам"),
+            BotCommand("campaigns", "📣 Управление кампаниями Ozon"),
             BotCommand("margin", "📐 Проверить маржу товара"),
             BotCommand("apply_prices", "✅ Применить рекомендованные цены"),
             # ── Другие агенты ─────────────────────────────────────────────
@@ -1874,6 +1879,9 @@ class MartaAgent(BaseAgent):
 
     async def cmd_proxy_bid_adjust(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "max", "__bid_adjust__")
+
+    async def cmd_proxy_campaigns(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._proxy_cmd(update, context, "max", "__campaigns__")
 
     async def cmd_proxy_margin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "max", "__margin__")
@@ -2021,6 +2029,7 @@ class MartaAgent(BaseAgent):
         self.app.add_handler(CommandHandler("shops", self.cmd_proxy_shops))
         self.app.add_handler(CommandHandler("seo_check", self.cmd_proxy_seo_check))
         self.app.add_handler(CommandHandler("bid_adjust", self.cmd_proxy_bid_adjust))
+        self.app.add_handler(CommandHandler("campaigns",  self.cmd_proxy_campaigns))
         self.app.add_handler(CommandHandler("margin", self.cmd_proxy_margin))
         self.app.add_handler(CommandHandler("apply_prices", self.cmd_proxy_apply_prices))
         # ── Proxy-команды других агентов ─────────────────────────────────

@@ -2662,6 +2662,98 @@ class OzonPerformanceClient:
         logger.info(f"[OzonPerf] итого записей: {len(results)}")
         return results
 
+    async def get_campaigns(self) -> list[dict]:
+        """Список всех кампаний с текущим статусом и дневным бюджетом."""
+        token = await self._get_token()
+        if not token:
+            return []
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self._BASE}/api/client/campaign",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    if resp.status != 200:
+                        logger.error(f"[OzonPerf] get_campaigns HTTP {resp.status}")
+                        return []
+                    data = await resp.json()
+        except Exception as e:
+            logger.error(f"[OzonPerf] get_campaigns exception: {e}")
+            return []
+
+        EXCLUDE_TYPES = {"REF_VK"}
+        campaigns = []
+        for c in (data.get("list") or []):
+            if c.get("advObjectType") in EXCLUDE_TYPES:
+                continue
+            campaigns.append({
+                "id":     str(c.get("id", "")),
+                "title":  c.get("title") or str(c.get("id", "")),
+                "state":  c.get("state", ""),
+                "budget": float(c.get("dailyBudget") or 0),
+                "type":   c.get("advObjectType", ""),
+            })
+        return campaigns
+
+    async def _campaign_action(self, campaign_id: str, action: str) -> bool:
+        """Выполнить действие над кампанией: 'activate' или 'deactivate'."""
+        token = await self._get_token()
+        if not token:
+            return False
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.put(
+                    f"{self._BASE}/api/client/campaign/{campaign_id}/{action}",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    if resp.status not in (200, 204):
+                        body = await resp.text()
+                        logger.error(f"[OzonPerf] {action} campaign={campaign_id} HTTP {resp.status}: {body[:200]}")
+                        return False
+                    return True
+        except Exception as e:
+            logger.error(f"[OzonPerf] {action} campaign={campaign_id} exception: {e}")
+            return False
+
+    async def pause_campaign(self, campaign_id: str) -> bool:
+        """Поставить кампанию Ozon Performance на паузу."""
+        ok = await self._campaign_action(campaign_id, "deactivate")
+        if ok:
+            logger.info(f"[OzonPerf] кампания {campaign_id} остановлена")
+        return ok
+
+    async def activate_campaign(self, campaign_id: str) -> bool:
+        """Запустить кампанию Ozon Performance."""
+        ok = await self._campaign_action(campaign_id, "activate")
+        if ok:
+            logger.info(f"[OzonPerf] кампания {campaign_id} запущена")
+        return ok
+
+    async def update_campaign_daily_budget(self, campaign_id: str, budget: float) -> bool:
+        """Установить дневной бюджет кампании (в рублях)."""
+        token = await self._get_token()
+        if not token:
+            return False
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.patch(
+                    f"{self._BASE}/api/client/campaign/{campaign_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"dailyBudget": str(int(budget))},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    if resp.status not in (200, 204):
+                        body = await resp.text()
+                        logger.error(f"[OzonPerf] update_budget campaign={campaign_id} HTTP {resp.status}: {body[:200]}")
+                        return False
+                    logger.info(f"[OzonPerf] кампания {campaign_id} бюджет → {budget}₽")
+                    return True
+        except Exception as e:
+            logger.error(f"[OzonPerf] update_budget exception: {e}")
+            return False
+
 
 def make_client(shop: dict):
     """Фабрика: dict из marketplace_shops → WBClient или OzonClient."""
