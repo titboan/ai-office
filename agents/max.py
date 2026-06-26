@@ -4800,10 +4800,12 @@ class MaxAgent(BaseAgent):
                     ORDER BY drr DESC NULLS LAST
                 """, chat_id)
 
+            import config as _cfg
+            drr_alert_threshold = getattr(_cfg, "DRR_ALERT_THRESHOLD", 25)
             alerts = []
             for r in rows:
                 drr = float(r["drr"] or 0)
-                if drr > 25:
+                if drr > drr_alert_threshold:
                     mp_label = "🟣 WB" if r["marketplace"] == "wb" else "🔵 Ozon"
                     spend   = float(r["spend"]   or 0)
                     revenue = float(r["revenue"] or 0)
@@ -4874,17 +4876,26 @@ class MaxAgent(BaseAgent):
                 ORDER BY drr DESC NULLS LAST
             """, chat_id)
 
+        import config as _cfg
+        drr_pause_ozon = getattr(_cfg, "DRR_PAUSE_THRESHOLD_OZON", 40)
+
         suggestions = []
         seen_campaigns: set[str] = set()
         for r in rows:
             cid = r["campaign_id"]
             if cid in seen_campaigns:
                 continue
+            mp      = r["marketplace"]
             drr     = float(r["drr"] or 0)
             spend   = float(r["spend_7d"] or 0)
             revenue = float(r["revenue_7d"] or 0)
             # Определяем рекомендацию
-            if drr > 60:
+            if mp == "ozon":
+                if drr > drr_pause_ozon:
+                    direction, delta_pct, reason = "down", 0, f"ДРР {drr:.0f}% — выше {drr_pause_ozon}%"
+                else:
+                    continue  # для Ozon пока только пауза при высоком ДРР
+            elif drr > 60:
                 direction, delta_pct, reason = "down", 30, f"ДРР {drr:.0f}% — критически высокий"
             elif drr > 40:
                 direction, delta_pct, reason = "down", 20, f"ДРР {drr:.0f}% — выше нормы"
@@ -4909,7 +4920,8 @@ class MaxAgent(BaseAgent):
     async def auto_bid_suggest(self, chat_id: int) -> int:
         """Автоматический анализ ставок — вызывается планировщиком.
 
-        Отправляет предложения с кнопками подтверждения.
+        WB: предлагает скорректировать CPM.
+        Ozon: предлагает поставить кампанию на паузу (camp: callback).
         Возвращает количество отправленных предложений.
         """
         lock_key = f"bid_lock:{chat_id}"
@@ -4920,6 +4932,12 @@ class MaxAgent(BaseAgent):
         if not suggestions:
             return 0
 
+        # Для Ozon нужен shop_id чтобы корректно вызвать pause_campaign через camp: callback
+        from db import get_marketplace_shops
+        shops = await get_marketplace_shops(chat_id)
+        ozon_shop = next((s for s in shops if s["marketplace"] == "ozon"), None)
+        ozon_shop_id = str(ozon_shop["id"]) if ozon_shop else None
+
         await self._redis_set(lock_key, "1", ttl=600)
         await self.app.bot.send_message(
             chat_id=chat_id,
@@ -4927,29 +4945,50 @@ class MaxAgent(BaseAgent):
             parse_mode="HTML",
         )
 
+        sent = 0
         for s in suggestions[:8]:
-            arrow    = "📉 Снизить" if s["direction"] == "down" else "📈 Поднять"
-            mp_label = "🟣 WB" if s["marketplace"] == "wb" else "🔵 Ozon"
-            text = (
-                f"{mp_label} <b>{s['name']}</b>\n"
-                f"ДРР за 7д: <b>{s['drr']:.0f}%</b>  "
-                f"(расход {s['spend_7d']:,.0f}₽ / выручка {s['revenue_7d']:,.0f}₽)\n\n"
-                f"💡 {arrow} ставку на <b>{s['delta_pct']}%</b>\n"
-                f"Причина: {s['reason']}"
-            )
-            cid = s["campaign_id"][:20]
-            mp  = s["marketplace"]
+            mp = s["marketplace"]
+            mp_label = "🟣 WB" if mp == "wb" else "🔵 Ozon"
+            cid = s["campaign_id"]
             d   = s["direction"]
             dp  = s["delta_pct"]
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton(f"✅ {arrow}", callback_data=f"bid:{mp}:{cid}:{d}:{dp}:apply"),
-                InlineKeyboardButton("❌ Пропустить", callback_data=f"bid:{mp}:{cid}:{d}:{dp}:skip"),
-            ]])
+
+            if mp == "ozon" and d == "down":
+                # Ozon: предлагаем паузу кампании, используем camp: callback
+                if not ozon_shop_id:
+                    continue
+                text = (
+                    f"{mp_label} <b>{s['name']}</b>\n"
+                    f"ДРР за 7д: <b>{s['drr']:.0f}%</b>  "
+                    f"(расход {s['spend_7d']:,.0f}₽ / выручка {s['revenue_7d']:,.0f}₽)\n\n"
+                    f"💡 Рекомендую поставить на паузу\n"
+                    f"Причина: {s['reason']}"
+                )
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("⏸️ Поставить на паузу", callback_data=f"camp:pause:{ozon_shop_id}:{cid}"),
+                    InlineKeyboardButton("❌ Пропустить", callback_data=f"bid:ozon:{cid[:20]}:{d}:{dp}:skip"),
+                ]])
+            else:
+                # WB: корректировка ставок
+                arrow = "📉 Снизить" if d == "down" else "📈 Поднять"
+                text = (
+                    f"{mp_label} <b>{s['name']}</b>\n"
+                    f"ДРР за 7д: <b>{s['drr']:.0f}%</b>  "
+                    f"(расход {s['spend_7d']:,.0f}₽ / выручка {s['revenue_7d']:,.0f}₽)\n\n"
+                    f"💡 {arrow} ставку на <b>{dp}%</b>\n"
+                    f"Причина: {s['reason']}"
+                )
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(f"✅ {arrow}", callback_data=f"bid:{mp}:{cid[:20]}:{d}:{dp}:apply"),
+                    InlineKeyboardButton("❌ Пропустить", callback_data=f"bid:{mp}:{cid[:20]}:{d}:{dp}:skip"),
+                ]])
+
             await self.app.bot.send_message(
                 chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=keyboard
             )
+            sent += 1
 
-        return len(suggestions[:8])
+        return sent
 
     async def _campaigns_text(self, chat_id: int) -> str:
         """Список рекламных кампаний Ozon с кнопками управления."""
