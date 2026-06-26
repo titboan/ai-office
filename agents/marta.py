@@ -1986,8 +1986,23 @@ class MartaAgent(BaseAgent):
         await self._proxy_cmd(update, context, "elina", f"Напиши пост на тему: {args}" if args else "Напиши пост для маркетплейса или соцсетей")
 
     async def cmd_proxy_seo_elina(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        args = " ".join(context.args) if context.args else ""
-        await self._proxy_cmd(update, context, "elina", f"SEO-оптимизация карточки товара: {args}" if args else "SEO-оптимизация карточки товара")
+        """SEO через Марту: если Элина доступна — вызываем напрямую (с кнопкой Ozon), иначе через очередь."""
+        elina = getattr(self, "_elina_agent", None)
+        if elina is not None:
+            await elina.cmd_seo.__func__(elina, update, context)
+        else:
+            args = " ".join(context.args) if context.args else ""
+            await self._proxy_cmd(update, context, "elina", f"SEO-оптимизация карточки товара: {args}" if args else "SEO-оптимизация карточки товара")
+
+    async def _handle_seoapp_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка кнопок seoapp: через бот Марты — применить SEO описание к Ozon."""
+        elina = getattr(self, "_elina_agent", None)
+        if elina:
+            await elina._handle_seo_apply_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(query.message.text + "\n\n❌ Агент Элина недоступен", parse_mode="HTML")
 
     # ── Алекс ────────────────────────────────────────────────────────────────
 
@@ -2117,6 +2132,9 @@ class MartaAgent(BaseAgent):
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_campnew_callback, pattern=r"^campnew:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_seoapp_callback, pattern=r"^seoapp:")
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_promo_callback, pattern=r"^promo:")

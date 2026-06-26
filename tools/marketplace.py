@@ -2508,6 +2508,32 @@ class OzonClient:
         logger.info(f"[Ozon.get_product_content] получено {len(result)} карточек")
         return result
 
+    async def update_product_description(self, offer_id: str, description: str) -> bool:
+        """Обновить описание товара на Ozon через /v1/product/description/update."""
+        import json as _json
+        url = f"{self._BASE}/v1/product/description/update"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    headers=self._headers(),
+                    json={"items": [{"offer_id": offer_id, "description": description}]},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[Ozon.update_desc] HTTP {resp.status}: {raw[:300]}")
+                        return False
+                    result = _json.loads(raw).get("result") or {}
+                    if result.get("errors"):
+                        logger.error(f"[Ozon.update_desc] API errors: {result['errors']}")
+                        return False
+                    logger.info(f"[Ozon.update_desc] offer_id={offer_id} ok")
+                    return True
+        except Exception as e:
+            logger.error(f"[Ozon.update_desc] {e}", exc_info=True)
+            return False
+
 
 class OzonPerformanceClient:
     _BASE = "https://api-performance.ozon.ru"

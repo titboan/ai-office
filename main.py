@@ -227,10 +227,13 @@ async def run_all_async() -> None:
     max_agent   = next((a for a in started if isinstance(a, MaxAgent)), None)
     peter_agent = next((a for a in started if a.__class__.__name__ == "PeterAgent"), None)
     marta_agent = next((a for a in started if isinstance(a, MartaAgent)), None)
+    elina_agent = next((a for a in started if a.__class__.__name__ == "ElinaAgent"), None)
     if max_agent is not None and peter_agent is not None:
         max_agent._peter_agent = peter_agent
     if marta_agent is not None and max_agent is not None:
         marta_agent._max_agent = max_agent
+    if marta_agent is not None and elina_agent is not None:
+        marta_agent._elina_agent = elina_agent
 
     async def _scheduled_reviews_loop():
         """Обработка всех отзывов каждые 15 минут."""

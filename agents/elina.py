@@ -3,8 +3,8 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 from loguru import logger
-from telegram import Update
-from telegram.ext import CommandHandler, ContextTypes
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from config import config
 from utils.tg_rich import send_rich_or_fallback as _send_rich
@@ -286,6 +286,27 @@ class ElinaAgent(BaseAgent):
         result = await self.handle_task(brief, from_agent="команды /write")
         await _send_rich(self.bot_token, update.effective_chat.id, result)
 
+    @staticmethod
+    def _extract_description_from_seo(text: str) -> str | None:
+        """Извлекает секцию описания из SEO-текста Элины (выход Claude)."""
+        # Ищем раздел "2. Описание" или "> Описание" в форматированном тексте
+        patterns = [
+            r"(?:\*\*2\.?\s*Описание:?\*\*)\s*\n(.*?)(?=\n\*\*3\.|\n##|\Z)",
+            r"(?:^(?:2\.\s+)?Описание:?)\s*\n(.*?)(?=\n\d+\.|\n##|\Z)",
+        ]
+        for pat in patterns:
+            m = re.search(pat, text, re.DOTALL | re.IGNORECASE | re.MULTILINE)
+            if m:
+                desc = re.sub(r"\*\*|\*|^>\s*", "", m.group(1), flags=re.MULTILINE).strip()
+                if len(desc) >= 50:
+                    return desc[:1000]
+        # Fallback: самый длинный параграф (описание обычно самое длинное)
+        paras = [p.strip() for p in text.split("\n\n") if len(p.strip()) > 100]
+        if paras:
+            raw = max(paras, key=len)
+            return re.sub(r"\*\*|\*|^>\s*", "", raw, flags=re.MULTILINE).strip()[:1000]
+        return None
+
     async def cmd_seo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/seo <product_id> — SEO-карточка (авто-синк + контент + отзывы + воронка)."""
         product_id = " ".join(context.args).strip() if context.args else ""
@@ -317,6 +338,89 @@ class ElinaAgent(BaseAgent):
         result = await self._do_seo_task(product_id, chat_id)
         await _send_rich(self.bot_token, update.effective_chat.id, result)
 
+        # Если Ozon-продукт — предложить применить описание одной кнопкой
+        from db import get_seo_context, get_marketplace_shops
+        ctx   = await get_seo_context(chat_id, product_id)
+        card  = ctx.get("card") or {}
+        if card.get("marketplace") == "ozon":
+            shops = await get_marketplace_shops(chat_id)
+            ozon  = next((s for s in shops if s["marketplace"] == "ozon"), None)
+            if ozon:
+                desc = self._extract_description_from_seo(result)
+                if desc:
+                    import hashlib, json as _json
+                    offer_hash = hashlib.md5(product_id.encode()).hexdigest()[:8]
+                    redis = await self._get_redis()
+                    await redis.set(
+                        f"seo_apply:{chat_id}:{offer_hash}",
+                        _json.dumps({"offer_id": product_id, "description": desc, "shop_id": ozon["id"]}),
+                        ex=86400,
+                    )
+                    kb = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("✅ Применить описание к Ozon", callback_data=f"seoapp:apply:{chat_id}:{offer_hash}"),
+                        InlineKeyboardButton("❌ Пропустить", callback_data=f"seoapp:skip:{chat_id}:{offer_hash}"),
+                    ]])
+                    await self.app.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "💡 <b>Применить SEO-описание к карточке Ozon?</b>\n\n"
+                            f"<i>Предпросмотр ({len(desc)} симв.):</i>\n{desc[:300]}{'…' if len(desc) > 300 else ''}"
+                        ),
+                        parse_mode="HTML",
+                        reply_markup=kb,
+                    )
+
+    async def _handle_seo_apply_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Обработка seoapp:apply/skip:{chat_id}:{offer_hash}."""
+        import json as _json
+        query = update.callback_query
+        await query.answer()
+        parts = query.data.split(":", 3)
+        if len(parts) != 4:
+            return
+        _, action, chat_id_str, offer_hash = parts
+
+        if action == "skip":
+            await query.edit_message_text(query.message.text + "\n\n⏭️ Пропущено", parse_mode="HTML", reply_markup=None)
+            return
+
+        redis  = await self._get_redis()
+        raw    = await redis.get(f"seo_apply:{chat_id_str}:{offer_hash}")
+        if not raw:
+            await query.edit_message_text(
+                query.message.text + "\n\n⚠️ Сессия истекла. Запусти /seo снова.",
+                parse_mode="HTML", reply_markup=None,
+            )
+            return
+
+        plan     = _json.loads(raw)
+        offer_id = plan["offer_id"]
+        desc     = plan["description"]
+        shop_id  = plan["shop_id"]
+
+        from db import get_marketplace_shops
+        from tools.marketplace import OzonClient
+        chat_id = int(chat_id_str)
+        shops   = await get_marketplace_shops(chat_id)
+        shop    = next((s for s in shops if str(s["id"]) == str(shop_id)), None)
+        if not shop:
+            await query.edit_message_text(query.message.text + "\n\n❌ Магазин не найден", parse_mode="HTML", reply_markup=None)
+            return
+
+        await query.edit_message_text(query.message.text + "\n\n⏳ Применяю описание…", parse_mode="HTML", reply_markup=None)
+        client = OzonClient(shop["api_token"], shop.get("client_id") or "")
+        ok     = await client.update_product_description(offer_id, desc)
+        await redis.delete(f"seo_apply:{chat_id_str}:{offer_hash}")
+
+        result = "✅ Описание обновлено на Ozon!" if ok else "❌ Не удалось обновить — проверь логи или обнови вручную в кабинете."
+        await query.edit_message_text(
+            query.message.text.replace("⏳ Применяю описание…", "") + f"\n\n{result}",
+            parse_mode="HTML",
+        )
+        logger.info(f"[Элина/seoapp] chat={chat_id} offer={offer_id} ok={ok}")
+
     async def cmd_post(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/post <тема> — написать пост для Telegram."""
         topic = " ".join(context.args) if context.args else ""
@@ -340,9 +444,9 @@ class ElinaAgent(BaseAgent):
             "📌 **Команды:**\n"
             "/write <бриф> — написать текст по заданию\n"
             "/post <тема> — написать пост для Telegram\n"
-            "/seo <product_id> — SEO-карточка (авто-синк, не нужен /sync_cards)\n"
+            "/seo <product_id> — SEO-карточка (авто-синк + кнопка применить к Ozon)\n"
             "/reset — очистить историю\n\n"
-            "💡 Можно через Марту: \"напиши SEO для товара 12345678\""
+            "💡 Для Ozon: /seo покажет кнопку «Применить описание» — одним кликом обновит карточку."
         )
 
     def _bot_commands(self) -> list:
@@ -359,3 +463,6 @@ class ElinaAgent(BaseAgent):
         self.app.add_handler(CommandHandler("write", self.cmd_write))
         self.app.add_handler(CommandHandler("post",  self.cmd_post))
         self.app.add_handler(CommandHandler("seo",   self.cmd_seo))
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_seo_apply_callback, pattern=r"^seoapp:")
+        )
