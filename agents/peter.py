@@ -1424,7 +1424,7 @@ class PeterAgent(BaseAgent):
             if not wb_shop:
                 return None
 
-            wb = WBClient(wb_shop["api_key"])
+            wb = WBClient(wb_shop["api_token"])
             coefficients = await wb.get_acceptance_coefficients(box_type="Короб")
             if not coefficients:
                 return None

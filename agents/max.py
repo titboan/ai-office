@@ -2422,10 +2422,11 @@ class MaxAgent(BaseAgent):
                             penalty_count=kpi.get("penalty_count", 0),
                             extra_data=kpi.get("extra_data", {}),
                         )
-                        results["wb"] = kpi
                         logger.info(f"[Макс/kpi] WB: рейтинг {kpi.get('rating')}")
+                    results["wb"] = kpi  # всегда, даже пустой — для отображения
                 except Exception as e:
                     logger.error(f"[Макс/kpi] WB: {e}", exc_info=True)
+                    results["wb"] = {}
 
             if mp == "ozon":
                 try:
@@ -2441,10 +2442,11 @@ class MaxAgent(BaseAgent):
                             penalty_count=kpi.get("penalty_count", 0),
                             extra_data=kpi.get("extra_data", {}),
                         )
-                        results["ozon"] = kpi
                         logger.info(f"[Макс/kpi] Ozon: рейтинг {kpi.get('rating')}")
+                    results["ozon"] = kpi  # всегда, даже пустой — для отображения
                 except Exception as e:
                     logger.error(f"[Макс/kpi] Ozon: {e}", exc_info=True)
+                    results["ozon"] = {}
 
         return results
 
@@ -2455,6 +2457,9 @@ class MaxAgent(BaseAgent):
         lines = ["<b>Рейтинг продавца</b>"]
         for mp, kpi in results.items():
             label = "🟣 WB" if mp == "wb" else "🔵 Ozon"
+            if not kpi:
+                lines.append(f"\n{label}\n<i>данные временно недоступны</i>")
+                continue
             rating = kpi.get("rating") or 0
             ret    = kpi.get("return_pct") or 0
             cancel = kpi.get("cancellation_pct") or 0

@@ -1148,6 +1148,7 @@ class WBClient:
                         logger.error(f"[WB.get_shop_kpi] HTTP {resp.status}: {raw[:200]}")
                         return {}
                     data = _json.loads(raw)
+            logger.info(f"[WB.get_shop_kpi] raw: {raw[:400]}")
             info = data.get("data") or data
             return {
                 "rating":           float(info.get("rating") or 0),
@@ -2391,12 +2392,33 @@ class OzonClient:
                         logger.error(f"[Ozon.get_shop_kpi] HTTP {resp.status}: {raw[:200]}")
                         return {}
                     data = _json.loads(raw)
-            result = data.get("result") or {}
-            groups = {g.get("key"): g for g in (result.get("groups") or [])}
-            rating_val   = result.get("total_score") or result.get("rating") or 0
-            cancellation = (groups.get("cancellation_rate") or {}).get("value") or 0
-            return_pct   = (groups.get("return_rate") or {}).get("value") or 0
-            penalty      = int((groups.get("penalty") or {}).get("value") or 0)
+            logger.info(f"[Ozon.get_shop_kpi] raw: {raw[:400]}")
+            # Ozon может вернуть данные в data["result"] или напрямую в data
+            result = data.get("result") or data
+            groups_list = result.get("groups") or data.get("groups") or []
+            groups = {g.get("key"): g for g in groups_list}
+            logger.info(f"[Ozon.get_shop_kpi] group keys: {list(groups.keys())}")
+
+            def _gval(g: dict) -> float:
+                return float(g.get("value") or g.get("current_value") or g.get("score") or 0)
+
+            rating_val = (
+                result.get("total_score") or result.get("rating") or
+                data.get("total_score") or data.get("rating") or 0
+            )
+            # Ключи групп могут быть cancellation_rate/cancellations/cancel и т.п.
+            cancellation = _gval(
+                groups.get("cancellation_rate") or groups.get("cancellations") or
+                groups.get("cancel") or {}
+            )
+            return_pct = _gval(
+                groups.get("return_rate") or groups.get("returns") or
+                groups.get("return") or {}
+            )
+            penalty = int(_gval(
+                groups.get("penalty") or groups.get("fines") or
+                groups.get("fine") or {}
+            ))
             return {
                 "rating":           float(rating_val),
                 "return_pct":       float(return_pct),
