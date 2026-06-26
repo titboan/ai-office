@@ -1308,12 +1308,20 @@ class MartaAgent(BaseAgent):
         _, keyword = query.data.split(":", 1)
 
         if keyword == "back":
-            await query.message.delete()
-            await _send_rich(
-                self.bot_token, query.message.chat_id,
-                "🏢 AI Office — Быстрое меню\n\nВыбери раздел:",
-                reply_markup_dict=self._MARTA_MENU_KEYBOARD.to_dict(),
-            )
+            office_text, office_buttons = self._MMENU_SUBMENUS["office"]
+            try:
+                await query.message.edit_text(
+                    office_text,
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(office_buttons),
+                )
+            except Exception:
+                await query.message.delete()
+                await query.message.chat.send_message(
+                    office_text,
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(office_buttons),
+                )
             return
 
         kw = None if keyword == "all" else keyword
@@ -1711,25 +1719,11 @@ class MartaAgent(BaseAgent):
                 return
 
             if cmd in ("logs_all", "logs_adv"):
-                from db import get_recent_errors
-                keyword = "adv" if cmd == "logs_adv" else None
-                rows_log = await get_recent_errors(hours=24, limit=50)
-                if keyword:
-                    rows_log = [r for r in rows_log
-                                if keyword in (r["message"] or "").lower()
-                                or "wb" in (r["message"] or "").lower()]
-                if not rows_log:
-                    note = " по WB рекламе" if cmd == "logs_adv" else ""
-                    await query.message.reply_text(
-                        f"✅ Ошибок за 24ч{note} не найдено — всё чисто.", parse_mode="HTML"
-                    )
-                else:
-                    lines = [f"🔴 <b>{'Ошибки WB рекламы' if cmd == 'logs_adv' else 'Ошибки'} (24ч) — {len(rows_log)} записей</b>\n"]
-                    for r in rows_log[:10]:
-                        ts = r["ts"].strftime("%d.%m %H:%M") if r["ts"] else "?"
-                        msg = (r["message"] or "")[:300]
-                        lines.append(f"<code>{ts}</code> [{r['level']}]\n{msg}")
-                    await query.message.reply_text("\n\n".join(lines), parse_mode="HTML")
+                kw = "adv" if cmd == "logs_adv" else None
+                text = await self._render_logs(kw)
+                await query.message.reply_text(
+                    text, parse_mode="HTML", reply_markup=self._LOGS_KEYBOARD,
+                )
                 return
 
             # Все остальные команды — передаём агенту
