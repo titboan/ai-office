@@ -4891,10 +4891,14 @@ class MaxAgent(BaseAgent):
             revenue = float(r["revenue_7d"] or 0)
             # Определяем рекомендацию
             if mp == "ozon":
-                if drr > drr_pause_ozon:
-                    direction, delta_pct, reason = "down", 0, f"ДРР {drr:.0f}% — выше {drr_pause_ozon}%"
+                if drr > 60:
+                    direction, delta_pct, reason = "down", 0, f"ДРР {drr:.0f}% — критически высокий, рекомендую паузу"
+                elif drr > drr_pause_ozon:
+                    direction, delta_pct, reason = "down", 20, f"ДРР {drr:.0f}% — высокий, снизить ставки на 20%"
+                elif 0 < drr < 8 and spend > 500:
+                    direction, delta_pct, reason = "up", 15, f"ДРР {drr:.0f}% — низкий, есть запас для роста"
                 else:
-                    continue  # для Ozon пока только пауза при высоком ДРР
+                    continue
             elif drr > 60:
                 direction, delta_pct, reason = "down", 30, f"ДРР {drr:.0f}% — критически высокий"
             elif drr > 40:
@@ -4953,21 +4957,37 @@ class MaxAgent(BaseAgent):
             d   = s["direction"]
             dp  = s["delta_pct"]
 
-            if mp == "ozon" and d == "down":
-                # Ozon: предлагаем паузу кампании, используем camp: callback
+            if mp == "ozon":
                 if not ozon_shop_id:
                     continue
-                text = (
-                    f"{mp_label} <b>{s['name']}</b>\n"
-                    f"ДРР за 7д: <b>{s['drr']:.0f}%</b>  "
-                    f"(расход {s['spend_7d']:,.0f}₽ / выручка {s['revenue_7d']:,.0f}₽)\n\n"
-                    f"💡 Рекомендую поставить на паузу\n"
-                    f"Причина: {s['reason']}"
-                )
-                keyboard = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("⏸️ Поставить на паузу", callback_data=f"camp:pause:{ozon_shop_id}:{cid}"),
-                    InlineKeyboardButton("❌ Пропустить", callback_data=f"bid:ozon:{cid[:20]}:{d}:{dp}:skip"),
-                ]])
+                if d == "down" and dp == 0:
+                    # Критический ДРР → пауза кампании
+                    text = (
+                        f"{mp_label} <b>{s['name']}</b>\n"
+                        f"ДРР за 7д: <b>{s['drr']:.0f}%</b>  "
+                        f"(расход {s['spend_7d']:,.0f}₽ / выручка {s['revenue_7d']:,.0f}₽)\n\n"
+                        f"💡 Рекомендую поставить на паузу\n"
+                        f"Причина: {s['reason']}"
+                    )
+                    keyboard = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("⏸️ Поставить на паузу", callback_data=f"camp:pause:{ozon_shop_id}:{cid}"),
+                        InlineKeyboardButton("🗑️ Удалить", callback_data=f"camp:delete:{ozon_shop_id}:{cid}"),
+                        InlineKeyboardButton("❌ Пропустить", callback_data=f"ozbid:{ozon_shop_id}:{cid[:20]}:{d}:{dp}:skip"),
+                    ]])
+                else:
+                    # Корректировка ставок per-SKU
+                    arrow = "📉 Снизить" if d == "down" else "📈 Поднять"
+                    text = (
+                        f"{mp_label} <b>{s['name']}</b>\n"
+                        f"ДРР за 7д: <b>{s['drr']:.0f}%</b>  "
+                        f"(расход {s['spend_7d']:,.0f}₽ / выручка {s['revenue_7d']:,.0f}₽)\n\n"
+                        f"💡 {arrow} ставки на <b>{dp}%</b> по всем SKU\n"
+                        f"Причина: {s['reason']}"
+                    )
+                    keyboard = InlineKeyboardMarkup([[
+                        InlineKeyboardButton(f"✅ {arrow} ставки", callback_data=f"ozbid:{ozon_shop_id}:{cid[:20]}:{d}:{dp}:apply"),
+                        InlineKeyboardButton("❌ Пропустить", callback_data=f"ozbid:{ozon_shop_id}:{cid[:20]}:{d}:{dp}:skip"),
+                    ]])
             else:
                 # WB: корректировка ставок
                 arrow = "📉 Снизить" if d == "down" else "📈 Поднять"
@@ -5076,6 +5096,7 @@ class MaxAgent(BaseAgent):
                 elif state in ("CAMPAIGN_STATE_STOPPED", "CAMPAIGN_STATE_INACTIVE"):
                     kb = InlineKeyboardMarkup([[
                         InlineKeyboardButton("▶️ Запустить", callback_data=f"camp:activate:{shop_id}:{c['id']}"),
+                        InlineKeyboardButton("🗑️ Удалить", callback_data=f"camp:delete:{shop_id}:{c['id']}"),
                     ]])
                 else:
                     kb = None
@@ -5104,6 +5125,9 @@ class MaxAgent(BaseAgent):
         elif action == "activate":
             ok = await client.activate_campaign(campaign_id)
             label = "▶️ Запущена" if ok else "❌ Ошибка запуска"
+        elif action == "delete":
+            ok = await client.delete_campaign(campaign_id)
+            label = "🗑️ Удалена" if ok else "❌ Ошибка удаления"
         else:
             return False, "❌ Неизвестное действие"
 
@@ -5121,19 +5145,97 @@ class MaxAgent(BaseAgent):
     async def _handle_camp_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """Обработка кнопок camp:pause/activate (Max's bot)."""
+        """Обработка кнопок camp:pause/activate/delete."""
         query = update.callback_query
         await query.answer()
         parts = query.data.split(":", 3)
         if len(parts) != 4:
             return
         _, action, shop_id_str, campaign_id = parts
+
+        if action == "delete":
+            # Сначала показываем подтверждение
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("⚠️ Да, удалить", callback_data=f"camp:delete_ok:{shop_id_str}:{campaign_id}"),
+                InlineKeyboardButton("❌ Отмена", callback_data=f"camp:delete_cancel:{shop_id_str}:{campaign_id}"),
+            ]])
+            await query.edit_message_text(
+                query.message.text + "\n\n⚠️ <b>Удалить кампанию?</b> Это действие необратимо.",
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+            return
+
+        if action == "delete_cancel":
+            await query.edit_message_text(query.message.text.split("\n\n⚠️")[0], parse_mode="HTML", reply_markup=None)
+            return
+
+        if action == "delete_ok":
+            action = "delete"
+
         _, label = await self._execute_camp_action(shop_id_str, action, campaign_id, query.from_user.id)
         await query.edit_message_text(
-            query.message.text + f"\n\n{label}",
+            query.message.text.split("\n\n⚠️")[0] + f"\n\n{label}",
             parse_mode="HTML",
             reply_markup=None,
         )
+
+    async def _handle_ozbid_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Обработка ozbid:{shop_id}:{campaign_id}:{direction}:{delta_pct}:{action} — корректировка ставок Ozon per-SKU."""
+        query = update.callback_query
+        await query.answer()
+        # ozbid:{shop_id}:{campaign_id}:{direction}:{delta_pct}:{action}
+        parts = query.data.split(":", 5)
+        if len(parts) != 6:
+            return
+        _, shop_id_str, campaign_id, direction, delta_str, cb_action = parts
+        chat_id = query.from_user.id
+
+        if cb_action == "skip":
+            await query.edit_message_text(query.message.text + "\n\n⏭️ Пропущено", parse_mode="HTML", reply_markup=None)
+            return
+
+        try:
+            delta_pct = int(delta_str)
+        except ValueError:
+            delta_pct = 0
+
+        from db import get_marketplace_shops
+        from tools.marketplace import OzonPerformanceClient
+
+        shops = await get_marketplace_shops(chat_id)
+        shop  = next((s for s in shops if str(s["id"]) == shop_id_str), None)
+        if not shop or not shop.get("ozon_client_id"):
+            await query.edit_message_text(query.message.text + "\n\n❌ Магазин не найден", parse_mode="HTML", reply_markup=None)
+            return
+
+        redis  = await self._get_redis()
+        client = OzonPerformanceClient(shop["ozon_client_id"], shop["ozon_perf_secret"], redis)
+        bids   = await client.get_campaign_bids(campaign_id)
+
+        if not bids:
+            await query.edit_message_text(
+                query.message.text + "\n\n⚠️ Ставки не найдены или кампания не поддерживает per-SKU ставки.",
+                parse_mode="HTML", reply_markup=None,
+            )
+            return
+
+        multiplier = (1 - delta_pct / 100) if direction == "down" else (1 + delta_pct / 100)
+        new_bids   = [
+            {"product_id": b["product_id"], "bid": max(1.0, round(b["bid"] * multiplier, 2))}
+            for b in bids
+        ]
+        ok = await client.update_campaign_bids(campaign_id, new_bids)
+
+        arrow = "📉 Снижены" if direction == "down" else "📈 Повышены"
+        if ok:
+            result = f"✅ Ставки {arrow} на {delta_pct}% ({len(new_bids)} SKU)"
+            logger.info(f"[Макс/ozbid] chat={chat_id} campaign={campaign_id} {direction} {delta_pct}% ok")
+        else:
+            result = "❌ Не удалось обновить ставки — проверь логи или измени вручную в кабинете."
+        await query.edit_message_text(query.message.text + f"\n\n{result}", parse_mode="HTML", reply_markup=None)
 
     async def _bid_adjust_text(self, chat_id: int) -> str:
         suggestions = await self._collect_bid_suggestions(chat_id)
@@ -5836,6 +5938,9 @@ class MaxAgent(BaseAgent):
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_camp_callback, pattern=r"^camp:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_ozbid_callback, pattern=r"^ozbid:")
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_promo_callback, pattern=r"^promo:")

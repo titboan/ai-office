@@ -2876,6 +2876,74 @@ class OzonPerformanceClient:
             logger.error(f"[OzonPerf] update_budget exception: {e}")
             return False
 
+    async def get_campaign_bids(self, campaign_id: str) -> list[dict]:
+        """Ставки по SKU в кампании. Возвращает [{"product_id": int, "bid": float}]."""
+        token = await self._get_token()
+        if not token:
+            return []
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self._BASE}/api/client/campaign/{campaign_id}/bids",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        logger.error(f"[OzonPerf] get_bids campaign={campaign_id} HTTP {resp.status}: {body[:200]}")
+                        return []
+                    data = await resp.json()
+            raw = data.get("bids") or (data if isinstance(data, list) else [])
+            return [{"product_id": b.get("product_id"), "bid": float(b.get("bid") or 0)} for b in raw]
+        except Exception as e:
+            logger.error(f"[OzonPerf] get_bids exception: {e}")
+            return []
+
+    async def update_campaign_bids(self, campaign_id: str, bids: list[dict]) -> bool:
+        """Обновить ставки по SKU. bids = [{"product_id": int, "bid": float}]."""
+        token = await self._get_token()
+        if not token:
+            return False
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.put(
+                    f"{self._BASE}/api/client/campaign/{campaign_id}/bids",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"bids": bids},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    if resp.status not in (200, 204):
+                        body = await resp.text()
+                        logger.error(f"[OzonPerf] update_bids campaign={campaign_id} HTTP {resp.status}: {body[:200]}")
+                        return False
+                    logger.info(f"[OzonPerf] bids обновлены campaign={campaign_id} ({len(bids)} SKU)")
+                    return True
+        except Exception as e:
+            logger.error(f"[OzonPerf] update_bids exception: {e}")
+            return False
+
+    async def delete_campaign(self, campaign_id: str) -> bool:
+        """Удалить кампанию Ozon Performance. Действие необратимо."""
+        token = await self._get_token()
+        if not token:
+            return False
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.delete(
+                    f"{self._BASE}/api/client/campaign/{campaign_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    if resp.status not in (200, 204):
+                        body = await resp.text()
+                        logger.error(f"[OzonPerf] delete campaign={campaign_id} HTTP {resp.status}: {body[:200]}")
+                        return False
+                    logger.info(f"[OzonPerf] кампания {campaign_id} удалена")
+                    return True
+        except Exception as e:
+            logger.error(f"[OzonPerf] delete exception: {e}")
+            return False
+
 
 def make_client(shop: dict):
     """Фабрика: dict из marketplace_shops → WBClient или OzonClient."""

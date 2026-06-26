@@ -1919,28 +1919,24 @@ class MartaAgent(BaseAgent):
             await _send_rich(self.bot_token, chat_id, text, reply_markup_dict=markup_dict)
 
     async def _handle_camp_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Обработка кнопок camp: через бот Марты."""
-        query = update.callback_query
-        await query.answer()
-        parts = query.data.split(":", 3)
-        if len(parts) != 4:
-            return
-        _, action, shop_id_str, campaign_id = parts
-        chat_id = query.from_user.id
-
+        """Обработка кнопок camp: через бот Марты — делегируем Максу (включая подтверждение удаления)."""
         max_agent = getattr(self, "_max_agent", None)
-        if max_agent is None:
-            await query.edit_message_text(
-                query.message.text + "\n\n❌ Агент Макс недоступен", parse_mode="HTML"
-            )
-            return
+        if max_agent:
+            await max_agent._handle_camp_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(query.message.text + "\n\n❌ Агент Макс недоступен", parse_mode="HTML")
 
-        _, label = await max_agent._execute_camp_action(shop_id_str, action, campaign_id, chat_id)
-        await query.edit_message_text(
-            query.message.text + f"\n\n{label}",
-            parse_mode="HTML",
-            reply_markup=None,
-        )
+    async def _handle_ozbid_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка кнопок ozbid: через бот Марты — корректировка ставок Ozon per-SKU."""
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent._handle_ozbid_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(query.message.text + "\n\n❌ Агент Макс недоступен", parse_mode="HTML")
 
     async def cmd_proxy_margin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "max", "__margin__")
@@ -2092,6 +2088,9 @@ class MartaAgent(BaseAgent):
         self.app.add_handler(CommandHandler("promotions",  self.cmd_proxy_promotions))
         self.app.add_handler(
             CallbackQueryHandler(self._handle_camp_callback, pattern=r"^camp:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_ozbid_callback, pattern=r"^ozbid:")
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_promo_callback, pattern=r"^promo:")

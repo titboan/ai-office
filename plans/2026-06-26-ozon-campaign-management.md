@@ -33,6 +33,16 @@
 - Кнопки ✅ Войти / ❌ Пропустить; `promo:` callbacks на Максе и Марте
 - Кнопки «📣 Кампании» и «🎁 Акции» в Меню Марты → Маркетплейсы
 
+### Фаза 5 — Корректировка ставок Ozon per-SKU + удаление кампаний [x]
+- OzonPerformanceClient: `get_campaign_bids()`, `update_campaign_bids()`, `delete_campaign()`
+- `_collect_bid_suggestions`: 3 сценария для Ozon — пауза (ДРР>60%), снизить ставки 20% (ДРР>40%), поднять ставки 15% (ДРР<8%)
+- `auto_bid_suggest`: `ozbid:{shop_id}:{campaign_id}:{direction}:{delta_pct}:{action}` callback для корректировки ставок
+- `_handle_ozbid_callback` — получает текущие bids → множит на коэффициент → PUT /api/client/campaign/{id}/bids
+- `_handle_camp_callback`: подтверждение удаления (`camp:delete` → диалог → `camp:delete_ok`)
+- `_execute_camp_action`: поддержка action="delete"
+- `_get_campaign_cards`: кнопка 🗑️ Удалить для остановленных кампаний
+- Делегирование `ozbid:` и обновлённый `camp:` handler через Марту
+
 ## Файлы
 
 | Файл | Изменения |
