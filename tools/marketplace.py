@@ -324,6 +324,39 @@ class WBClient:
         logger.info(f"[WB.get_in_transit] {len(supply_ids)} поставок, {len(totals)} артикулов в пути")
         return [{"product_id": art, "qty": qty} for art, qty in totals.items()]
 
+    async def get_acceptance_coefficients(self, box_type: str | None = "Короб") -> list[dict]:
+        """Коэффициенты приёмки WB на ближайшие дни.
+
+        Возвращает [{warehouseID, warehouseName, coefficient, boxTypeName, date}].
+        coefficient=0 → не принимает, >0 → принимает (множитель стоимости логистики).
+        box_type=None → вернуть все типы упаковки.
+        """
+        url = "https://supplies-api.wildberries.ru/api/v1/acceptance/coefficients"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=self._headers(), timeout=_TIMEOUT) as resp:
+                    if resp.status != 200:
+                        raw = await resp.text()
+                        logger.warning(f"[WB.get_acceptance_coefficients] HTTP {resp.status}: {raw[:200]}")
+                        return []
+                    data = await resp.json()
+            result = []
+            for item in (data or []):
+                if box_type and item.get("boxTypeName") != box_type:
+                    continue
+                result.append({
+                    "warehouseID":   item.get("warehouseID"),
+                    "warehouseName": item.get("warehouseName", ""),
+                    "coefficient":   item.get("coefficient", 0),
+                    "boxTypeName":   item.get("boxTypeName", ""),
+                    "date":          item.get("date", ""),
+                })
+            logger.info(f"[WB.get_acceptance_coefficients] box_type={box_type!r}: {len(result)} записей")
+            return result
+        except Exception as e:
+            logger.error(f"[WB.get_acceptance_coefficients] {e}")
+            return []
+
     async def get_orders(self, date_from: datetime, statistics_token: str) -> list[dict]:
         """Новые заказы через Statistics API (isCancel=false)."""
         _STATS_BASE = "https://statistics-api.wildberries.ru"

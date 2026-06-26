@@ -878,7 +878,8 @@ class PeterAgent(BaseAgent):
                     f"need = нужно для цели (только склад), to_order = заказать у поставщика сверх in_transit.\n"
                     f"lead_days = {config.SUPPLY_LEAD_TIME_DAYS} — дней от заказа поставщику до поставки на склад МП.\n"
                     f"total_days_left < lead_days ({config.SUPPLY_LEAD_TIME_DAYS}) → 🔴 КРИТИЧНО (кончится до прихода партии).\n"
-                    f"category — категория товара; для «{', '.join(config.WB_FOOD_CATEGORIES)}» WB-склады ограничены.\n"
+                    f"wb_open_warehouses — склады WB, принимающие сейчас (коэф. > 0 из WB API); рекомендуй только их.\n"
+                    f"category — категория товара (из product_mapping).\n"
                     f"{json.dumps(supply_data, ensure_ascii=False, default=str, indent=2)}"
                 )
             except Exception as e:
@@ -1371,12 +1372,63 @@ class PeterAgent(BaseAgent):
             update=update,
         )
 
+    async def _get_wb_open_warehouses(self, chat_id: int) -> dict[str, int] | None:
+        """Склады WB, принимающие поставки короба сейчас (из Redis-кеша или WB API).
+
+        Возвращает {warehouseName: coefficient} или None если API недоступен.
+        Кеш: 6 часов в Redis (данные меняются раз в сутки).
+        """
+        cache_key = f"wb_acceptance:{chat_id}"
+        cached = await self._redis_get(cache_key)
+        if cached:
+            try:
+                return json.loads(cached)
+            except Exception:
+                pass
+
+        try:
+            from db import get_marketplace_shops
+            from tools.marketplace import WBClient
+            shops = await get_marketplace_shops(chat_id)
+            wb_shop = next((s for s in shops if s["marketplace"] == "wb"), None)
+            if not wb_shop:
+                return None
+
+            wb = WBClient(wb_shop["api_key"])
+            coefficients = await wb.get_acceptance_coefficients(box_type="Короб")
+            if not coefficients:
+                return None
+
+            # Берём уникальные склады, принимающие сейчас (coeff > 0); если склад встречается
+            # несколько раз (разные даты) — берём максимальный коэффициент текущего дня.
+            from datetime import date as _date
+            today = str(_date.today())
+            today_entries = [c for c in coefficients if c.get("date", "").startswith(today)]
+            source = today_entries if today_entries else coefficients
+
+            result: dict[str, int] = {}
+            for c in source:
+                name = c["warehouseName"]
+                coeff = int(c.get("coefficient", 0))
+                if coeff > 0:
+                    result[name] = max(result.get(name, 0), coeff)
+
+            if result:
+                await self._redis_set(cache_key, json.dumps(result, ensure_ascii=False), ttl=6 * 3600)
+            return result or None
+        except Exception as e:
+            logger.warning(f"[Питер] _get_wb_open_warehouses: {e}")
+            return None
+
     async def _collect_supply_data(self, chat_id: int, days: int = 14) -> dict:
         """Остатки по складам/кластерам + темп продаж + товары в пути для плана поставки."""
         from db import get_pool
         from agents.max import _get_cluster, _get_ozon_cluster
         pool = await get_pool()
         date_from = (datetime.now(_UTC) - timedelta(days=days)).date()
+
+        # Живые данные о доступности складов WB (коэффициенты приёмки, кеш 6ч)
+        wb_open_warehouses = await self._get_wb_open_warehouses(chat_id)
 
         async with pool.acquire() as conn:
             raw_stocks = await conn.fetch("""
@@ -1502,7 +1554,11 @@ class PeterAgent(BaseAgent):
                 "clusters": clusters_out,
             })
 
-        return {"products": result, "days_analyzed": days}
+        return {
+            "products": result,
+            "days_analyzed": days,
+            "wb_open_warehouses": wb_open_warehouses,  # {name: coeff} или None если API недоступен
+        }
 
     async def cmd_supply(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -1527,8 +1583,21 @@ class PeterAgent(BaseAgent):
 
         lead = config.SUPPLY_LEAD_TIME_DAYS
         safety = config.SUPPLY_SAFETY_STOCK_DAYS
-        food_wh = ", ".join(config.WB_FOOD_CATEGORY_WAREHOUSES)
         food_cats = ", ".join(config.WB_FOOD_CATEGORIES)
+
+        wb_open = supply_data.get("wb_open_warehouses")
+        if wb_open:
+            wb_wh_block = (
+                f"СКЛАДЫ WB — ОТКРЫТЫ СЕЙЧАС (данные из WB API, коэф. приёмки короба > 0):\n"
+                + "\n".join(f"  {name}: коэф. {coeff}" for name, coeff in sorted(wb_open.items()))
+                + "\nРекомендуй поставку ТОЛЬКО на эти склады. Коэф. 1 = стандарт, >1 = дороже."
+            )
+        else:
+            wb_wh_block = (
+                "СКЛАДЫ WB: данные о доступности недоступны (API не ответил). "
+                "Используй известные крупные склады из данных clusters."
+            )
+
         prompt = f"""Составь план поставок на ближайшие 30 дней.
 
 ДАННЫЕ ПО ОСТАТКАМ, В ПУТИ И ПРОДАЖАМ (период анализа: {days} дней):
@@ -1554,13 +1623,12 @@ class PeterAgent(BaseAgent):
 - days_left > 20 → 🟢 Норма (пропустить если need = 0)
 - 🟢 кластеры показывай только если у товара есть 🔴/🟡 кластеры
 
-СКЛАДЫ WB ДЛЯ КАТЕГОРИЙ "{food_cats}":
-Для товаров где category содержит одно из [{food_cats}] — рекомендуй поставку ТОЛЬКО на склады: {food_wh}
-Если category пустая — анализируй все WB-склады из данных без ограничений.
+{wb_wh_block}
 
 РАСПРЕДЕЛЕНИЕ ПО КЛАСТЕРАМ WB (пропорции для расчёта, сколько шт везти на каждый склад):
 МО (Коледино/Подольск) = 45% | Юг (Краснодар) = 13% | СПб (Шушары) = 11%
 Поволжье (Казань) = 7% | Урал (Екатеринбург) = 4% | Остальные = 20%
+Применяй пропорции только к тем складам из открытых выше.
 
 РАСПРЕДЕЛЕНИЕ ПО КЛАСТЕРАМ OZON:
 Аналогично WB — по данным clusters в supply_data покажи для каждого Ozon-товара:
