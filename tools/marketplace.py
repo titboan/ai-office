@@ -2534,6 +2534,49 @@ class OzonClient:
             logger.error(f"[Ozon.update_desc] {e}", exc_info=True)
             return False
 
+    async def update_product_name(self, offer_id: str, name: str) -> bool:
+        """Обновить заголовок товара на Ozon: offer_id → item_id → /v1/product/name."""
+        import json as _json
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Шаг 1: резолюция offer_id → item_id
+                async with session.post(
+                    f"{self._BASE}/v3/product/info/list",
+                    headers=self._headers(),
+                    json={"offer_id": [offer_id]},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[Ozon.update_name] info/list HTTP {resp.status}: {raw[:300]}")
+                        return False
+                    items = _json.loads(raw).get("items") or []
+                    if not items:
+                        logger.error(f"[Ozon.update_name] offer_id={offer_id} не найден")
+                        return False
+                    item_id = items[0].get("id")
+                    if not item_id:
+                        logger.error(f"[Ozon.update_name] нет item_id для offer_id={offer_id}")
+                        return False
+
+            # Шаг 2: обновление названия
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self._BASE}/v1/product/name",
+                    headers=self._headers(),
+                    json=[{"item_id": item_id, "name": name[:500]}],
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[Ozon.update_name] HTTP {resp.status}: {raw[:300]}")
+                        return False
+                    logger.info(f"[Ozon.update_name] offer_id={offer_id} item_id={item_id} ok")
+                    return True
+        except Exception as e:
+            logger.error(f"[Ozon.update_name] {e}", exc_info=True)
+            return False
+
 
 class OzonPerformanceClient:
     _BASE = "https://api-performance.ozon.ru"

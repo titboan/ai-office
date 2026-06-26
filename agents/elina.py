@@ -289,7 +289,6 @@ class ElinaAgent(BaseAgent):
     @staticmethod
     def _extract_description_from_seo(text: str) -> str | None:
         """Извлекает секцию описания из SEO-текста Элины (выход Claude)."""
-        # Ищем раздел "2. Описание" или "> Описание" в форматированном тексте
         patterns = [
             r"(?:\*\*2\.?\s*Описание:?\*\*)\s*\n(.*?)(?=\n\*\*3\.|\n##|\Z)",
             r"(?:^(?:2\.\s+)?Описание:?)\s*\n(.*?)(?=\n\d+\.|\n##|\Z)",
@@ -300,11 +299,28 @@ class ElinaAgent(BaseAgent):
                 desc = re.sub(r"\*\*|\*|^>\s*", "", m.group(1), flags=re.MULTILINE).strip()
                 if len(desc) >= 50:
                     return desc[:1000]
-        # Fallback: самый длинный параграф (описание обычно самое длинное)
+        # Fallback: самый длинный параграф
         paras = [p.strip() for p in text.split("\n\n") if len(p.strip()) > 100]
         if paras:
             raw = max(paras, key=len)
             return re.sub(r"\*\*|\*|^>\s*", "", raw, flags=re.MULTILINE).strip()[:1000]
+        return None
+
+    @staticmethod
+    def _extract_title_from_seo(text: str) -> str | None:
+        """Извлекает заголовок карточки из SEO-текста (секция «1. Заголовок»)."""
+        patterns = [
+            r"(?:\*\*1\.?\s*Заголовок(?:\s+карточки)?:?\*\*)\s*\n(.*?)(?=\n\*\*2\.|\n##|\Z)",
+            r"(?:^(?:1\.\s+)?Заголовок(?:\s+карточки)?:?)\s*\n(.*?)(?=\n\d+\.|\n##|\Z)",
+            r"(?:\*\*Заголовок(?:\s+карточки)?:?\*\*)\s*(.*?)(?=\n\*\*|\n##|\Z)",
+        ]
+        for pat in patterns:
+            m = re.search(pat, text, re.DOTALL | re.IGNORECASE | re.MULTILINE)
+            if m:
+                title = re.sub(r"\*\*|\*|^>\s*", "", m.group(1), flags=re.MULTILINE).strip()
+                title = title.split("\n")[0].strip()  # берём только первую строку
+                if 10 <= len(title) <= 500:
+                    return title[:500]
         return None
 
     async def cmd_seo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -338,7 +354,7 @@ class ElinaAgent(BaseAgent):
         result = await self._do_seo_task(product_id, chat_id)
         await _send_rich(self.bot_token, update.effective_chat.id, result)
 
-        # Если Ozon-продукт — предложить применить описание одной кнопкой
+        # Если Ozon-продукт — предложить применить заголовок и/или описание
         from db import get_seo_context, get_marketplace_shops
         ctx   = await get_seo_context(chat_id, product_id)
         card  = ctx.get("card") or {}
@@ -346,26 +362,55 @@ class ElinaAgent(BaseAgent):
             shops = await get_marketplace_shops(chat_id)
             ozon  = next((s for s in shops if s["marketplace"] == "ozon"), None)
             if ozon:
-                desc = self._extract_description_from_seo(result)
-                if desc:
+                desc  = self._extract_description_from_seo(result)
+                title = self._extract_title_from_seo(result)
+                if desc or title:
                     import hashlib, json as _json
                     offer_hash = hashlib.md5(product_id.encode()).hexdigest()[:8]
                     redis = await self._get_redis()
                     await redis.set(
                         f"seo_apply:{chat_id}:{offer_hash}",
-                        _json.dumps({"offer_id": product_id, "description": desc, "shop_id": ozon["id"]}),
+                        _json.dumps({
+                            "offer_id": product_id,
+                            "description": desc,
+                            "title": title,
+                            "shop_id": ozon["id"],
+                        }),
                         ex=86400,
                     )
-                    kb = InlineKeyboardMarkup([[
-                        InlineKeyboardButton("✅ Применить описание к Ozon", callback_data=f"seoapp:apply:{chat_id}:{offer_hash}"),
-                        InlineKeyboardButton("❌ Пропустить", callback_data=f"seoapp:skip:{chat_id}:{offer_hash}"),
-                    ]])
+                    # Строим кнопки в зависимости от того, что удалось извлечь
+                    row = []
+                    if title and desc:
+                        row.append(InlineKeyboardButton(
+                            "✅ Заголовок + описание",
+                            callback_data=f"seoapp:apply_full:{chat_id}:{offer_hash}",
+                        ))
+                        row.append(InlineKeyboardButton(
+                            "✅ Только описание",
+                            callback_data=f"seoapp:apply_desc:{chat_id}:{offer_hash}",
+                        ))
+                    else:
+                        row.append(InlineKeyboardButton(
+                            "✅ Применить описание к Ozon",
+                            callback_data=f"seoapp:apply_desc:{chat_id}:{offer_hash}",
+                        ))
+                    row.append(InlineKeyboardButton(
+                        "❌ Пропустить",
+                        callback_data=f"seoapp:skip:{chat_id}:{offer_hash}",
+                    ))
+                    kb = InlineKeyboardMarkup([row])
+
+                    preview_parts = []
+                    if title:
+                        preview_parts.append(f"<b>Заголовок:</b> {title[:120]}")
+                    if desc:
+                        preview_parts.append(
+                            f"<b>Описание ({len(desc)} симв.):</b>\n"
+                            f"{desc[:200]}{'…' if len(desc) > 200 else ''}"
+                        )
                     await self.app.bot.send_message(
                         chat_id=chat_id,
-                        text=(
-                            "💡 <b>Применить SEO-описание к карточке Ozon?</b>\n\n"
-                            f"<i>Предпросмотр ({len(desc)} симв.):</i>\n{desc[:300]}{'…' if len(desc) > 300 else ''}"
-                        ),
+                        text="💡 <b>Применить SEO к карточке Ozon?</b>\n\n" + "\n\n".join(preview_parts),
                         parse_mode="HTML",
                         reply_markup=kb,
                     )
@@ -386,8 +431,8 @@ class ElinaAgent(BaseAgent):
             await query.edit_message_text(query.message.text + "\n\n⏭️ Пропущено", parse_mode="HTML", reply_markup=None)
             return
 
-        redis  = await self._get_redis()
-        raw    = await redis.get(f"seo_apply:{chat_id_str}:{offer_hash}")
+        redis = await self._get_redis()
+        raw   = await redis.get(f"seo_apply:{chat_id_str}:{offer_hash}")
         if not raw:
             await query.edit_message_text(
                 query.message.text + "\n\n⚠️ Сессия истекла. Запусти /seo снова.",
@@ -397,7 +442,8 @@ class ElinaAgent(BaseAgent):
 
         plan     = _json.loads(raw)
         offer_id = plan["offer_id"]
-        desc     = plan["description"]
+        desc     = plan.get("description")
+        title    = plan.get("title")
         shop_id  = plan["shop_id"]
 
         from db import get_marketplace_shops
@@ -409,17 +455,27 @@ class ElinaAgent(BaseAgent):
             await query.edit_message_text(query.message.text + "\n\n❌ Магазин не найден", parse_mode="HTML", reply_markup=None)
             return
 
-        await query.edit_message_text(query.message.text + "\n\n⏳ Применяю описание…", parse_mode="HTML", reply_markup=None)
-        client = OzonClient(shop["api_token"], shop.get("client_id") or "")
-        ok     = await client.update_product_description(offer_id, desc)
+        await query.edit_message_text(query.message.text + "\n\n⏳ Применяю…", parse_mode="HTML", reply_markup=None)
+        client  = OzonClient(shop["api_token"], shop.get("client_id") or "")
+        results = []
+
+        # apply_full / apply (обратная совместимость) / apply_desc
+        if action in ("apply_full", "apply", "apply_desc") and desc:
+            ok_desc = await client.update_product_description(offer_id, desc)
+            results.append("✅ Описание обновлено" if ok_desc else "❌ Описание: ошибка (обнови вручную в кабинете)")
+
+        if action == "apply_full" and title:
+            ok_name = await client.update_product_name(offer_id, title)
+            results.append("✅ Заголовок обновлён" if ok_name else "❌ Заголовок: ошибка (обнови вручную в кабинете)")
+
         await redis.delete(f"seo_apply:{chat_id_str}:{offer_hash}")
 
-        result = "✅ Описание обновлено на Ozon!" if ok else "❌ Не удалось обновить — проверь логи или обнови вручную в кабинете."
+        result_text = "\n".join(results) if results else "❌ Нечего обновлять"
         await query.edit_message_text(
-            query.message.text.replace("⏳ Применяю описание…", "") + f"\n\n{result}",
+            query.message.text.replace("⏳ Применяю…", "") + f"\n\n{result_text}",
             parse_mode="HTML",
         )
-        logger.info(f"[Элина/seoapp] chat={chat_id} offer={offer_id} ok={ok}")
+        logger.info(f"[Элина/seoapp] chat={chat_id} offer={offer_id} action={action} results={results}")
 
     async def cmd_post(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/post <тема> — написать пост для Telegram."""
