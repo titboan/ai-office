@@ -110,6 +110,26 @@ Postgres Tasks: queued → running → completed/failed (chain_id, priority, ret
 
 ---
 
+## Дашборд (React Mini App, `dashboard/`)
+
+Дашборд — зеркало данных Telegram-агентов. **При любом изменении в агентах, обязательно проверить и обновить дашборд.**
+
+| Что изменилось в backend | Что проверить в `dashboard/src/` |
+|---|---|
+| Новое поле в ответе `_collect_data_for_dashboard()` | Добавить в интерфейс `api.ts` и компонент в `charts/` |
+| Изменился расчёт маржи / срочности / метрики | Обновить легенду/тултипы/цветовую логику компонента |
+| Новая секция в Telegram-ответе агента | Создать/обновить соответствующий Chart-компонент |
+| Переименование поля | Синхронно переименовать в `api.ts` и всех компонентах |
+
+Карта компонентов:
+- `NetMarginTable.tsx` ↔ `_collect_data_for_dashboard()["net_margin"]`
+- `StockTable.tsx` ↔ `["low_stocks"]`
+- `RevenueChart.tsx` ↔ `["revenue_by_day"]`
+- `AbcTable.tsx` ↔ `["abc_data"]`
+- `MarginChart.tsx` ↔ `["margin_wb"]` / `["margin_ozon"]`
+
+---
+
 ## Большая фича = план в `plans/`
 
 Создай план если: затронуто 2+ файла, нужен новый эндпоинт / агент / таблица, или ты сам не уверен в объёме. Сомневаешься — создай план.
