@@ -2423,7 +2423,11 @@ class MaxAgent(BaseAgent):
                             extra_data=kpi.get("extra_data", {}),
                         )
                         logger.info(f"[Макс/kpi] WB: рейтинг {kpi.get('rating')}")
-                    results["wb"] = kpi  # всегда, даже пустой — для отображения
+                    else:
+                        from db import get_wb_proxy_kpi
+                        kpi = await get_wb_proxy_kpi(chat_id)
+                        logger.info(f"[Макс/kpi] WB: proxy из БД, рейтинг {kpi.get('rating')}")
+                    results["wb"] = kpi
                 except Exception as e:
                     logger.error(f"[Макс/kpi] WB: {e}", exc_info=True)
                     results["wb"] = {}
@@ -2460,15 +2464,18 @@ class MaxAgent(BaseAgent):
             if not kpi:
                 lines.append(f"\n{label}\n<i>данные временно недоступны</i>")
                 continue
-            rating = kpi.get("rating") or 0
-            ret    = kpi.get("return_pct") or 0
-            cancel = kpi.get("cancellation_pct") or 0
+            is_proxy = kpi.get("_proxy")
+            source = " <i>(по данным за 30 дн)</i>" if is_proxy else ""
+            rating  = kpi.get("rating") or 0
+            ret     = kpi.get("return_pct") or 0
+            cancel  = kpi.get("cancellation_pct")
             penalty = kpi.get("penalty_count") or 0
+            cancel_str = f"{cancel:.1f}%" if cancel is not None else "—"
             lines.append(
-                f"\n{label}\n"
+                f"\n{label}{source}\n"
                 f"⭐ Рейтинг: <b>{rating:.1f}</b>\n"
                 f"↩️ Возвраты: {ret:.1f}%\n"
-                f"🚫 Отмены: {cancel:.1f}%\n"
+                f"🚫 Отмены: {cancel_str}\n"
                 f"⚠️ Штрафы: {penalty}"
             )
         return "\n".join(lines)

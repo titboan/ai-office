@@ -1046,6 +1046,58 @@ async def set_user_setting(chat_id: int, key: str, value: str) -> None:
         )
 
 
+async def get_wb_proxy_kpi(chat_id: int, days: int = 30) -> dict:
+    """Прокси KPI WB из локальных данных когда WB API недоступен.
+
+    Считает рейтинг из отзывов, возвраты из продаж, штрафы из финотчёта.
+    cancellation_pct недоступен (в marketplace_orders нет поля status).
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rating = await conn.fetchval(
+            """
+            SELECT COALESCE(AVG(rating::numeric), 0)
+            FROM marketplace_reviews
+            WHERE chat_id = $1 AND marketplace = 'wb'
+              AND created_at >= NOW() - ($2 || ' days')::interval
+            """,
+            chat_id, str(days),
+        )
+
+        row = await conn.fetchrow(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE is_return) AS returns,
+                COUNT(*) AS total
+            FROM marketplace_sales
+            WHERE chat_id = $1 AND marketplace = 'wb'
+              AND sale_date >= NOW() - ($2 || ' days')::interval
+            """,
+            chat_id, str(days),
+        )
+        total = row["total"] or 0
+        return_pct = float(row["returns"] / total * 100) if total > 0 else 0.0
+
+        penalty = await conn.fetchval(
+            """
+            SELECT COUNT(DISTINCT product_id)
+            FROM marketplace_financial_report
+            WHERE chat_id = $1 AND marketplace = 'wb'
+              AND report_date >= NOW() - ($2 || ' days')::interval
+              AND penalty > 0
+            """,
+            chat_id, str(days),
+        ) or 0
+
+    return {
+        "rating":           float(rating or 0),
+        "return_pct":       return_pct,
+        "cancellation_pct": None,
+        "penalty_count":    int(penalty),
+        "_proxy":           True,
+    }
+
+
 async def upsert_in_transit(
     chat_id: int,
     marketplace: str,
