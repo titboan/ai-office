@@ -2929,13 +2929,20 @@ class MaxAgent(BaseAgent):
             return
         _, mp, review_id, action = parts
 
+        _orig_lines = (query.message.text or "").split('\n')
+        _first_line = _orig_lines[0]
+        _rv_line = next((l for l in _orig_lines if l.startswith('💬')), '')
+
         # Защита от двойного нажатия
         lock_key = f"review_lock:{review_id}"
         locked = await self._redis_get(lock_key)
         if locked:
             await query.answer(f"✅ Уже обработал: {locked}", show_alert=False)
             try:
-                await query.edit_message_reply_markup(reply_markup=None)
+                await query.edit_message_text(
+                    f"✅ Обработано — {locked}\n{_first_line}",
+                    reply_markup=None,
+                )
             except Exception:
                 pass
             return
@@ -2971,8 +2978,10 @@ class MaxAgent(BaseAgent):
                 )
                 if shop and await self._send_to_marketplace(shop, review_id, reply_text):
                     await update_review_status(mp, review_id, "replied", final_reply=reply_text)
+                    from datetime import datetime as _dt
+                    _now = _dt.now(_UTC).strftime("%d %b, %H:%M")
                     await query.edit_message_text(
-                        query.message.text + f"\n\n✅ Ответ отправлен — {first_name}",
+                        f"✅ Ответ отправлен — {first_name}\n{_first_line}\n🕐 {_now}",
                         reply_markup=None,
                     )
                     return
@@ -2982,22 +2991,23 @@ class MaxAgent(BaseAgent):
                 InlineKeyboardButton("🔄 Повторить", callback_data=f"rev:{mp}:{review_id}:retry"),
             ]])
             await query.edit_message_text(
-                query.message.text + "\n\n❌ Не удалось отправить ответ.",
+                f"❌ Не удалось отправить\n{_first_line}",
                 reply_markup=retry_kb,
             )
 
         elif action == "edit":
-            await query.edit_message_text(
-                query.message.text + "\n\n✏️ Напишите ваш вариант ответа:",
-                reply_markup=None,
-            )
+            edit_text = f"✏️ {first_name} редактирует\n{_first_line}"
+            if _rv_line:
+                edit_text += f"\n\n{_rv_line}"
+            edit_text += "\n\nНапишите ваш вариант ответа:"
+            await query.edit_message_text(edit_text, reply_markup=None)
             # pending_edit привязан к чату где нажали кнопку (личка или группа)
             await self._redis_set(f"pending_edit:{msg_chat_id}", f"{mp}:{review_id}:{owner_chat_id}", ttl=600)
 
         elif action == "skip":
             await update_review_status(mp, review_id, "skipped")
             await query.edit_message_text(
-                query.message.text + f"\n\n🚫 Пропущено — {first_name}",
+                f"🚫 Пропущено — {first_name}\n{_first_line}",
                 reply_markup=None,
             )
 
@@ -3080,12 +3090,19 @@ class MaxAgent(BaseAgent):
             return
         _, mp, question_id, action = parts
 
+        _orig_lines = (query.message.text or "").split('\n')
+        _first_line = _orig_lines[0]
+        _q_line = next((l for l in _orig_lines if l.startswith('💬')), '')
+
         lock_key = f"question_lock:{question_id}"
         locked = await self._redis_get(lock_key)
         if locked:
             await query.answer(f"✅ Уже обработал: {locked}", show_alert=False)
             try:
-                await query.edit_message_reply_markup(reply_markup=None)
+                await query.edit_message_text(
+                    f"✅ Обработано — {locked}\n{_first_line}",
+                    reply_markup=None,
+                )
             except Exception:
                 pass
             return
@@ -3126,26 +3143,28 @@ class MaxAgent(BaseAgent):
                             final_answer=answer_text,
                             answered_at=_dt.now(_UTC),
                         )
+                        _now = _dt.now(_UTC).strftime("%d %b, %H:%M")
                         await query.edit_message_text(
-                            query.message.text + f"\n\n✅ Ответ отправлен — {first_name}",
+                            f"✅ Ответ отправлен — {first_name}\n{_first_line}\n🕐 {_now}",
                             reply_markup=None,
                         )
                         return
             # Ответ не ушёл — освобождаем лок и даём повторить
             await self._redis_set(lock_key, "", ttl=1)
             retry_kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔄 Повторить", callback_data=f"q:{mp}:{question_id}:retry"),
+                InlineKeyboardButton("🔄 Повторить", callback_data=f"qrev:{mp}:{question_id}:retry"),
             ]])
             await query.edit_message_text(
-                query.message.text + "\n\n❌ Не удалось отправить ответ.",
+                f"❌ Не удалось отправить\n{_first_line}",
                 reply_markup=retry_kb,
             )
 
         elif action == "edit":
-            await query.edit_message_text(
-                query.message.text + "\n\n✏️ Напишите ваш вариант ответа:",
-                reply_markup=None,
-            )
+            edit_text = f"✏️ {first_name} редактирует\n{_first_line}"
+            if _q_line:
+                edit_text += f"\n\n{_q_line}"
+            edit_text += "\n\nНапишите ваш вариант ответа:"
+            await query.edit_message_text(edit_text, reply_markup=None)
             await self._redis_set(
                 f"pending_edit:{msg_chat_id}",
                 f"q:{mp}:{question_id}:{owner_chat_id}",
@@ -3155,7 +3174,7 @@ class MaxAgent(BaseAgent):
         elif action == "skip":
             await update_question_status(mp, question_id, "skipped")
             await query.edit_message_text(
-                query.message.text + f"\n\n🚫 Пропущено — {first_name}",
+                f"🚫 Пропущено — {first_name}\n{_first_line}",
                 reply_markup=None,
             )
 
