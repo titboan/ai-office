@@ -2743,19 +2743,31 @@ class OzonClient:
             return False
 
     async def get_supply_statuses(self) -> list[dict]:
-        """Активные заявки на поставку FBO с их статусами.
+        """Активные заявки на поставку FBO с разбивкой по товарам.
 
         Возвращает [{"supply_id", "status_id", "status_name", "product_id", "qty"}].
-        Использует POST /v2/supply-order/list → POST /v2/supply-order/get.
+        Поток: /v2/supply-order/list → /v2/supply-order/get (state + bundle_ids) →
+               GET /v1/supply-order/bundle (contractor_item_code + quantity).
         Graceful fallback: если API недоступен — возвращает [].
-        product_id = "" когда состав неизвестен (supply без bundle).
         """
         import json as _json
 
-        # Состояния, которые нас интересуют (не завершённые и не отменённые)
-        SKIP_STATES = {"SUPPLY_ORDER_STATE_ACCEPTED", "SUPPLY_ORDER_STATE_CANCELED",
-                       "SUPPLY_ORDER_STATE_CLOSED", "accepted", "canceled", "closed"}
+        # Терминальные состояния — пропускаем
+        SKIP_STATES = {
+            "SUPPLY_ORDER_STATE_CANCELED", "SUPPLY_ORDER_STATE_CLOSED",
+            "canceled", "closed",
+        }
 
+        # Карта читаемых имён для известных state-строк Ozon
+        _OZON_STATE_NAME: dict[str, str] = {
+            "SUPPLY_ORDER_STATE_DRAFT":           "Черновик",
+            "SUPPLY_ORDER_STATE_NEW":             "Новая",
+            "SUPPLY_ORDER_STATE_AWAITING_SUPPLY": "Готова к отгрузке",
+            "SUPPLY_ORDER_STATE_ACCEPTED":        "Принята на склад",
+            "SUPPLY_ORDER_STATE_IN_TRANSIT":      "В пути",
+        }
+
+        # Шаг 1: список ID заявок
         supply_order_ids: list[str] = []
         last_id = 0
         try:
@@ -2787,8 +2799,9 @@ class OzonClient:
         if not supply_order_ids:
             return []
 
-        result: list[dict] = []
-        # Батч по 50 supply_order_id
+        # Шаг 2: детали заявок → state + supplies[].bundle_id
+        # active_orders: [(supply_order_id, status_name, bundle_id), ...]
+        active_orders: list[tuple[str, str, str]] = []
         for i in range(0, len(supply_order_ids), 50):
             batch = supply_order_ids[i : i + 50]
             try:
@@ -2802,27 +2815,72 @@ class OzonClient:
                         if resp.status not in (200, 201):
                             continue
                         data = _json.loads(await resp.text())
-                orders = data.get("orders") or []
-                for order in orders:
+                for order in data.get("orders") or []:
                     state = str(order.get("state") or "")
                     if state in SKIP_STATES:
                         continue
                     supply_order_id = str(order.get("supply_order_id") or "")
-                    status_name = state or "Неизвестно"
-                    # Нет детализации по товарам в этом ответе — сохраняем на уровне заявки
-                    result.append({
-                        "supply_id": supply_order_id,
-                        "status_id": None,
-                        "status_name": status_name,
-                        "product_id": "",
-                        "qty": 0,
-                    })
+                    status_name = _OZON_STATE_NAME.get(state, state or "Неизвестно")
+                    for sup in order.get("supplies") or []:
+                        bundle_id = str(sup.get("bundle_id") or "")
+                        if bundle_id:
+                            active_orders.append((supply_order_id, status_name, bundle_id))
             except Exception as e:
                 logger.warning(f"[Ozon.get_supply_statuses] get batch {i}: {e}")
 
+        if not active_orders:
+            return []
+
+        # Шаг 3: состав каждого bundle → offer_id + qty
+        result: list[dict] = []
+        for supply_order_id, status_name, bundle_id in active_orders:
+            last_bundle_id = ""
+            while True:
+                try:
+                    params: list[tuple[str, str]] = [
+                        ("bundle_ids", bundle_id),
+                        ("limit", "100"),
+                        ("is_asc", "true"),
+                    ]
+                    if last_bundle_id:
+                        params.append(("last_id", last_bundle_id))
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            f"{self._BASE}/v1/supply-order/bundle",
+                            headers=self._headers(),
+                            params=params,
+                            timeout=_TIMEOUT,
+                        ) as resp:
+                            if resp.status not in (200, 201):
+                                break
+                            data = _json.loads(await resp.text())
+                    for item in data.get("items") or []:
+                        offer_id = str(item.get("contractor_item_code") or "").strip()
+                        if not offer_id:
+                            offer_id = str(item.get("sku") or "")
+                        qty = int(item.get("quantity") or 0)
+                        if offer_id and qty > 0:
+                            result.append({
+                                "supply_id":   supply_order_id,
+                                "status_id":   None,
+                                "status_name": status_name,
+                                "product_id":  offer_id,
+                                "qty":         qty,
+                            })
+                    if not data.get("has_next"):
+                        break
+                    last_bundle_id = str(data.get("last_id") or "")
+                    if not last_bundle_id:
+                        break
+                except Exception as e:
+                    logger.warning(
+                        f"[Ozon.get_supply_statuses] bundle {bundle_id}: {e}"
+                    )
+                    break
+
         logger.info(
             f"[Ozon.get_supply_statuses] {len(supply_order_ids)} заявок, "
-            f"{len(result)} активных"
+            f"{len(active_orders)} активных бандлов, {len(result)} позиций"
         )
         return result
 

@@ -1540,17 +1540,6 @@ class PeterAgent(BaseAgent):
                 ORDER BY marketplace, product_id, status_name
             """, chat_id)
 
-            # Сводка активных заявок на поставку без разбивки по товарам (Ozon)
-            supply_orders_summary_raw = await conn.fetch("""
-                SELECT marketplace,
-                       COUNT(DISTINCT supply_id)::int AS supply_count,
-                       status_name
-                FROM marketplace_supply_orders
-                WHERE chat_id = $1
-                  AND product_id = ''
-                GROUP BY marketplace, status_name
-                ORDER BY marketplace, status_name
-            """, chat_id)
 
         velocity: dict[tuple, float] = {
             (r["marketplace"], r["key"]): float(r["daily_rate"]) for r in velocity_raw
@@ -1570,13 +1559,6 @@ class PeterAgent(BaseAgent):
                 supply_orders_map[key] = []
             supply_orders_map[key].append({"status": r["status_name"], "qty": int(r["qty"])})
 
-        # supply_orders_summary: marketplace → [{status_name, supply_count}] (когда нет разбивки по товарам)
-        supply_orders_summary: dict[str, list[dict]] = {}
-        for r in supply_orders_summary_raw:
-            mp = r["marketplace"]
-            if mp not in supply_orders_summary:
-                supply_orders_summary[mp] = []
-            supply_orders_summary[mp].append({"status": r["status_name"], "count": int(r["supply_count"])})
 
         cluster_stocks: dict[str, dict] = {}
         for row in raw_stocks:
@@ -1653,7 +1635,6 @@ class PeterAgent(BaseAgent):
             "products": result,
             "days_analyzed": days,
             "wb_open_warehouses": wb_open_warehouses,  # {name: coeff} или None если API недоступен
-            "supply_orders_summary": supply_orders_summary,  # Ozon заявки без разбивки по товарам
         }
 
     async def cmd_supply(
@@ -1716,15 +1697,6 @@ class PeterAgent(BaseAgent):
         n_urgent   = sum(1 for p in products if p["urgency"] == "СРОЧНО")
         n_ok       = sum(1 for p in products if p["urgency"] == "НОРМА")
 
-        supply_orders_summary = supply_data.get("supply_orders_summary", {})
-        ozon_supply_summary = supply_orders_summary.get("ozon", [])
-        ozon_supply_block = ""
-        if ozon_supply_summary:
-            lines = ["АКТИВНЫЕ ЗАЯВКИ НА ПОСТАВКУ OZON (из ЛК, без разбивки по товарам):"]
-            for item in ozon_supply_summary:
-                lines.append(f"  • {item['status']}: {item['count']} заявок")
-            ozon_supply_block = "\n".join(lines)
-
         prompt = f"""Составь план поставок. Срочность уже рассчитана в поле urgency.
 {threshold_note}
 Всего позиций: {len(products)} ({n_critical} КРИТИЧНО, {n_urgent} СРОЧНО, {n_ok} НОРМА).
@@ -1739,8 +1711,6 @@ class PeterAgent(BaseAgent):
 ══════════════════════════
 ДАННЫЕ OZON ({len(ozon_products)} товаров, период {days} дней):
 {json.dumps(ozon_products, ensure_ascii=False, indent=2)}
-
-{ozon_supply_block}
 
 OZON FBO: поставка на распред. склад Ozon (не указывай конкретные склады).
 Покажи сток по кластерам (clusters) и суммарно to_order.
