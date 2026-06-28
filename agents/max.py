@@ -1176,7 +1176,7 @@ class MaxAgent(BaseAgent):
                     )
                     notif_key = f"q_notified:{mp}:{q['question_id']}"
                     if not is_new:
-                        # Диагностика: логируем статус в БД и Redis-ключ
+                        # Проверяем статус в БД
                         from db import get_pool as _gp
                         async with (await _gp()).acquire() as _conn:
                             _row = await _conn.fetchrow(
@@ -1184,14 +1184,27 @@ class MaxAgent(BaseAgent):
                                 "WHERE marketplace=$1 AND question_id=$2",
                                 mp, q["question_id"],
                             )
+                        db_status = _row["status"] if _row else "NOT_IN_DB"
                         _redis_val = await self._redis_get(notif_key)
                         logger.info(
                             f"[Макс/questions] {mp} q={q['question_id'][:8]} "
-                            f"status={_row['status'] if _row else 'NOT_IN_DB'} "
-                            f"redis_key={'SET' if _redis_val else 'EMPTY'}"
+                            f"status={db_status} redis_key={'SET' if _redis_val else 'EMPTY'}"
                         )
+                        # WB вернул вопрос как неотвеченный, но наша БД говорит answered/skipped —
+                        # значит ответ не дошёл до WB. Сбрасываем статус и переотправляем.
+                        if db_status in ("answered", "skipped"):
+                            logger.warning(
+                                f"[Макс/questions] {mp} q={q['question_id'][:8]} "
+                                f"WB считает неотвеченным но статус={db_status} — сбрасываем в pending_approval"
+                            )
+                            await update_question_status(
+                                mp, q["question_id"], status="pending_approval",
+                                generated_answer=_row.get("generated_answer") if _row else None,
+                            )
+                            db_status = "pending_approval"
+                            await self._redis_set(notif_key, "", ttl=1)  # сбросить Redis-ключ
                         # Уже в БД — повторить нотификацию если pending и не отправляли в последние 2ч
-                        if not await self._redis_get(notif_key):
+                        if db_status == "pending_approval" and not await self._redis_get(notif_key):
                             from db import get_pending_questions as _gpq
                             pending_db = await _gpq(chat_id)
                             pending_q = next(
