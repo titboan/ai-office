@@ -232,6 +232,7 @@ async def run_all_async() -> None:
         max_agent._peter_agent = peter_agent
     if marta_agent is not None and max_agent is not None:
         marta_agent._max_agent = max_agent
+        max_agent._marta_agent = marta_agent
     if marta_agent is not None and elina_agent is not None:
         marta_agent._elina_agent = elina_agent
 

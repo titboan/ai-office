@@ -1310,6 +1310,26 @@ class MartaAgent(BaseAgent):
             text, parse_mode="HTML", reply_markup=self._LOGS_KEYBOARD,
         )
 
+    async def _delegate_max_question(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Делегирует qrev: callback Максу (кнопки вопросов, присланных через Марту)."""
+        max_agent = getattr(self, '_max_agent', None)
+        if max_agent:
+            await max_agent._handle_question_callback(update, context)
+        else:
+            await update.callback_query.answer("Макс недоступен", show_alert=True)
+
+    async def _delegate_max_review(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Делегирует rev: callback Максу (кнопки отзывов, присланных через Марту)."""
+        max_agent = getattr(self, '_max_agent', None)
+        if max_agent:
+            await max_agent._handle_review_callback(update, context)
+        else:
+            await update.callback_query.answer("Макс недоступен", show_alert=True)
+
     async def _handle_logs_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -2359,3 +2379,6 @@ class MartaAgent(BaseAgent):
         self.app.add_handler(CallbackQueryHandler(self._handle_image_action, pattern="^img_action:"))
         self.app.add_handler(CallbackQueryHandler(self._handle_logs_callback, pattern="^logs:"))
         self.app.add_handler(CallbackQueryHandler(self._handle_infographic_callback, pattern="^infographic_"))
+        # Делегирование кнопок вопросов/отзывов Максу (когда уведомление пришло через Марту)
+        self.app.add_handler(CallbackQueryHandler(self._delegate_max_question, pattern=r"^qrev:"))
+        self.app.add_handler(CallbackQueryHandler(self._delegate_max_review,   pattern=r"^rev:"))

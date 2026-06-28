@@ -1270,8 +1270,13 @@ class MaxAgent(BaseAgent):
             InlineKeyboardButton("✏️ Редактировать", callback_data=f"{cb_base}:edit"),
             InlineKeyboardButton("🚫 Пропустить",    callback_data=f"{cb_base}:skip"),
         ]])
-        target = config.PARTNERS_GROUP_ID if config.PARTNERS_GROUP_ID else chat_id
-        await self._notify_user(target, text, reply_markup=keyboard)
+        # Основной канал — через Марту в личный чат пользователя
+        marta_token = getattr(getattr(self, '_marta_agent', None), 'bot_token', None)
+        await self._notify_user(chat_id, text, reply_markup=keyboard,
+                                bot_token=marta_token or self.bot_token)
+        # Дополнительно — в группу партнёров если задана
+        if config.PARTNERS_GROUP_ID:
+            await self._notify_user(config.PARTNERS_GROUP_ID, text, reply_markup=keyboard)
 
     async def cmd_questions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/questions — показать и повторно отправить все неотвеченные вопросы из БД."""
@@ -2918,9 +2923,13 @@ class MaxAgent(BaseAgent):
             InlineKeyboardButton("✏️ Редактировать", callback_data=f"{cb_base}:edit"),
             InlineKeyboardButton("🚫 Пропустить",    callback_data=f"{cb_base}:skip"),
         ]])
-        # Если группа партнёров задана — отправляем только туда
-        target = config.PARTNERS_GROUP_ID if config.PARTNERS_GROUP_ID else chat_id
-        await self._notify_user(target, text, reply_markup=keyboard)
+        # Основной канал — через Марту в личный чат пользователя
+        marta_token = getattr(getattr(self, '_marta_agent', None), 'bot_token', None)
+        await self._notify_user(chat_id, text, reply_markup=keyboard,
+                                bot_token=marta_token or self.bot_token)
+        # Дополнительно — в группу партнёров если задана
+        if config.PARTNERS_GROUP_ID:
+            await self._notify_user(config.PARTNERS_GROUP_ID, text, reply_markup=keyboard)
 
     # ------------------------------------------------------------------ #
     #  Callback — отзывы                                                   #
