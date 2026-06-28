@@ -1165,11 +1165,11 @@ class MaxAgent(BaseAgent):
                                 (p for p in pending_db if p["question_id"] == q["question_id"]), None
                             )
                             if pending_q:
-                                await self._redis_set(notif_key, "1", ttl=7200)
                                 q["question_text"] = pending_q.get("question_text") or q.get("question_text", "")
                                 await self._notify_pending_question(
                                     chat_id, shop, q, pending_q.get("generated_answer", "")
                                 )
+                                await self._redis_set(notif_key, "1", ttl=7200)
                                 stats["pending"] += 1
                         continue
 
@@ -1189,8 +1189,8 @@ class MaxAgent(BaseAgent):
                         status="pending_approval",
                         generated_answer=answer,
                     )
-                    await self._redis_set(notif_key, "1", ttl=7200)
                     await self._notify_pending_question(chat_id, shop, q, answer)
+                    await self._redis_set(notif_key, "1", ttl=7200)
                     stats["pending"] += 1
                 except Exception as e:
                     logger.error(f"[Макс/questions] обработка вопроса {q.get('question_id', '?')[:8]}: {e}")
