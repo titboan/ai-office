@@ -69,6 +69,19 @@ description: >
 - Список: `/api/v1/feedbacks` isAnswered=false
 - Ответ: POST `/api/v1/feedbacks/answer` → 204
 
+## WB Questions API (основной токен) — feedbacks-api.wildberries.ru
+
+- Список: GET `/api/v1/questions?isAnswered=false&take=100&skip=0`
+- Ответить: PATCH `/api/v1/questions`
+  ```json
+  {"id": "question_id", "answer": {"text": "текст ответа"}, "state": "wbRu"}
+  ```
+  - `state: "wbRu"` — ответ виден на сайте покупателям
+  - `state: "none"` — вопрос отклонён продавцом (скрыт)
+  - ⚠️ `text` должен быть внутри объекта `answer`, НЕ на верхнем уровне
+  - ⚠️ state = `"wbGoodsQaStatePublished"` — неверное значение (WB вернёт 200 но проигнорирует)
+- Источник: [eslazarev/wildberries-sdk specs/09-communications.yaml](https://github.com/eslazarev/wildberries-sdk)
+
 ## Ozon API (Client-Id + Api-Key, Premium Lite)
 
 - Остатки: POST `/v2/analytics/stock_on_warehouses` + маппинг SKU→offer_id через `/v3/product/info/list`
