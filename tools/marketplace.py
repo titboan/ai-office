@@ -1207,14 +1207,16 @@ class WBClient:
         _Q_BASE = "https://feedbacks-api.wildberries.ru"
         url = f"{_Q_BASE}/api/v1/questions"
         headers = {"Authorization": self._token, "Content-Type": "application/json"}
-        body = {"id": question_id, "text": text, "state": "wbGoodsQaStatePublished"}
+        _id = int(question_id) if question_id.isdigit() else question_id
+        body = {"id": _id, "text": text, "state": "wbGoodsQaStatePublished"}
+        logger.info(f"[WB.answer_question] PATCH id={_id!r} (type={type(_id).__name__}) text={text[:40]!r}")
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.patch(url, headers=headers, json=body, timeout=_TIMEOUT) as resp:
-                    if resp.status in (200, 204):
-                        logger.info(f"[WB.answer_question({question_id[:8]})] OK {resp.status}")
-                        return True
                     raw = await resp.text()
+                    if resp.status in (200, 204):
+                        logger.info(f"[WB.answer_question({question_id[:8]})] OK {resp.status} resp={raw[:100]}")
+                        return True
                     logger.error(f"[WB.answer_question({question_id[:8]})] PATCH {resp.status}: {raw[:200]}")
                     return False
         except asyncio.TimeoutError:
