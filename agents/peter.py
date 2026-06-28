@@ -922,7 +922,7 @@ class PeterAgent(BaseAgent):
                     f"lead_days (в данных каждого товара) — дней от заказа поставщику до поставки на склад МП.\n"
                     f"total_days_left < lead_days → 🔴 КРИТИЧНО (кончится до прихода партии).\n"
                     f"wb_open_warehouses — склады WB, принимающие сейчас (коэф. > 0 из WB API); рекомендуй только их.\n"
-                    f"clusters[].cluster_dr — точный per-cluster темп продаж (шт/день): WB — из регионов заказов, Ozon — из аналитики складов.\n"
+                    f"clusters[].cluster_dr — темп продаж кластера (шт/день): WB — из регионов заказов, Ozon — из аналитики складов (или пропорция стока если нет данных).\n"
                     f"clusters[].days_left — запас кластера в днях по cluster_dr.\n"
                     f"clusters[].need — нужно отправить в кластер для TARGET_DAYS запаса.\n"
                     f"category — категория товара (из product_mapping).\n"
@@ -1858,7 +1858,7 @@ class PeterAgent(BaseAgent):
 
 OZON FBO: поставка на конкретный склад Ozon. Рекомендуй по кластерам — куда
 отправить и сколько, основываясь на days_left и need каждого кластера.
-cluster_dr для Ozon — точный, из /v1/analytics/data (заказы по складу за период).
+cluster_dr для Ozon — из аналитики Ozon /v1/analytics/data (если есть); иначе пропорция стока.
 
 ПОЛЯ:
 - stock — на складе МП сейчас
