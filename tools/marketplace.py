@@ -1212,6 +1212,7 @@ class WBClient:
             async with aiohttp.ClientSession() as session:
                 async with session.patch(url, headers=headers, json=body, timeout=_TIMEOUT) as resp:
                     if resp.status in (200, 204):
+                        logger.info(f"[WB.answer_question({question_id[:8]})] OK {resp.status}")
                         return True
                     raw = await resp.text()
                     logger.error(f"[WB.answer_question({question_id[:8]})] PATCH {resp.status}: {raw[:200]}")

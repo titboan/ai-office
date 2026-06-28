@@ -2934,6 +2934,10 @@ class MaxAgent(BaseAgent):
         locked = await self._redis_get(lock_key)
         if locked:
             await query.answer(f"✅ Уже обработал: {locked}", show_alert=False)
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
             return
 
         user = query.from_user
@@ -3075,6 +3079,10 @@ class MaxAgent(BaseAgent):
         locked = await self._redis_get(lock_key)
         if locked:
             await query.answer(f"✅ Уже обработал: {locked}", show_alert=False)
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
             return
 
         user = query.from_user
