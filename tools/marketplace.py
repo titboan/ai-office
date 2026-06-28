@@ -324,6 +324,98 @@ class WBClient:
         logger.info(f"[WB.get_in_transit] {len(supply_ids)} поставок, {len(totals)} артикулов в пути")
         return [{"product_id": art, "qty": qty} for art, qty in totals.items()]
 
+    async def get_supply_statuses(self) -> list[dict]:
+        """Поставки WB с статусами и составом товаров (не-done).
+
+        Возвращает [{"supply_id", "status_id", "status_name", "product_id", "qty"}].
+        """
+        _WB_STATUS: dict[int, str] = {
+            1: "Не запланировано",
+            2: "Запланировано",
+            3: "Отгрузка разрешена",
+            4: "Идёт приёмка",
+            5: "Принято",
+            6: "Отгружено на воротах",
+            7: "В пути",
+            8: "Транзит",
+        }
+        _MP_BASE = "https://marketplace-api.wildberries.ru"
+        headers = self._headers()
+        active_supplies: list[dict] = []
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                next_cursor = 0
+                while True:
+                    async with session.get(
+                        f"{_MP_BASE}/api/v3/supplies",
+                        headers=headers,
+                        params={"limit": 1000, "next": next_cursor},
+                        timeout=_TIMEOUT,
+                    ) as resp:
+                        if resp.status != 200:
+                            raw = await resp.text()
+                            logger.warning(f"[WB.get_supply_statuses] HTTP {resp.status}: {raw[:200]}")
+                            return []
+                        data = await resp.json()
+                    supplies = data.get("supplies") or []
+                    for s in supplies:
+                        if not s.get("done"):
+                            sid = int(s.get("statusID") or 0)
+                            active_supplies.append({
+                                "id": s["id"],
+                                "status_id": sid,
+                                "status_name": _WB_STATUS.get(sid, f"Статус {sid}"),
+                            })
+                    next_val = data.get("next", 0)
+                    if not supplies or not next_val:
+                        break
+                    next_cursor = next_val
+        except Exception as e:
+            logger.error(f"[WB.get_supply_statuses] list error: {e}")
+            return []
+
+        if not active_supplies:
+            return []
+
+        result: list[dict] = []
+        try:
+            async with aiohttp.ClientSession() as session:
+                for sup in active_supplies:
+                    try:
+                        async with session.get(
+                            f"{_MP_BASE}/api/v3/supplies/{sup['id']}/orders",
+                            headers=headers,
+                            params={"limit": 1000},
+                            timeout=_TIMEOUT,
+                        ) as resp:
+                            if resp.status != 200:
+                                continue
+                            data = await resp.json()
+                        article_qty: dict[str, int] = {}
+                        for order in data.get("orders") or []:
+                            article = str(order.get("article") or "").strip()
+                            if article:
+                                article_qty[article] = article_qty.get(article, 0) + 1
+                        for article, qty in article_qty.items():
+                            result.append({
+                                "supply_id": str(sup["id"]),
+                                "status_id": sup["status_id"],
+                                "status_name": sup["status_name"],
+                                "product_id": article,
+                                "qty": qty,
+                            })
+                    except Exception:
+                        continue
+        except Exception as e:
+            logger.error(f"[WB.get_supply_statuses] orders error: {e}")
+
+        logger.info(
+            f"[WB.get_supply_statuses] {len(active_supplies)} поставок, "
+            f"{len(result)} позиций"
+        )
+        return result
+
     async def get_acceptance_coefficients(self, box_type: str | None = "Короб") -> list[dict]:
         """Коэффициенты приёмки WB на ближайшие дни.
 
@@ -2649,6 +2741,90 @@ class OzonClient:
         except Exception as e:
             logger.error(f"[Ozon.update_name] {e}", exc_info=True)
             return False
+
+    async def get_supply_statuses(self) -> list[dict]:
+        """Активные заявки на поставку FBO с их статусами.
+
+        Возвращает [{"supply_id", "status_id", "status_name", "product_id", "qty"}].
+        Использует POST /v2/supply-order/list → POST /v2/supply-order/get.
+        Graceful fallback: если API недоступен — возвращает [].
+        product_id = "" когда состав неизвестен (supply без bundle).
+        """
+        import json as _json
+
+        # Состояния, которые нас интересуют (не завершённые и не отменённые)
+        SKIP_STATES = {"SUPPLY_ORDER_STATE_ACCEPTED", "SUPPLY_ORDER_STATE_CANCELED",
+                       "SUPPLY_ORDER_STATE_CLOSED", "accepted", "canceled", "closed"}
+
+        supply_order_ids: list[str] = []
+        last_id = 0
+        try:
+            async with aiohttp.ClientSession() as session:
+                while True:
+                    async with session.post(
+                        f"{self._BASE}/v2/supply-order/list",
+                        headers=self._headers(),
+                        json={"filter": {}, "paging": {"from_supply_order_id": last_id, "limit": 50}},
+                        timeout=_TIMEOUT,
+                    ) as resp:
+                        if resp.status not in (200, 201):
+                            raw = await resp.text()
+                            logger.warning(
+                                f"[Ozon.get_supply_statuses] /v2/supply-order/list "
+                                f"HTTP {resp.status}: {raw[:200]}"
+                            )
+                            return []
+                        data = _json.loads(await resp.text())
+                    ids = data.get("supply_order_id") or []
+                    supply_order_ids.extend(str(i) for i in ids)
+                    last_id = int(data.get("last_supply_order_id") or 0)
+                    if not ids or not last_id:
+                        break
+        except Exception as e:
+            logger.warning(f"[Ozon.get_supply_statuses] list error: {e}")
+            return []
+
+        if not supply_order_ids:
+            return []
+
+        result: list[dict] = []
+        # Батч по 50 supply_order_id
+        for i in range(0, len(supply_order_ids), 50):
+            batch = supply_order_ids[i : i + 50]
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{self._BASE}/v2/supply-order/get",
+                        headers=self._headers(),
+                        json={"order_ids": batch},
+                        timeout=_TIMEOUT,
+                    ) as resp:
+                        if resp.status not in (200, 201):
+                            continue
+                        data = _json.loads(await resp.text())
+                orders = data.get("orders") or []
+                for order in orders:
+                    state = str(order.get("state") or "")
+                    if state in SKIP_STATES:
+                        continue
+                    supply_order_id = str(order.get("supply_order_id") or "")
+                    status_name = state or "Неизвестно"
+                    # Нет детализации по товарам в этом ответе — сохраняем на уровне заявки
+                    result.append({
+                        "supply_id": supply_order_id,
+                        "status_id": None,
+                        "status_name": status_name,
+                        "product_id": "",
+                        "qty": 0,
+                    })
+            except Exception as e:
+                logger.warning(f"[Ozon.get_supply_statuses] get batch {i}: {e}")
+
+        logger.info(
+            f"[Ozon.get_supply_statuses] {len(supply_order_ids)} заявок, "
+            f"{len(result)} активных"
+        )
+        return result
 
 
 class OzonPerformanceClient:

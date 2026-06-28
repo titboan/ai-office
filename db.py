@@ -671,6 +671,20 @@ async def _create_schema() -> None:
         """)
 
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS marketplace_supply_orders (
+                chat_id     BIGINT       NOT NULL,
+                marketplace TEXT         NOT NULL,
+                supply_id   TEXT         NOT NULL,
+                status_id   INTEGER,
+                status_name TEXT         NOT NULL DEFAULT '',
+                product_id  TEXT         NOT NULL,
+                qty         INTEGER      NOT NULL DEFAULT 0,
+                synced_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (chat_id, marketplace, supply_id, product_id)
+            )
+        """)
+
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS user_plans (
                 id          BIGSERIAL    PRIMARY KEY,
                 chat_id     BIGINT       NOT NULL,
@@ -1117,6 +1131,55 @@ async def upsert_in_transit(
             """,
             chat_id, marketplace, product_id, qty,
         )
+
+
+async def upsert_supply_orders(
+    chat_id: int,
+    marketplace: str,
+    rows: list[dict],
+) -> None:
+    """Заменить статусы поставок на МП (полный пересинк для данного чата+мп)."""
+    if not rows:
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM marketplace_supply_orders WHERE chat_id=$1 AND marketplace=$2",
+            chat_id, marketplace,
+        )
+        await conn.executemany(
+            """
+            INSERT INTO marketplace_supply_orders
+                (chat_id, marketplace, supply_id, status_id, status_name, product_id, qty, synced_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+            ON CONFLICT (chat_id, marketplace, supply_id, product_id) DO UPDATE
+                SET status_id   = EXCLUDED.status_id,
+                    status_name = EXCLUDED.status_name,
+                    qty         = EXCLUDED.qty,
+                    synced_at   = NOW()
+            """,
+            [
+                (chat_id, marketplace, r["supply_id"], r.get("status_id"),
+                 r["status_name"], r["product_id"], r["qty"])
+                for r in rows
+            ],
+        )
+
+
+async def get_active_supply_orders(chat_id: int) -> list[dict]:
+    """Активные поставки (не 'Принято'/'Отгружено на воротах') по всем МП."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT marketplace, supply_id, status_id, status_name, product_id, qty
+            FROM marketplace_supply_orders
+            WHERE chat_id = $1
+            ORDER BY marketplace, supply_id, product_id
+            """,
+            chat_id,
+        )
+    return [dict(r) for r in rows]
 
 
 async def upsert_ad_stat(

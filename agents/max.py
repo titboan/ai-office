@@ -1369,6 +1369,18 @@ class MaxAgent(BaseAgent):
                 except Exception as e:
                     logger.warning(f"[Макс/sync] WB get_in_transit: {e}")
 
+            # Синхронизация статусов поставок на МП
+            try:
+                from db import upsert_supply_orders
+                supply_rows = await client.get_supply_statuses()
+                if supply_rows:
+                    await upsert_supply_orders(chat_id, mp, supply_rows)
+                    logger.info(f"[Макс/sync] {mp_label}: {len(supply_rows)} позиций поставок синхронизировано")
+            except AttributeError:
+                pass  # get_supply_statuses не реализован для этого клиента
+            except Exception as e:
+                logger.warning(f"[Макс/sync] {mp_label} get_supply_statuses: {e}")
+
             # Продажи (включая возвраты с is_return=True)
             try:
                 sales = await client.get_sales(date_from=since, statistics_token=stats_token)
