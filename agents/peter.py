@@ -912,6 +912,9 @@ class PeterAgent(BaseAgent):
                     f"lead_days (в данных каждого товара) — дней от заказа поставщику до поставки на склад МП.\n"
                     f"total_days_left < lead_days → 🔴 КРИТИЧНО (кончится до прихода партии).\n"
                     f"wb_open_warehouses — склады WB, принимающие сейчас (коэф. > 0 из WB API); рекомендуй только их.\n"
+                    f"clusters[].cluster_dr — per-cluster темп продаж (шт/день): WB — из регионов заказов, Ozon — пропорция стока.\n"
+                    f"clusters[].days_left — запас кластера в днях по cluster_dr.\n"
+                    f"clusters[].need — нужно отправить в кластер для TARGET_DAYS запаса.\n"
                     f"category — категория товара (из product_mapping).\n"
                     f"{json.dumps(supply_data, ensure_ascii=False, default=str, indent=2)}"
                 )
@@ -1478,7 +1481,7 @@ class PeterAgent(BaseAgent):
     async def _collect_supply_data(self, chat_id: int, days: int = 14) -> dict:
         """Остатки по складам/кластерам + темп продаж + товары в пути для плана поставки."""
         from db import get_pool
-        from agents.max import _get_cluster, _get_ozon_cluster
+        from agents.max import _get_cluster, _get_ozon_cluster, _get_cluster_from_region
         pool = await get_pool()
         date_from = (datetime.now(_UTC) - timedelta(days=days)).date()
 
@@ -1540,6 +1543,18 @@ class PeterAgent(BaseAgent):
                 ORDER BY marketplace, product_id, status_name
             """, chat_id)
 
+            # Per-region спрос WB для точного расчёта per-cluster daily_rate
+            wb_region_demand_raw = await conn.fetch("""
+                SELECT product_id, region,
+                       ROUND(SUM(quantity)::numeric / $2, 3) AS daily_rate
+                FROM marketplace_orders
+                WHERE chat_id = $1 AND marketplace = 'wb'
+                  AND order_date >= $3
+                  AND region IS NOT NULL AND region != ''
+                GROUP BY product_id, region
+                HAVING SUM(quantity) > 0
+            """, chat_id, days, date_from)
+
 
         velocity: dict[tuple, float] = {
             (r["marketplace"], r["key"]): float(r["daily_rate"]) for r in velocity_raw
@@ -1558,6 +1573,16 @@ class PeterAgent(BaseAgent):
             if key not in supply_orders_map:
                 supply_orders_map[key] = []
             supply_orders_map[key].append({"status": r["status_name"], "qty": int(r["qty"])})
+
+        # WB per-cluster daily_rate из регионов покупателей.
+        # Ключ: (product_id, cluster) → daily_rate.
+        # Позволяет точно вычислить days_left и need для каждого WB-кластера
+        # вместо использования суммарного темпа по всем кластерам.
+        wb_cluster_dr: dict[tuple, float] = {}
+        for r in wb_region_demand_raw:
+            cluster = _get_cluster_from_region(r["region"])
+            key = (r["product_id"], cluster)
+            wb_cluster_dr[key] = wb_cluster_dr.get(key, 0.0) + float(r["daily_rate"])
 
 
         cluster_stocks: dict[str, dict] = {}
@@ -1603,13 +1628,25 @@ class PeterAgent(BaseAgent):
 
             clusters_out = []
             for cl, stock in sorted(prod_data["clusters"].items()):
-                days_left_wh = round(stock / dr, 1) if dr > 0 else 999
-                need_cluster = max(0, round(TARGET_DAYS * dr - stock))
+                # Per-cluster daily_rate:
+                # WB — из регионов заказов (точно); fallback на пропорцию от общего стока
+                # Ozon — пропорционально текущему стоку (нет per-cluster данных из заказов)
+                if mp == "wb":
+                    cl_dr = wb_cluster_dr.get((pid, cl))
+                    if cl_dr is None and total_stock > 0:
+                        cl_dr = dr * stock / total_stock
+                    cl_dr = cl_dr or 0.0
+                else:
+                    cl_dr = (dr * stock / total_stock) if total_stock > 0 else 0.0
+
+                days_left_wh = round(stock / cl_dr, 1) if cl_dr > 0 else 999
+                need_cluster = max(0, round(TARGET_DAYS * cl_dr - stock)) if cl_dr > 0 else 0
                 clusters_out.append({
                     "cluster": cl,
                     "stock": stock,
-                    "days_left": days_left_wh,  # только склад, без учёта в пути
-                    "need": need_cluster,         # нужно для цели (без учёта в пути)
+                    "cluster_dr": round(cl_dr, 2),  # per-cluster темп (шт/день)
+                    "days_left": days_left_wh,
+                    "need": need_cluster,
                 })
 
             total_days_left = round(total_stock / dr, 1) if dr > 0 else 999
@@ -1712,8 +1749,10 @@ class PeterAgent(BaseAgent):
 ДАННЫЕ OZON ({len(ozon_products)} товаров, период {days} дней):
 {json.dumps(ozon_products, ensure_ascii=False, indent=2)}
 
-OZON FBO: поставка на распред. склад Ozon (не указывай конкретные склады).
-Покажи сток по кластерам (clusters) и суммарно to_order.
+OZON FBO: поставка на конкретный склад Ozon. Рекомендуй по кластерам — куда
+отправить и сколько, основываясь на days_left и need каждого кластера.
+⚠️ Для Ozon: cluster_dr рассчитан пропорционально текущему стоку (нет данных о продажах по регионам);
+days_left и need на уровне кластера — приблизительные, но правильно отражают дефицит.
 
 ПОЛЯ:
 - stock — на складе МП сейчас
@@ -1724,6 +1763,10 @@ OZON FBO: поставка на распред. склад Ozon (не указы
   Показывай КАЖДЫЙ статус отдельно с эмодзи-иконкой (см. ниже)
 - to_order — заказать у поставщика СВЕРХ in_transit (уже рассчитано)
 - total_days_left — суммарный запас в днях продаж
+- clusters[].cluster_dr — темп продаж конкретного кластера (шт/день):
+    WB — точный, из регионов заказов; Ozon — приближение пропорционально стоку
+- clusters[].days_left — запас кластера в днях (по cluster_dr)
+- clusters[].need — нужно отправить в кластер для цели TARGET_DAYS (по cluster_dr)
 - urgency — КРИТИЧНО / СРОЧНО / НОРМА (уже рассчитано, не пересчитывай)
 
 Эмодзи для mkt_supplies.status:
@@ -1742,18 +1785,22 @@ OZON FBO: поставка на распред. склад Ozon (не указы
 🔴 **КРИТИЧНО** — *кончится до прихода партии*
 
 **[Название]**
-`[X] шт/день` · остаток [N] шт · запас [N] дн · стокаут [дата]
-📦 [Склад из API]: [N] шт → нужно [N] шт
+`[X] шт/день суммарно` · запас [N] дн
+*Кластеры (из открытых складов WB):*
+  📦 [Кластер/Склад]: [N] шт · [X] шт/день · [N] дн → нужно [N] шт
+  📦 [Кластер/Склад]: [N] шт · [X] шт/день · [N] дн → нужно [N] шт
 🚚 В пути (аналитика): [N] шт *(если есть)*
 [эмодзи] [Статус]: [N] шт *(для каждого mkt_supplies, если есть)*
-**→ заказать [N] шт**
+**→ заказать [N] шт (распред.: [Кластер1] [N] шт, [Кластер2] [N] шт)**
 
 ---
 
 🟡 **СРОЧНО** — *пора размещать заказ*
 
 **[Название]**
-`[X] шт/день` · остаток [N] шт · запас [N] дн
+`[X] шт/день суммарно` · запас [N] дн
+*Кластеры:*
+  📦 [Кластер]: [N] шт · [X] шт/день · [N] дн → нужно [N] шт
 🚚 В пути (аналитика): [N] шт *(если есть)*
 [эмодзи] [Статус]: [N] шт *(если есть)*
 **→ заказать [N] шт**
@@ -1761,22 +1808,24 @@ OZON FBO: поставка на распред. склад Ozon (не указы
 ---
 
 🟢 **НОРМА**
-**[Название]** — [N] дн · `[N] шт/день` · заказ не нужен *(поставки в ЛК если есть)*
+**[Название]** — [N] дн суммарно *(самый слабый кластер: [Кластер] [N] дн)* · заказ не нужен
 
 ---
 
 ## 🔵 Ozon
 
 *(та же структура: КРИТИЧНО → СРОЧНО → НОРМА)*
-*Для КРИТИЧНО/СРОЧНО — кластеры построчно:*
-Кластер [Название]: [N] шт ([N] дн)
+Для каждого товара КРИТИЧНО/СРОЧНО — кластеры построчно:
+  🏭 [Кластер Ozon]: [N] шт · ≈[X] шт/день · [N] дн → нужно [N] шт
+Пометь *(~)* у Ozon-кластеров: спрос рассчитан пропорционально стоку, не из заказов.
+**→ заказать [N] шт (распред.: [Кластер1] [N] шт, [Кластер2] [N] шт)**
 
 ---
 
 ## 📋 Итого к заказу
 
-*(только позиции с to_order > 0, одной строкой каждая)*
-**[Название]** (WB/Ozon) · 🔴/🟡 · **[N] шт**"""
+*(только позиции с to_order > 0)*
+**[Название]** (WB/Ozon) · 🔴/🟡 · **[N] шт** → куда: [Кластер1] [N], [Кластер2] [N]"""
 
         await update.message.reply_text("🤔 Составляю план поставки…")
         try:
