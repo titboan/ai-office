@@ -1175,7 +1175,7 @@ class WBClient:
                     raw = await resp.text()
                     if resp.status != 200:
                         logger.error(f"[WB.get_questions] HTTP {resp.status}: {raw[:200]}")
-                        return []
+                        raise RuntimeError(f"WB questions API HTTP {resp.status}")
                     data = _json.loads(raw)
         except asyncio.TimeoutError:
             logger.error("[marketplace] timeout: WB.get_questions")
