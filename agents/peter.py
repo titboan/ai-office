@@ -442,67 +442,6 @@ class PeterAgent(BaseAgent):
                 })
             net_margin.sort(key=lambda x: x["net_profit_total"], reverse=True)
 
-            # WB фолбек: если финотчёт не содержит WB строк (нет statistics_token) —
-            # берём из marketplace_orders (выручка × WB_PAYOUT_ESTIMATE_RATIO ≈ 0.78).
-            # Маржа будет приблизительной — помечаем _wb_estimated=True для дашборда.
-            if not any(r.get("qty_wb", 0) > 0 for r in net_margin):
-                wb_ord = await _q(conn, "wb_orders_fallback", """
-                    SELECT
-                        COALESCE(m.display_name, o.product_id)          AS product_name,
-                        SUM(o.quantity)::int                             AS qty_wb,
-                        SUM(o.seller_price * o.quantity)::numeric(12,2) AS revenue_wb,
-                        COALESCE(MAX(c.cost), 0)::numeric(12,2)         AS cost_wb
-                    FROM marketplace_orders o
-                    LEFT JOIN product_mapping m
-                           ON LOWER(REPLACE(m.wb_article, ',', '.')) =
-                              LOWER(REPLACE(o.product_id, ',', '.'))
-                    LEFT JOIN product_costs c
-                           ON c.mapping_id = m.id AND c.marketplace = 'wb'
-                    WHERE o.chat_id = $1 AND o.marketplace = 'wb'
-                      AND o.order_date >= $2 AND o.seller_price > 0
-                    GROUP BY COALESCE(m.display_name, o.product_id)
-                    HAVING SUM(o.quantity) > 0
-                """, chat_id, date_from)
-
-                WB_RATIO = config.WB_PAYOUT_ESTIMATE_RATIO
-                nm_idx = {r["product_name"]: r for r in net_margin}
-                for row in wb_ord:
-                    name     = row["product_name"]
-                    qty_wb   = row["qty_wb"] or 0
-                    pay_wb   = float(row["revenue_wb"] or 0) * WB_RATIO
-                    cost_wb  = float(row["cost_wb"] or 0)
-                    prof_wb  = pay_wb * (1 - TAX_RATE) - qty_wb * cost_wb
-                    marg_wb  = round(prof_wb / pay_wb * 100, 1) if pay_wb else None
-
-                    if name in nm_idx:
-                        e = nm_idx[name]
-                        e["qty_wb"] = qty_wb
-                        e["payout_wb"] = round(pay_wb, 2)
-                        e["net_profit_wb"] = round(prof_wb, 2)
-                        e["net_margin_pct_wb"] = marg_wb
-                        e["at_target_wb"] = marg_wb is not None and marg_wb >= TARGET * 100
-                        e["_wb_estimated"] = True
-                        pay_tot  = pay_wb + e.get("payout_ozon", 0)
-                        prof_tot = prof_wb + e.get("net_profit_ozon", 0)
-                        e["net_profit_total"] = round(prof_tot, 2)
-                        e["net_margin_pct_total"] = round(prof_tot / pay_tot * 100, 1) if pay_tot else None
-                    else:
-                        net_margin.append({
-                            "product_name": name,
-                            "qty_wb": qty_wb, "payout_wb": round(pay_wb, 2),
-                            "net_profit_wb": round(prof_wb, 2),
-                            "net_margin_pct_wb": marg_wb,
-                            "recommended_price_wb": None,
-                            "at_target_wb": marg_wb is not None and marg_wb >= TARGET * 100,
-                            "qty_ozon": 0, "payout_ozon": 0,
-                            "net_profit_ozon": 0, "net_margin_pct_ozon": None,
-                            "recommended_price_ozon": None, "at_target_ozon": False,
-                            "net_profit_total": round(prof_wb, 2),
-                            "net_margin_pct_total": marg_wb,
-                            "_wb_estimated": True,
-                        })
-                net_margin.sort(key=lambda x: x["net_profit_total"], reverse=True)
-
             # 6. Рекламные расходы
             # Для Ozon берём реальный расход из финотчёта (marketplace_fin_adv),
             # т.к. Performance API даёт только клики (~55% от фактических расходов).

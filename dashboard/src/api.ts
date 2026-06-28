@@ -21,7 +21,6 @@ export interface NetMarginRow {
   qty_ozon: number; payout_ozon: number; net_profit_ozon: number; net_margin_pct_ozon: number | null
   recommended_price_ozon: number | null; at_target_ozon: boolean
   net_profit_total: number; net_margin_pct_total: number | null
-  _wb_estimated?: boolean
 }
 export interface MomRow { month: string; revenue: number; orders: number }
 export interface ReturnRow {
