@@ -1176,6 +1176,20 @@ class MaxAgent(BaseAgent):
                     )
                     notif_key = f"q_notified:{mp}:{q['question_id']}"
                     if not is_new:
+                        # Диагностика: логируем статус в БД и Redis-ключ
+                        from db import get_pool as _gp
+                        async with (await _gp()).acquire() as _conn:
+                            _row = await _conn.fetchrow(
+                                "SELECT status, generated_answer FROM marketplace_questions "
+                                "WHERE marketplace=$1 AND question_id=$2",
+                                mp, q["question_id"],
+                            )
+                        _redis_val = await self._redis_get(notif_key)
+                        logger.info(
+                            f"[Макс/questions] {mp} q={q['question_id'][:8]} "
+                            f"status={_row['status'] if _row else 'NOT_IN_DB'} "
+                            f"redis_key={'SET' if _redis_val else 'EMPTY'}"
+                        )
                         # Уже в БД — повторить нотификацию если pending и не отправляли в последние 2ч
                         if not await self._redis_get(notif_key):
                             from db import get_pending_questions as _gpq
