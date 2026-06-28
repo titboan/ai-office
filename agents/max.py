@@ -3126,8 +3126,19 @@ class MaxAgent(BaseAgent):
         if action in ("approve", "retry"):
             questions = await get_pending_questions(owner_chat_id)
             q = next((r for r in questions if r["question_id"] == question_id), None)
+            if q is None:
+                # Вопрос мог быть уже помечен answered/skipped, но WB до сих пор отдаёт его
+                async with pool.acquire() as _conn:
+                    _qrow = await _conn.fetchrow(
+                        "SELECT generated_answer FROM marketplace_questions "
+                        "WHERE marketplace=$1 AND question_id=$2",
+                        mp, question_id,
+                    )
+                if _qrow:
+                    q = {"generated_answer": _qrow["generated_answer"]}
+                    logger.info(f"[Макс/retry] q={question_id[:8]} не в pending — берём answer из БД напрямую")
             answer_text = (q or {}).get("generated_answer", "")
-            if q and answer_text:
+            if answer_text:
                 shop = next(
                     (s for s in await get_marketplace_shops(owner_chat_id) if s["marketplace"] == mp),
                     None,
