@@ -672,14 +672,15 @@ async def _create_schema() -> None:
 
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS marketplace_supply_orders (
-                chat_id     BIGINT       NOT NULL,
-                marketplace TEXT         NOT NULL,
-                supply_id   TEXT         NOT NULL,
-                status_id   INTEGER,
-                status_name TEXT         NOT NULL DEFAULT '',
-                product_id  TEXT         NOT NULL,
-                qty         INTEGER      NOT NULL DEFAULT 0,
-                synced_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                chat_id        BIGINT       NOT NULL,
+                marketplace    TEXT         NOT NULL,
+                supply_id      TEXT         NOT NULL,
+                status_id      INTEGER,
+                status_name    TEXT         NOT NULL DEFAULT '',
+                product_id     TEXT         NOT NULL,
+                qty            INTEGER      NOT NULL DEFAULT 0,
+                warehouse_name TEXT         NOT NULL DEFAULT '',
+                synced_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (chat_id, marketplace, supply_id, product_id)
             )
         """)
@@ -738,7 +739,12 @@ async def _create_schema() -> None:
             )
         """)
 
-        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots + multi-shop + orders-shop-id + product-costs-v2 + user_plans + in_transit + agent_logs + wb_campaigns + user_settings)")
+        await conn.execute("""
+            ALTER TABLE marketplace_supply_orders
+                ADD COLUMN IF NOT EXISTS warehouse_name TEXT NOT NULL DEFAULT ''
+        """)
+
+        logger.info("[db] Схема готова ✓ (tasks + marketplace + funnel + snapshots + promotions + kpi + questions + keywords + returns + fin_adv + product_prices + wb_nm_id + category + product_cards + competitor_snapshots + multi-shop + orders-shop-id + product-costs-v2 + user_plans + in_transit + agent_logs + wb_campaigns + user_settings + supply-warehouse)")
 
 async def save_project(
     chat_id: int,
@@ -1150,17 +1156,20 @@ async def upsert_supply_orders(
         await conn.executemany(
             """
             INSERT INTO marketplace_supply_orders
-                (chat_id, marketplace, supply_id, status_id, status_name, product_id, qty, synced_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                (chat_id, marketplace, supply_id, status_id, status_name,
+                 product_id, qty, warehouse_name, synced_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
             ON CONFLICT (chat_id, marketplace, supply_id, product_id) DO UPDATE
-                SET status_id   = EXCLUDED.status_id,
-                    status_name = EXCLUDED.status_name,
-                    qty         = EXCLUDED.qty,
-                    synced_at   = NOW()
+                SET status_id      = EXCLUDED.status_id,
+                    status_name    = EXCLUDED.status_name,
+                    qty            = EXCLUDED.qty,
+                    warehouse_name = EXCLUDED.warehouse_name,
+                    synced_at      = NOW()
             """,
             [
                 (chat_id, marketplace, r["supply_id"], r.get("status_id"),
-                 r["status_name"], r["product_id"], r["qty"])
+                 r["status_name"], r["product_id"], r["qty"],
+                 r.get("warehouse_name", ""))
                 for r in rows
             ],
         )

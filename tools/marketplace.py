@@ -327,7 +327,7 @@ class WBClient:
     async def get_supply_statuses(self) -> list[dict]:
         """Поставки WB с статусами и составом товаров (не-done).
 
-        Возвращает [{"supply_id", "status_id", "status_name", "product_id", "qty"}].
+        Возвращает [{"supply_id", "status_id", "status_name", "product_id", "qty", "warehouse_name"}].
         """
         _WB_STATUS: dict[int, str] = {
             1: "Не запланировано",
@@ -366,6 +366,7 @@ class WBClient:
                                 "id": s["id"],
                                 "status_id": sid,
                                 "status_name": _WB_STATUS.get(sid, f"Статус {sid}"),
+                                "warehouse_name": str(s.get("officeName") or ""),
                             })
                     next_val = data.get("next", 0)
                     if not supplies or not next_val:
@@ -399,11 +400,12 @@ class WBClient:
                                 article_qty[article] = article_qty.get(article, 0) + 1
                         for article, qty in article_qty.items():
                             result.append({
-                                "supply_id": str(sup["id"]),
-                                "status_id": sup["status_id"],
-                                "status_name": sup["status_name"],
-                                "product_id": article,
-                                "qty": qty,
+                                "supply_id":      str(sup["id"]),
+                                "status_id":      sup["status_id"],
+                                "status_name":    sup["status_name"],
+                                "product_id":     article,
+                                "qty":            qty,
+                                "warehouse_name": sup.get("warehouse_name", ""),
                             })
                     except Exception:
                         continue
@@ -2857,9 +2859,9 @@ class OzonClient:
         if not supply_order_ids:
             return []
 
-        # Шаг 2: детали заявок → state + supplies[].bundle_id
-        # active_orders: [(supply_order_id, status_name, bundle_id), ...]
-        active_orders: list[tuple[str, str, str]] = []
+        # Шаг 2: детали заявок → state + warehouse + supplies[].bundle_id
+        # active_orders: [(supply_order_id, status_name, warehouse_name, bundle_id), ...]
+        active_orders: list[tuple[str, str, str, str]] = []
         for i in range(0, len(supply_order_ids), 50):
             batch = supply_order_ids[i : i + 50]
             try:
@@ -2879,10 +2881,16 @@ class OzonClient:
                         continue
                     supply_order_id = str(order.get("supply_order_id") or "")
                     status_name = _OZON_STATE_NAME.get(state, state or "Неизвестно")
+                    # Имя склада Ozon (поле может быть warehouse.name или warehouse_name)
+                    wh_obj = order.get("warehouse") or {}
+                    warehouse_name = str(
+                        wh_obj.get("name") or wh_obj.get("warehouse_name")
+                        or order.get("warehouse_name") or ""
+                    )
                     for sup in order.get("supplies") or []:
                         bundle_id = str(sup.get("bundle_id") or "")
                         if bundle_id:
-                            active_orders.append((supply_order_id, status_name, bundle_id))
+                            active_orders.append((supply_order_id, status_name, warehouse_name, bundle_id))
             except Exception as e:
                 logger.warning(f"[Ozon.get_supply_statuses] get batch {i}: {e}")
 
@@ -2891,7 +2899,7 @@ class OzonClient:
 
         # Шаг 3: состав каждого bundle → offer_id + qty
         result: list[dict] = []
-        for supply_order_id, status_name, bundle_id in active_orders:
+        for supply_order_id, status_name, warehouse_name, bundle_id in active_orders:
             last_bundle_id = ""
             while True:
                 try:
@@ -2919,11 +2927,12 @@ class OzonClient:
                         qty = int(item.get("quantity") or 0)
                         if offer_id and qty > 0:
                             result.append({
-                                "supply_id":   supply_order_id,
-                                "status_id":   None,
-                                "status_name": status_name,
-                                "product_id":  offer_id,
-                                "qty":         qty,
+                                "supply_id":      supply_order_id,
+                                "status_id":      None,
+                                "status_name":    status_name,
+                                "product_id":     offer_id,
+                                "qty":            qty,
+                                "warehouse_name": warehouse_name,
                             })
                     if not data.get("has_next"):
                         break
