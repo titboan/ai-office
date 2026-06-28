@@ -1202,22 +1202,21 @@ class WBClient:
         return results
 
     async def answer_question(self, question_id: str, text: str) -> bool:
-        """Отправить ответ на вопрос покупателя WB."""
-        import json as _json
+        """Отправить ответ на вопрос покупателя WB.
+        POST /api/v1/questions/answer — зеркало feedbacks/answer."""
         _Q_BASE = "https://feedbacks-api.wildberries.ru"
-        url = f"{_Q_BASE}/api/v1/questions"
+        url = f"{_Q_BASE}/api/v1/questions/answer"
         headers = {"Authorization": self._token, "Content-Type": "application/json"}
-        _id = int(question_id) if question_id.isdigit() else question_id
-        body = {"id": _id, "text": text, "state": "wbGoodsQaStatePublished"}
-        logger.info(f"[WB.answer_question] PATCH id={_id!r} (type={type(_id).__name__}) text={text[:40]!r}")
+        body = {"id": question_id, "text": text}
+        logger.info(f"[WB.answer_question] POST id={question_id!r} text={text[:40]!r}")
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.patch(url, headers=headers, json=body, timeout=_TIMEOUT) as resp:
+                async with session.post(url, headers=headers, json=body, timeout=_TIMEOUT) as resp:
                     raw = await resp.text()
                     if resp.status in (200, 204):
                         logger.info(f"[WB.answer_question({question_id[:8]})] OK {resp.status} resp={raw[:100]}")
                         return True
-                    logger.error(f"[WB.answer_question({question_id[:8]})] PATCH {resp.status}: {raw[:200]}")
+                    logger.error(f"[WB.answer_question({question_id[:8]})] POST {resp.status}: {raw[:200]}")
                     return False
         except asyncio.TimeoutError:
             logger.error("[marketplace] timeout: WB.answer_question")

@@ -1193,6 +1193,14 @@ class MaxAgent(BaseAgent):
                         # WB вернул вопрос как неотвеченный, но наша БД говорит answered/skipped —
                         # значит ответ не дошёл до WB. Сбрасываем статус и переотправляем.
                         if db_status in ("answered", "skipped"):
+                            _sent_key = f"q_answer_sent:{mp}:{q['question_id']}"
+                            if await self._redis_get(_sent_key):
+                                # Ответ отправлен менее 2 часов назад — даём WB время обработать
+                                logger.info(
+                                    f"[Макс/questions] {mp} q={q['question_id'][:8]} "
+                                    f"статус={db_status}, ответ отправлен недавно — ждём WB"
+                                )
+                                continue
                             logger.warning(
                                 f"[Макс/questions] {mp} q={q['question_id'][:8]} "
                                 f"WB считает неотвеченным но статус={db_status} — сбрасываем в pending_approval"
@@ -3154,6 +3162,8 @@ class MaxAgent(BaseAgent):
                             final_answer=answer_text,
                             answered_at=_dt.now(_UTC),
                         )
+                        # Защита от спам-петли: планировщик не будет сбрасывать статус 2 часа
+                        await self._redis_set(f"q_answer_sent:{mp}:{question_id}", "1", ttl=7200)
                         _now = _dt.now(_UTC).strftime("%d %b, %H:%M")
                         await query.edit_message_text(
                             f"✅ Ответ отправлен — {first_name}\n{_first_line}\n🕐 {_now}",
