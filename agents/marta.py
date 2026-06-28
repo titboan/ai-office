@@ -768,6 +768,16 @@ class MartaAgent(BaseAgent):
                 except Exception:
                     pass
 
+            # Если пользователь редактирует ответ на отзыв/вопрос — передаём Максу
+            if max_agent:
+                try:
+                    pending_edit = await max_agent._redis_get(f"pending_edit:{chat_id}")
+                    if pending_edit and pending_edit not in (b"", ""):
+                        await max_agent._handle_edit_reply(update, context)
+                        return
+                except Exception:
+                    pass
+
             _kb = self._main_keyboard()
 
             async def reply(text, parse_mode=None, **kw):
@@ -2000,6 +2010,26 @@ class MartaAgent(BaseAgent):
             await query.answer()
             await query.edit_message_text(query.message.text + "\n\n❌ Агент Макс недоступен", parse_mode="HTML")
 
+    async def _handle_review_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Кнопки rev: (отзывы) через бот Марты — делегируем Максу."""
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent._handle_review_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(query.message.text + "\n\n❌ Агент Макс недоступен")
+
+    async def _handle_question_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Кнопки qrev: (вопросы покупателей) через бот Марты — делегируем Максу."""
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent._handle_question_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(query.message.text + "\n\n❌ Агент Макс недоступен")
+
     async def cmd_proxy_margin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "max", "__margin__")
 
@@ -2295,6 +2325,12 @@ class MartaAgent(BaseAgent):
         self.app.add_handler(CommandHandler("reset_orders",      self.cmd_proxy_reset_orders))
         self.app.add_handler(
             CallbackQueryHandler(self._handle_onboard_callback, pattern=r"^onboard:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_review_callback, pattern=r"^rev:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_question_callback, pattern=r"^qrev:")
         )
         # ── Proxy-команды других агентов ─────────────────────────────────
         self.app.add_handler(CommandHandler("code", self.cmd_proxy_code))

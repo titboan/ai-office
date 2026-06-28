@@ -317,15 +317,33 @@ class MaxAgent(BaseAgent):
         if task == "__sync_sku__":
             return "🔄 /sync_sku требует мастера настройки — запусти напрямую у Макса."
         if task == "__questions__":
-            return (
-                "💬 Вопросы покупателей: кнопки одобрения пока работают только в чате Макса.\n"
-                "Временно: используй /questions напрямую у Макса (Phase 2 — выйдет через Марту)."
-            )
+            results = await self.process_questions(chat_id)
+            if not results:
+                return "❓ Нет магазинов для проверки вопросов."
+            _MP = {"wb": "WB", "ozon": "Ozon"}
+            parts = [
+                f"{_MP.get(mp, mp)}: {s.get('found', 0)} новых, {s.get('errors', 0)} ошибок"
+                for mp, s in results.items()
+            ]
+            total_new = sum(s.get("found", 0) for s in results.values())
+            total_pending = sum(s.get("pending", 0) for s in results.values())
+            prefix = f"❓ {total_new} новых вопросов" if total_new else "✅ Новых вопросов нет"
+            suffix = f", {total_pending} ожидают ответа" if total_pending else ""
+            return f"{prefix}{suffix}. {' | '.join(parts)}"
         if task == "__pending__":
-            return (
-                "⏳ Отзывы на модерации: кнопки одобрения пока работают только в чате Макса.\n"
-                "Временно: используй /pending напрямую у Макса (Phase 2 — выйдет через Марту)."
-            )
+            from db import get_pending_reviews, get_marketplace_shops
+            reviews = await get_pending_reviews(chat_id)
+            if not reviews:
+                return "✅ Нет отзывов, ожидающих одобрения."
+            shops = await get_marketplace_shops(chat_id)
+            shown = 0
+            for rv in reviews[:5]:
+                mp = rv["marketplace"]
+                shop = next((s for s in shops if s["marketplace"] == mp), None)
+                if shop:
+                    await self._notify_pending(chat_id, shop, rv, rv.get("generated_reply", ""))
+                    shown += 1
+            return f"⏳ Показал {shown} отзывов на модерацию. Всего ожидает: {len(reviews)}."
         return await self.think(task, chat_id=0, is_task=True)
 
     async def _upload_infographic(
