@@ -1999,6 +1999,64 @@ class OzonClient:
         logger.info(f"[Ozon.get_orders_analytics] sample order_ids: {sample_ids}")
         return results
 
+    async def get_warehouse_demand(self, date_from: str, date_to: str) -> list[dict]:
+        """Заказы Ozon по SKU и складу из /v1/analytics/data (dimension: sku + warehouse).
+
+        Возвращает [{sku, warehouse_name, qty}] — точный per-warehouse спрос.
+        """
+        import json as _json
+        url = f"{self._BASE}/v1/analytics/data"
+        results: list[dict] = []
+        offset = 0
+        while True:
+            body = {
+                "date_from": date_from,
+                "date_to":   date_to,
+                "dimension": ["sku", "warehouse"],
+                "metrics":   ["ordered_units"],
+                "limit":     1000,
+                "offset":    offset,
+            }
+            data = None
+            for attempt in range(3):
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(url, headers=self._headers(), json=body, timeout=_TIMEOUT) as resp:
+                            raw = await resp.text()
+                            if resp.status == 429:
+                                logger.warning(f"[Ozon.get_warehouse_demand] rate limit, жду 60 сек (attempt {attempt+1})")
+                                await asyncio.sleep(60)
+                                continue
+                            if resp.status != 200:
+                                logger.warning(f"[Ozon.get_warehouse_demand] HTTP {resp.status}: {raw[:200]}")
+                                break
+                            data = _json.loads(raw)
+                            break
+                except asyncio.TimeoutError:
+                    logger.error(f"[Ozon.get_warehouse_demand] timeout POST {url}")
+                    break
+                except Exception as e:
+                    logger.error(f"[Ozon.get_warehouse_demand] {e}")
+                    break
+            if data is None:
+                break
+            rows = (data.get("result") or {}).get("data") or []
+            for row in rows:
+                dims = row.get("dimensions") or []
+                qty = int((row.get("metrics") or [0])[0] or 0)
+                if qty <= 0 or len(dims) < 2:
+                    continue
+                results.append({
+                    "sku":           str(dims[0].get("id", "")),
+                    "warehouse_name": str(dims[1].get("name", "")),
+                    "qty":           qty,
+                })
+            if len(rows) < 1000 or offset >= 10000:
+                break
+            offset += len(rows)
+        logger.info(f"[Ozon.get_warehouse_demand] {date_from}–{date_to}: {len(results)} строк по складам")
+        return results
+
     async def get_financial_report(self, date_from: str, date_to: str) -> list[dict]:
         """Финансовый отчёт Ozon через /v3/finance/transaction/list (тип orders + returns).
 
