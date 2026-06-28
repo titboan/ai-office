@@ -353,8 +353,11 @@ class PeterAgent(BaseAgent):
                     COALESCE(MAX(c.cost) FILTER (WHERE c.marketplace = 'ozon'), 0)::numeric(12,2) AS cost_ozon
                 FROM marketplace_financial_report f
                 LEFT JOIN product_mapping m
-                       -- WB: sa_name из финотчёта приходит в нижнем регистре, wb_article — как ввёл селлер
-                       ON (f.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.')) = LOWER(REPLACE(f.product_id, ',', '.')))
+                       -- WB: sa_name (wb_article) или nm_id (wb_nm_id) — зависит от того, что пришло в API
+                       ON (f.marketplace = 'wb' AND (
+                               LOWER(REPLACE(m.wb_article, ',', '.')) = LOWER(REPLACE(f.product_id, ',', '.'))
+                               OR m.wb_nm_id::text = f.product_id
+                           ))
                        -- Ozon: /v3/finance/transaction/list отдаёт items[].sku, не offer_id
                        OR (f.marketplace = 'ozon' AND m.ozon_sku = f.product_id)
                 LEFT JOIN product_costs c ON c.mapping_id = m.id AND c.marketplace = f.marketplace
