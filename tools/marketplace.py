@@ -1192,6 +1192,12 @@ class WBClient:
                 "question_text": item.get("text", ""),
                 "created_at":    item.get("createdDate", ""),
             })
+        if not results:
+            inner = data.get("data") or {}
+            logger.warning(
+                f"[WB.get_questions] 0 вопросов — countUnanswered={inner.get('countUnanswered')}, "
+                f"keys={list(inner.keys())}, raw[:300]={str(data)[:300]}"
+            )
         logger.info(f"[WB.get_questions] {len(results)} вопросов (is_answered={is_answered})")
         return results
 
