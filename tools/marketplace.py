@@ -1745,18 +1745,32 @@ class OzonClient:
         if without_offer:
             logger.warning(f"[Ozon.get_stocks] SKU без offer_id: {without_offer}")
 
+        # Логируем первые поля одной строки для диагностики формата API
+        if rows:
+            sample_keys = list(rows[0].keys())
+            logger.info(f"[Ozon.get_stocks] пример строки (ключи): {sample_keys}")
+            logger.info(f"[Ozon.get_stocks] первая строка: {dict(rows[0])}")
+
         results = []
         skipped = 0
         for item in rows:
             sku = item.get("sku")
             offer_id = sku_map.get(int(sku), "") if sku else ""
             if not offer_id:
+                # item_code в ответе Ozon — это offer_id продавца
+                offer_id = str(item.get("item_code") or "").strip()
+            if not offer_id:
                 skipped += 1
                 continue
+            warehouse_name = str(item.get("warehouse_name") or "").strip()
+            logger.info(
+                f"[Ozon.get_stocks] {offer_id} @ warehouse={warehouse_name!r} "
+                f"stock={item.get('free_to_sell_amount')}"
+            )
             results.append({
                 "product_id":    offer_id,
                 "product_name":  item.get("item_name") or item.get("title") or offer_id,
-                "warehouse_name": item.get("warehouse_name", ""),
+                "warehouse_name": warehouse_name,
                 "stock":         int(item.get("free_to_sell_amount", 0) or item.get("for_sale", 0)),
                 "reserved":      int(item.get("reserved_amount", 0)),
                 "in_transit":    int(item.get("incoming_amount", 0)),

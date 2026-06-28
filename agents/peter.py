@@ -1656,6 +1656,10 @@ class PeterAgent(BaseAgent):
             wb_cluster_dr[key] = wb_cluster_dr.get(key, 0.0) + float(r["daily_rate"])
 
 
+        ozon_rows = [(row["product_id"], row["warehouse_name"] or "", row["stock"] or 0)
+                     for row in raw_stocks if row["marketplace"] == "ozon"]
+        logger.info(f"[Питер/supply] Ozon строки из БД: {ozon_rows}")
+
         cluster_stocks: dict[str, dict] = {}
         for row in raw_stocks:
             mp = row["marketplace"]
