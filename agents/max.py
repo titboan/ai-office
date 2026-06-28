@@ -2960,7 +2960,7 @@ class MaxAgent(BaseAgent):
             )
         owner_chat_id = row["chat_id"] if row else msg_chat_id
 
-        if action == "approve":
+        if action in ("approve", "retry"):
             reviews = await get_pending_reviews(owner_chat_id)
             rv = next((r for r in reviews if r["review_id"] == review_id), None)
             reply_text = (rv or {}).get("generated_reply", "")
@@ -2976,9 +2976,14 @@ class MaxAgent(BaseAgent):
                         reply_markup=None,
                     )
                     return
+            # Ответ не ушёл — освобождаем лок и даём повторить
+            await self._redis_set(lock_key, "", ttl=1)
+            retry_kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔄 Повторить", callback_data=f"rev:{mp}:{review_id}:retry"),
+            ]])
             await query.edit_message_text(
                 query.message.text + "\n\n❌ Не удалось отправить ответ.",
-                reply_markup=None,
+                reply_markup=retry_kb,
             )
 
         elif action == "edit":
@@ -3101,7 +3106,7 @@ class MaxAgent(BaseAgent):
             )
         owner_chat_id = row["chat_id"] if row else msg_chat_id
 
-        if action == "approve":
+        if action in ("approve", "retry"):
             questions = await get_pending_questions(owner_chat_id)
             q = next((r for r in questions if r["question_id"] == question_id), None)
             answer_text = (q or {}).get("generated_answer", "")
@@ -3126,9 +3131,14 @@ class MaxAgent(BaseAgent):
                             reply_markup=None,
                         )
                         return
+            # Ответ не ушёл — освобождаем лок и даём повторить
+            await self._redis_set(lock_key, "", ttl=1)
+            retry_kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔄 Повторить", callback_data=f"q:{mp}:{question_id}:retry"),
+            ]])
             await query.edit_message_text(
                 query.message.text + "\n\n❌ Не удалось отправить ответ.",
-                reply_markup=None,
+                reply_markup=retry_kb,
             )
 
         elif action == "edit":
