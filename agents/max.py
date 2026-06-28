@@ -327,6 +327,25 @@ class MaxAgent(BaseAgent):
             ]
             total_new = sum(s.get("found", 0) for s in results.values())
             total_pending = sum(s.get("pending", 0) for s in results.values())
+            # Дополнительно: force-отправить pending из БД, которые Redis мог заблокировать
+            from db import get_pending_questions, get_marketplace_shops
+            pending_db = await get_pending_questions(chat_id)
+            if pending_db:
+                shops = await get_marketplace_shops(chat_id)
+                for q in pending_db:
+                    mp = q["marketplace"]
+                    shop = next((s for s in shops if s["marketplace"] == mp), None)
+                    if not shop:
+                        continue
+                    await self._notify_pending_question(
+                        chat_id, shop,
+                        {"question_id": q["question_id"], "question_text": q.get("question_text"),
+                         "product_name": q.get("product_name"), "created_at": q.get("created_at")},
+                        q.get("generated_answer", ""),
+                    )
+                    notif_key = f"q_notified:{mp}:{q['question_id']}"
+                    await self._redis_set(notif_key, "1", ttl=7200)
+                    total_pending += 1
             prefix = f"❓ {total_new} новых вопросов" if total_new else "✅ Новых вопросов нет"
             suffix = f", {total_pending} ожидают ответа" if total_pending else ""
             return f"{prefix}{suffix}. {' | '.join(parts)}"
