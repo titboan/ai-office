@@ -733,6 +733,10 @@ class BaseAgent(ABC):
                 self._current_chat_id = task.chat_id
                 self._task_tokens = {"input": 0, "output": 0, "cost": 0.0}
                 _task_start = time.monotonic()
+                # Токен для ответа: если задача от Марты — через её бот, иначе через свой.
+                _reply_token: str | None = {
+                    "marta": getattr(config, "MARTA_BOT_TOKEN", None),
+                }.get(task.from_agent)
                 try:
                     result = await asyncio.wait_for(
                         self.handle_task(task.payload, from_agent=task.from_agent),
@@ -753,17 +757,11 @@ class BaseAgent(ABC):
                         await self._advance_chain(task)
                     else:
                         if task.chat_id:
-                            # Результат отправляем через бот того агента, кто поставил задачу.
-                            # Если задача от Марты — ответ идёт в чат Марты через её бот.
-                            _ORIGIN_TOKENS: dict[str, str | None] = {
-                                "marta": getattr(config, "MARTA_BOT_TOKEN", None),
-                            }
-                            reply_token = _ORIGIN_TOKENS.get(task.from_agent)
                             result_msg = f"✅ {self.emoji} **{self.name}:**\n\n{result}"
                             await self._notify_user(
                                 task.chat_id,
                                 result_msg,
-                                bot_token=reply_token,
+                                bot_token=_reply_token,
                             )
                         await self.post_to_group(f"✅ Задача #{task.id} завершена")
                 except asyncio.TimeoutError:
@@ -778,7 +776,11 @@ class BaseAgent(ABC):
                     if task.chain_id:
                         await self._handle_chain_failure(task)
                     elif task.chat_id:
-                        await self._notify_user(task.chat_id, f"⏱️ {self.emoji} **{self.name}**: задача превысила лимит времени.\n\nПопробуй разбить задачу на части.")
+                        await self._notify_user(
+                            task.chat_id,
+                            f"⏱️ {self.emoji} **{self.name}**: задача превысила лимит времени.\n\nПопробуй разбить задачу на части.",
+                            bot_token=_reply_token,
+                        )
                 except Exception as e:
                     await mark_failed(task.id, f"{type(e).__name__}: {e}", retry=True)
                     await log_event(
@@ -796,7 +798,8 @@ class BaseAgent(ABC):
                             task.chat_id,
                             f"🔴 {self.emoji} **{self.name}** не смог выполнить задачу.\n\n"
                             f"**Причина:** `{error_short}`\n\n"
-                            f"Попробуй переформулировать задачу или обратись к Марте."
+                            f"Попробуй переформулировать задачу или обратись к Марте.",
+                            bot_token=_reply_token,
                         )
             except asyncio.CancelledError:
                 break
@@ -839,6 +842,11 @@ class BaseAgent(ABC):
         chain_total = completed_task.chain_total   # количество групп
         chat_id     = completed_task.chat_id
         current_result = getattr(completed_task, "result", None)
+
+        # Маршрутизация ответа: если цепочка инициирована Мартой — через её бот.
+        _chain_reply_token: str | None = {
+            "marta": getattr(config, "MARTA_BOT_TOKEN", None),
+        }.get(completed_task.from_agent)
 
         plan = await get_chain_plan(None, chain_id)
         if not plan:
@@ -930,7 +938,7 @@ class BaseAgent(ABC):
                     buttons.append(InlineKeyboardButton("🌐 Открыть сайт", url=github_pages_url))
                 keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
 
-                await self._notify_user(chat_id, final_msg, reply_markup=keyboard)
+                await self._notify_user(chat_id, final_msg, reply_markup=keyboard, bot_token=_chain_reply_token)
             return
 
         # ── Переход к следующей группе ────────────────────────────────────────
@@ -938,7 +946,7 @@ class BaseAgent(ABC):
         if not next_steps:
             logger.error(f"chain_advance | chain_id={chain_id[:8]} | no steps for group={next_index}")
             if chat_id:
-                await self._notify_user(chat_id, "⚠️ Ошибка цепочки: следующий шаг не найден в плане.")
+                await self._notify_user(chat_id, "⚠️ Ошибка цепочки: следующий шаг не найден в плане.", bot_token=_chain_reply_token)
             return
 
         is_parallel_next = len(next_steps) > 1
@@ -947,7 +955,7 @@ class BaseAgent(ABC):
         if not is_parallel_next and next_steps[0]["agent"] == self.agent_key:
             logger.error(f"chain_loop | chain_id={chain_id} | agent={self.agent_key}")
             if chat_id:
-                await self._notify_user(chat_id, f"⚠️ Ошибка цепочки: цикл на агенте {self.agent_key}")
+                await self._notify_user(chat_id, f"⚠️ Ошибка цепочки: цикл на агенте {self.agent_key}", bot_token=_chain_reply_token)
             return
 
         # Уведомляем пользователя о прогрессе
@@ -960,6 +968,7 @@ class BaseAgent(ABC):
             await self._notify_user(
                 chat_id,
                 f"✅ {me} завершил [{chain_index+1}/{chain_total}]\n➡️ Передаю {them}…",
+                bot_token=_chain_reply_token,
             )
 
         # Собираем контекст из всех завершённых задач

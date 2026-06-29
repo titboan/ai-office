@@ -2869,7 +2869,8 @@ class MaxAgent(BaseAgent):
                 row += f" {_delta(cnt, rev, pc, pr)} |"
             lines.append(row)
 
-        await _send_rich(config.MAX_BOT_TOKEN, target_chat_id, "\n".join(lines))
+        _token = bot.token if bot is not None else config.MAX_BOT_TOKEN
+        await _send_rich(_token, target_chat_id, "\n".join(lines))
 
     async def _send_stocks(
         self, marketplace: str, owner_chat_id: int, target_chat_id: int, bot=None
@@ -2897,7 +2898,8 @@ class MaxAgent(BaseAgent):
                 lines.append("\n## ❌ Закончились на складах\n")
                 lines.extend(self._render_zero(self._group_by_sku(mp_zero, get_cluster)))
 
-        await _send_rich(config.MAX_BOT_TOKEN, target_chat_id, "\n".join(lines))
+        _token = bot.token if bot is not None else config.MAX_BOT_TOKEN
+        await _send_rich(_token, target_chat_id, "\n".join(lines))
 
     async def send_daily_summary(self, owner_chat_id: int, target_chat_id: int, bot=None) -> None:
         """Синхронизировать данные и отправить ежедневную сводку тремя сообщениями."""
