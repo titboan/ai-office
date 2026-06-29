@@ -354,7 +354,8 @@ class MaxAgent(BaseAgent):
             return f"✅ Финансовый отчёт: WB {res.get('wb', 0)} зап., Ozon {res.get('ozon', 0)} зап."
         if task == "__sync_adv__":
             await self.sync_ad_stats(chat_id)
-            return "✅ Рекламная статистика обновлена в marketplace_adv_stats."
+            await self._check_drr_alerts(chat_id)
+            return "✅ Рекламная статистика обновлена. Если ДРР > 25% — алерт уже отправлен."
         if task == "__sync_funnel__":
             res = await self.sync_funnel(chat_id)
             return f"✅ Воронка: WB {res.get('wb', 0)} зап., Ozon {res.get('ozon', 0)} зап."
