@@ -4739,6 +4739,8 @@ class MaxAgent(BaseAgent):
                     MAX(c.cost) FILTER (WHERE c.marketplace = 'ozon') AS cost_ozon,
 
                     /* DRR WB за 7 дней */
+                    -- marketplace_orders.product_id для WB = wb_article, а product_adv_stats.product_id = nm_id
+                    -- используем m.wb_article из внешнего запроса (m.wb_nm_id = a.product_id гарантирует маппинг)
                     (SELECT CASE WHEN COALESCE(SUM(o.seller_price * o.quantity), 0) > 0
                                  THEN ROUND(SUM(a.spend) /
                                             SUM(o.seller_price * o.quantity) * 100, 1)
@@ -4746,7 +4748,7 @@ class MaxAgent(BaseAgent):
                      FROM product_adv_stats a
                      LEFT JOIN marketplace_orders o
                             ON o.chat_id = $1 AND o.marketplace = 'wb'
-                           AND o.product_id = a.product_id
+                           AND o.product_id = m.wb_article
                            AND o.order_date >= NOW() - INTERVAL '7 days'
                      WHERE a.chat_id = $1 AND a.marketplace = 'wb'
                        AND a.stat_date >= NOW() - INTERVAL '7 days'
@@ -5081,8 +5083,14 @@ class MaxAgent(BaseAgent):
                         m.wb_nm_id = p.product_id OR m.ozon_sku = p.product_id
                     )
                     LEFT JOIN marketplace_orders o ON (
-                        o.chat_id    = p.chat_id
-                        AND o.product_id = p.product_id
+                        o.chat_id = p.chat_id
+                        AND o.marketplace = p.marketplace
+                        -- WB: marketplace_orders.product_id = wb_article, product_adv_stats.product_id = nm_id
+                        -- мостим через product_mapping (m.wb_nm_id = p.product_id из JOIN выше)
+                        AND (
+                            (p.marketplace = 'wb'   AND o.product_id = m.wb_article)
+                            OR (p.marketplace = 'ozon' AND o.product_id = p.product_id)
+                        )
                         AND o.order_date >= NOW() - INTERVAL '7 days'
                     )
                     WHERE p.chat_id = $1 AND p.stat_date >= NOW() - INTERVAL '7 days'
@@ -5155,8 +5163,13 @@ class MaxAgent(BaseAgent):
                     m.wb_nm_id = p.product_id OR m.ozon_sku = p.product_id
                 )
                 LEFT JOIN marketplace_orders o ON (
-                    o.chat_id    = p.chat_id
-                    AND o.product_id = p.product_id
+                    o.chat_id = p.chat_id
+                    AND o.marketplace = p.marketplace
+                    -- WB: marketplace_orders.product_id = wb_article, product_adv_stats.product_id = nm_id
+                    AND (
+                        (p.marketplace = 'wb'   AND o.product_id = m.wb_article)
+                        OR (p.marketplace = 'ozon' AND o.product_id = p.product_id)
+                    )
                     AND o.order_date >= NOW() - INTERVAL '7 days'
                 )
                 WHERE p.chat_id = $1

@@ -637,17 +637,23 @@ class PeterAgent(BaseAgent):
                 LEFT JOIN (
                     SELECT
                         sl.marketplace,
-                        -- marketplace_sales хранит ozon_offer_id, а не ozon_sku — транслируем
-                        CASE WHEN sl.marketplace = 'ozon'
+                        -- WB: marketplace_sales хранит wb_article, product_adv_stats хранит nm_id → транслируем
+                        -- Ozon: marketplace_sales хранит ozon_offer_id, product_adv_stats хранит ozon_sku → транслируем
+                        CASE WHEN sl.marketplace = 'wb'
+                             THEN COALESCE(mm.wb_nm_id, sl.product_id)
+                             WHEN sl.marketplace = 'ozon'
                              THEN COALESCE(mm.ozon_sku, sl.product_id)
                              ELSE sl.product_id END AS key,
                         SUM(sl.price * sl.quantity)::numeric(12,2) AS buyouts
                     FROM marketplace_sales sl
                     LEFT JOIN product_mapping mm
-                           ON mm.ozon_offer_id = sl.product_id
+                           ON (sl.marketplace = 'wb'   AND mm.wb_article    = sl.product_id)
+                           OR (sl.marketplace = 'ozon' AND mm.ozon_offer_id = sl.product_id)
                     WHERE sl.chat_id = $1 AND sl.sale_date >= $2 AND sl.is_return = FALSE
                     GROUP BY sl.marketplace,
-                             CASE WHEN sl.marketplace = 'ozon'
+                             CASE WHEN sl.marketplace = 'wb'
+                                  THEN COALESCE(mm.wb_nm_id, sl.product_id)
+                                  WHEN sl.marketplace = 'ozon'
                                   THEN COALESCE(mm.ozon_sku, sl.product_id)
                                   ELSE sl.product_id END
                 ) s ON s.marketplace = p.marketplace AND s.key = p.product_id
