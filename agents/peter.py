@@ -563,6 +563,17 @@ class PeterAgent(BaseAgent):
                 LIMIT 10
             """, chat_id)
 
+            # Агрегированные выплаты из финотчётов — знаменатель для ДРР по площадке
+            # (ppvz_for_pay WB / accruals Ozon, уже после всех удержаний МП)
+            fin_payout = await _q(conn, "fin_payout", """
+                SELECT marketplace,
+                       SUM(payout)::numeric(12,2) AS payout
+                FROM marketplace_financial_report
+                WHERE chat_id = $1
+                  AND report_date >= DATE_TRUNC('week', $2::date)
+                GROUP BY marketplace
+            """, chat_id, date_from)
+
         return {
             "period_days":      days,
             "date_from":        date_from,
@@ -574,6 +585,7 @@ class PeterAgent(BaseAgent):
             "margin_ozon":      [dict(r) for r in margin_ozon],
             "net_margin":       [dict(r) for r in net_margin],
             "adv":              [dict(r) for r in adv],
+            "fin_payout":       [dict(r) for r in fin_payout],
             "low_stocks":       [dict(r) for r in low_stocks],
             "mom_trends":       [dict(r) for r in mom],
             "returns_top":      [dict(r) for r in returns_top],
@@ -623,42 +635,43 @@ class PeterAgent(BaseAgent):
                          ELSE 0 END                                 AS avg_ctr,
                     SUM(p.spend)::numeric(12,2)                     AS adv_spend,
                     SUM(p.orders_count)::integer                    AS adv_orders,
-                    COALESCE(s.buyouts, 0)::numeric(12,2)           AS buyouts,
+                    COALESCE(s.payout, 0)::numeric(12,2)            AS buyouts,
                     CASE WHEN SUM(p.spend) > 0
-                         THEN ROUND(COALESCE(s.buyouts, 0) / SUM(p.spend), 2)
+                         THEN ROUND(COALESCE(s.payout, 0) / SUM(p.spend), 2)
                          ELSE 0 END                                 AS roas,
-                    CASE WHEN COALESCE(s.buyouts, 0) > 0
-                         THEN ROUND(SUM(p.spend) / COALESCE(s.buyouts, 0) * 100, 2)
+                    CASE WHEN COALESCE(s.payout, 0) > 0
+                         THEN ROUND(SUM(p.spend) / COALESCE(s.payout, 0) * 100, 2)
                          ELSE NULL END                              AS drr
                 FROM product_adv_stats p
                 LEFT JOIN product_mapping m
                        ON m.wb_nm_id  = p.product_id
                        OR m.ozon_sku  = p.product_id
                 LEFT JOIN (
+                    -- Реальные выплаты из финотчётов: WB = ppvz_for_pay, Ozon = accruals
+                    -- WB: financial_report.product_id = wb_article (sa_name) → транслируем в nm_id
+                    -- Ozon: financial_report.product_id = sku (числовой) = product_adv_stats.product_id
                     SELECT
-                        sl.marketplace,
-                        -- WB: marketplace_sales хранит wb_article, product_adv_stats хранит nm_id → транслируем
-                        -- Ozon: marketplace_sales хранит ozon_offer_id, product_adv_stats хранит ozon_sku → транслируем
-                        CASE WHEN sl.marketplace = 'wb'
-                             THEN COALESCE(mm.wb_nm_id, sl.product_id)
-                             WHEN sl.marketplace = 'ozon'
-                             THEN COALESCE(mm.ozon_sku, sl.product_id)
-                             ELSE sl.product_id END AS key,
-                        SUM(sl.price * sl.quantity)::numeric(12,2) AS buyouts
-                    FROM marketplace_sales sl
+                        f.marketplace,
+                        CASE WHEN f.marketplace = 'wb'
+                             THEN mm.wb_nm_id
+                             ELSE f.product_id END AS adv_key,
+                        SUM(f.payout)::numeric(12,2) AS payout
+                    FROM marketplace_financial_report f
                     LEFT JOIN product_mapping mm
-                           ON (sl.marketplace = 'wb'   AND mm.wb_article    = sl.product_id)
-                           OR (sl.marketplace = 'ozon' AND mm.ozon_offer_id = sl.product_id)
-                    WHERE sl.chat_id = $1 AND sl.sale_date >= $2 AND sl.is_return = FALSE
-                    GROUP BY sl.marketplace,
-                             CASE WHEN sl.marketplace = 'wb'
-                                  THEN COALESCE(mm.wb_nm_id, sl.product_id)
-                                  WHEN sl.marketplace = 'ozon'
-                                  THEN COALESCE(mm.ozon_sku, sl.product_id)
-                                  ELSE sl.product_id END
-                ) s ON s.marketplace = p.marketplace AND s.key = p.product_id
+                           ON f.marketplace = 'wb'
+                          AND (
+                              LOWER(REPLACE(mm.wb_article, ',', '.')) = LOWER(REPLACE(f.product_id, ',', '.'))
+                              OR mm.wb_nm_id::text = f.product_id
+                          )
+                    WHERE f.chat_id = $1
+                      AND f.report_date >= DATE_TRUNC('week', $2::date)
+                    GROUP BY f.marketplace,
+                             CASE WHEN f.marketplace = 'wb'
+                                  THEN mm.wb_nm_id
+                                  ELSE f.product_id END
+                ) s ON s.marketplace = p.marketplace AND s.adv_key = p.product_id
                 WHERE p.chat_id = $1 AND p.stat_date >= $2
-                GROUP BY p.product_id, m.display_name, p.marketplace, s.buyouts
+                GROUP BY p.product_id, m.display_name, p.marketplace, s.payout
                 ORDER BY adv_spend DESC
                 LIMIT 20
             """, chat_id, date_from)
@@ -1234,17 +1247,20 @@ class PeterAgent(BaseAgent):
 РЕКЛАМНЫЕ РАСХОДЫ ИТОГО ПО ПЛОЩАДКЕ (все товары вместе, только для строки "По площадкам"):
 {json.dumps(data["adv"], ensure_ascii=False, default=str, indent=2)}
 
-ОБОРОТ ИТОГО ПО ПЛОЩАДКЕ (все товары вместе):
-{json.dumps(data["revenue"], ensure_ascii=False, default=str, indent=2)}
+ВЫПЛАТЫ ИЗ ФИНОТЧЁТОВ ПО ПЛОЩАДКЕ (знаменатель для ДРР — реальные деньги после комиссий МП):
+{json.dumps(data["fin_payout"], ensure_ascii=False, default=str, indent=2)}
 
-МЕТРИКИ ПО КАЖДОМУ ТОВАРУ (adv_spend здесь — расход конкретного товара, используй для per-product анализа):
+МЕТРИКИ ПО КАЖДОМУ ТОВАРУ (adv_spend — расход товара, buyouts — выплата из финотчёта):
 {json.dumps(adv_data["product_metrics"], ensure_ascii=False, default=str, indent=2)}
 
 ВАЖНО:
-- ДРР = adv_spend / buyouts × 100%
-- ROAS = buyouts / adv_spend (выкупы, без возвратов)
-- КРИТИЧНО: для строк по конкретному товару (КБ50 и т.д.) используй adv_spend из МЕТРИКИ ПО КАЖДОМУ ТОВАРУ, а НЕ итоговый расход площадки из РЕКЛАМНЫЕ РАСХОДЫ ИТОГО. Это разные числа.
+- ДРР = adv_spend / buyouts × 100% (buyouts = выплата из финотчёта, не цена заказа!)
+- ROAS = buyouts / adv_spend
+- ДРР по площадке: spend из "РЕКЛАМНЫЕ РАСХОДЫ" / payout из "ВЫПЛАТЫ ИЗ ФИНОТЧЁТОВ"
+- Если fin_payout пуст — используй revenue из заказов как приближение, но предупреди об этом
+- КРИТИЧНО: для строк по конкретному товару используй adv_spend из МЕТРИКИ ПО КАЖДОМУ ТОВАРУ, а НЕ итоговый расход площадки
 - Если product_metrics пустой — данные ещё не синхронизированы (/sync_adv)
+- Если buyouts = 0 или null для товара — НЕ выдумывай ДРР, напиши "нет данных о выплатах"
 - avg_ctr в процентах (2.5 = 2.5%)
 - Используй display_name товаров (поле "name") если есть
 
@@ -1298,15 +1314,18 @@ class PeterAgent(BaseAgent):
 РЕКЛАМНЫЕ РАСХОДЫ ПО ПЛОЩАДКАМ:
 {json.dumps(data["adv"], ensure_ascii=False, default=str, indent=2)}
 
-ОБОРОТ ПО ПЛОЩАДКАМ:
-{json.dumps(data["revenue"], ensure_ascii=False, default=str, indent=2)}
+ВЫПЛАТЫ ИЗ ФИНОТЧЁТОВ ПО ПЛОЩАДКЕ (знаменатель для ДРР — реальные деньги после комиссий МП):
+{json.dumps(data["fin_payout"], ensure_ascii=False, default=str, indent=2)}
 
-МЕТРИКИ ПО ТОВАРАМ (CTR, ROAS, расход, выкупы):
+МЕТРИКИ ПО ТОВАРАМ (CTR, ROAS, расход, buyouts = выплата из финотчёта):
 {json.dumps(adv_data["product_metrics"], ensure_ascii=False, default=str, indent=2)}
 
 ВАЖНО:
-- ДРР = adv_spend / buyouts × 100%
-- ROAS = buyouts / adv_spend (выкупы, без возвратов)
+- ДРР = adv_spend / buyouts × 100% (buyouts = выплата из финотчёта, не цена заказа!)
+- ROAS = buyouts / adv_spend
+- ДРР по площадке: spend из "РЕКЛАМНЫЕ РАСХОДЫ" / payout из "ВЫПЛАТЫ ИЗ ФИНОТЧЁТОВ"
+- Если fin_payout пуст — используй revenue из заказов как приближение, но предупреди
+- Если buyouts = 0 или null для товара — НЕ выдумывай ДРР, напиши "нет данных о выплатах"
 - Если product_metrics пустой — данные ещё не синхронизированы (/sync_adv)
 - avg_ctr в процентах (2.5 = 2.5%)
 - Используй display_name товаров (поле "name") если есть

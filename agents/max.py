@@ -5087,9 +5087,9 @@ class MaxAgent(BaseAgent):
                         p.product_id,
                         COALESCE(m.display_name, p.product_id) AS name,
                         p.spend,
-                        COALESCE(s.buyouts, 0)::numeric(12,2)  AS revenue,
-                        CASE WHEN COALESCE(s.buyouts, 0) > 0
-                             THEN ROUND(p.spend / s.buyouts * 100, 1)
+                        COALESCE(s.payout, 0)::numeric(12,2)   AS revenue,
+                        CASE WHEN COALESCE(s.payout, 0) > 0
+                             THEN ROUND(p.spend / s.payout * 100, 1)
                              ELSE NULL END                      AS drr
                     FROM (
                         -- Агрегируем расходы заранее, чтобы не было умножения строк при JOIN
@@ -5105,30 +5105,28 @@ class MaxAgent(BaseAgent):
                         OR (p.marketplace = 'ozon' AND m.ozon_sku = p.product_id)
                     )
                     LEFT JOIN (
-                        -- Выкупы (не заказы): WB хранит wb_article, Ozon — ozon_offer_id
-                        -- транслируем в nm_id / ozon_sku через product_mapping
+                        -- Реальные выплаты из финотчётов: WB = ppvz_for_pay, Ozon = accruals
+                        -- WB: financial_report.product_id = wb_article → транслируем в nm_id
+                        -- Ozon: financial_report.product_id = sku = product_adv_stats.product_id
                         SELECT
-                            sl.marketplace,
-                            CASE WHEN sl.marketplace = 'wb'
-                                 THEN COALESCE(mm.wb_nm_id, sl.product_id)
-                                 WHEN sl.marketplace = 'ozon'
-                                 THEN COALESCE(mm.ozon_sku, sl.product_id)
-                                 ELSE sl.product_id END AS product_id,
-                            SUM(sl.price * sl.quantity)::numeric(12,2) AS buyouts
-                        FROM marketplace_sales sl
-                        LEFT JOIN product_mapping mm ON (
-                            (sl.marketplace = 'wb'   AND mm.wb_article    = sl.product_id)
-                            OR (sl.marketplace = 'ozon' AND mm.ozon_offer_id = sl.product_id)
-                        )
-                        WHERE sl.chat_id = $1
-                          AND sl.sale_date >= NOW() - INTERVAL '7 days'
-                          AND sl.is_return = FALSE
-                        GROUP BY sl.marketplace,
-                                 CASE WHEN sl.marketplace = 'wb'
-                                      THEN COALESCE(mm.wb_nm_id, sl.product_id)
-                                      WHEN sl.marketplace = 'ozon'
-                                      THEN COALESCE(mm.ozon_sku, sl.product_id)
-                                      ELSE sl.product_id END
+                            f.marketplace,
+                            CASE WHEN f.marketplace = 'wb'
+                                 THEN mm.wb_nm_id
+                                 ELSE f.product_id END AS product_id,
+                            SUM(f.payout)::numeric(12,2) AS payout
+                        FROM marketplace_financial_report f
+                        LEFT JOIN product_mapping mm
+                               ON f.marketplace = 'wb'
+                              AND (
+                                  LOWER(REPLACE(mm.wb_article, ',', '.')) = LOWER(REPLACE(f.product_id, ',', '.'))
+                                  OR mm.wb_nm_id::text = f.product_id
+                              )
+                        WHERE f.chat_id = $1
+                          AND f.report_date >= DATE_TRUNC('week', (NOW() - INTERVAL '7 days')::date)
+                        GROUP BY f.marketplace,
+                                 CASE WHEN f.marketplace = 'wb'
+                                      THEN mm.wb_nm_id
+                                      ELSE f.product_id END
                     ) s ON s.marketplace = p.marketplace AND s.product_id = p.product_id
                     ORDER BY drr DESC NULLS LAST
                 """, chat_id)
