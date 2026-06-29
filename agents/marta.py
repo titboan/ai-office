@@ -19,6 +19,21 @@ from utils.tg_rich import send_rich_or_fallback as _send_rich
 from task_queue import create_task as enqueue_task, get_active_tasks, get_recent_tasks, enqueue_chain_task
 from .base_agent import BaseAgent, _AGENT_NAMES
 
+_HEAVY_SYNC_PAYLOADS = {
+    "__sync__", "__sync_adv__", "__sync_fin__",
+    "__sync_funnel__", "__sync_returns__", "__sync_cards__",
+    "__sync_keywords__", "__sync_sku__",
+}
+
+def _task_timeout(agent_key: str, payload: str) -> int:
+    """Таймаут задачи в секундах. Тяжёлые синки Макса — 900 с, Дэн — 600 с, остальное — 300 с."""
+    if agent_key == "max" and payload in _HEAVY_SYNC_PAYLOADS:
+        return 900
+    if agent_key == "dan":
+        return 600
+    return 300
+
+
 def _detect_priority(text: str) -> int:
     """Определить приоритет задачи из текста запроса.
 
@@ -353,7 +368,7 @@ class MartaAgent(BaseAgent):
                 from_agent="marta",
                 correlation_id=corr_id,
                 priority=_detect_priority(user_request),
-                timeout_seconds=600 if step["agent"] == "dan" else 300,
+                timeout_seconds=_task_timeout(step["agent"], step["task"]),
                 parallel_group=0 if is_parallel_start else None,
             )
             if task_id:
@@ -685,7 +700,7 @@ class MartaAgent(BaseAgent):
                     from_agent="marta",
                     chat_id=chat_id,
                     priority=prio,
-                    timeout_seconds=600 if agent_key == "dan" else 300,
+                    timeout_seconds=_task_timeout(agent_key, task_text),
                 )
                 await reply_func(
                     f"⏳ Передала задачу {label}{prio_label} — пришлю результат когда готово.",
@@ -719,7 +734,7 @@ class MartaAgent(BaseAgent):
             from_agent="marta",
             chat_id=chat_id,
             priority=_detect_priority(user_text),
-            timeout_seconds=600 if agent_key == "dan" else 300,
+            timeout_seconds=_task_timeout(agent_key, subtask),
         )
 
         if task_id:
@@ -1770,6 +1785,7 @@ class MartaAgent(BaseAgent):
                 from_agent="marta",
                 chat_id=chat_id,
                 priority=0,
+                timeout_seconds=_task_timeout(agent_key, payload),
             )
             label = self._MMENU_AGENT_LABEL.get(agent_key, agent_key)
             await query.message.reply_text(
@@ -1854,6 +1870,7 @@ class MartaAgent(BaseAgent):
             from_agent="marta",
             chat_id=chat_id,
             priority=0,
+            timeout_seconds=_task_timeout(agent_key, task),
         )
         _AGENT_LABEL = {
             "peter": "📊 Питер", "max": "🛒 Макс", "kasper": "🔍 Каспер",
