@@ -858,7 +858,7 @@ class PeterAgent(BaseAgent):
             await set_user_setting(chat_id, "supply_lead_days", str(days_val))
             return (
                 f"✅ Срок поставки обновлён: *{days_val} дней* от заказа до склада МП.\n"
-                f"_Применяется в /supply и /order._"
+                f"_Применяется в /supply, /order и алертах остатков._"
             )
 
         # Установка страхового буфера: «буфер 7 дней», «safety=7», «страховой запас 10»
@@ -872,7 +872,7 @@ class PeterAgent(BaseAgent):
             await set_user_setting(chat_id, "supply_safety_days", str(days_val))
             return (
                 f"✅ Страховой буфер обновлён: *{days_val} дней*.\n"
-                f"_Применяется в /supply и /order._"
+                f"_Применяется в /supply, /order и алертах остатков._"
             )
 
         _days_match = _re.search(r"за\s+(\d+)\s+дн", task.lower())
