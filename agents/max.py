@@ -5084,64 +5084,105 @@ class MaxAgent(BaseAgent):
                         p.marketplace,
                         p.product_id,
                         COALESCE(m.display_name, p.product_id) AS name,
-                        SUM(p.spend)::numeric(12,2)             AS spend,
-                        COALESCE(SUM(o.seller_price * o.quantity), 0)::numeric(12,2) AS revenue,
-                        CASE WHEN COALESCE(SUM(o.seller_price * o.quantity), 0) > 0
-                             THEN ROUND(SUM(p.spend) /
-                                        SUM(o.seller_price * o.quantity) * 100, 1)
+                        p.spend,
+                        COALESCE(s.buyouts, 0)::numeric(12,2)  AS revenue,
+                        CASE WHEN COALESCE(s.buyouts, 0) > 0
+                             THEN ROUND(p.spend / s.buyouts * 100, 1)
                              ELSE NULL END                      AS drr
-                    FROM product_adv_stats p
+                    FROM (
+                        -- Агрегируем расходы заранее, чтобы не было умножения строк при JOIN
+                        SELECT marketplace, product_id,
+                               SUM(spend)::numeric(12,2) AS spend
+                        FROM product_adv_stats
+                        WHERE chat_id = $1 AND stat_date >= NOW() - INTERVAL '7 days'
+                        GROUP BY marketplace, product_id
+                        HAVING SUM(spend) > 500
+                    ) p
                     LEFT JOIN product_mapping m ON (
-                        m.wb_nm_id = p.product_id OR m.ozon_sku = p.product_id
+                        (p.marketplace = 'wb'   AND m.wb_nm_id  = p.product_id)
+                        OR (p.marketplace = 'ozon' AND m.ozon_sku = p.product_id)
                     )
-                    LEFT JOIN marketplace_orders o ON (
-                        o.chat_id = p.chat_id
-                        AND o.marketplace = p.marketplace
-                        -- WB: marketplace_orders.product_id = wb_article, product_adv_stats.product_id = nm_id
-                        -- мостим через product_mapping (m.wb_nm_id = p.product_id из JOIN выше)
-                        AND (
-                            (p.marketplace = 'wb'   AND o.product_id = m.wb_article)
-                            OR (p.marketplace = 'ozon' AND o.product_id = p.product_id)
+                    LEFT JOIN (
+                        -- Выкупы (не заказы): WB хранит wb_article, Ozon — ozon_offer_id
+                        -- транслируем в nm_id / ozon_sku через product_mapping
+                        SELECT
+                            sl.marketplace,
+                            CASE WHEN sl.marketplace = 'wb'
+                                 THEN COALESCE(mm.wb_nm_id, sl.product_id)
+                                 WHEN sl.marketplace = 'ozon'
+                                 THEN COALESCE(mm.ozon_sku, sl.product_id)
+                                 ELSE sl.product_id END AS product_id,
+                            SUM(sl.price * sl.quantity)::numeric(12,2) AS buyouts
+                        FROM marketplace_sales sl
+                        LEFT JOIN product_mapping mm ON (
+                            (sl.marketplace = 'wb'   AND mm.wb_article    = sl.product_id)
+                            OR (sl.marketplace = 'ozon' AND mm.ozon_offer_id = sl.product_id)
                         )
-                        AND o.order_date >= NOW() - INTERVAL '7 days'
-                    )
-                    WHERE p.chat_id = $1 AND p.stat_date >= NOW() - INTERVAL '7 days'
-                    GROUP BY p.marketplace, p.product_id, m.display_name
-                    HAVING SUM(p.spend) > 500
+                        WHERE sl.chat_id = $1
+                          AND sl.sale_date >= NOW() - INTERVAL '7 days'
+                          AND sl.is_return = FALSE
+                        GROUP BY sl.marketplace,
+                                 CASE WHEN sl.marketplace = 'wb'
+                                      THEN COALESCE(mm.wb_nm_id, sl.product_id)
+                                      WHEN sl.marketplace = 'ozon'
+                                      THEN COALESCE(mm.ozon_sku, sl.product_id)
+                                      ELSE sl.product_id END
+                    ) s ON s.marketplace = p.marketplace AND s.product_id = p.product_id
                     ORDER BY drr DESC NULLS LAST
                 """, chat_id)
 
             import config as _cfg
             drr_alert_threshold = getattr(_cfg, "DRR_ALERT_THRESHOLD", 25)
-            alerts = []
+
+            def _fmt(v: float) -> str:
+                if v >= 1_000_000:
+                    return f"{v/1_000_000:.1f}М₽"
+                if v >= 1_000:
+                    return f"{v/1_000:.1f}К₽"
+                return f"{v:.0f}₽"
+
+            wb_lines, ozon_lines = [], []
             for r in rows:
                 drr = float(r["drr"] or 0)
-                if drr > drr_alert_threshold:
-                    mp_label = "🟣 WB" if r["marketplace"] == "wb" else "🔵 Ozon"
-                    spend   = float(r["spend"]   or 0)
-                    revenue = float(r["revenue"] or 0)
-                    alerts.append(
-                        f"{mp_label} <b>{r['name']}</b> — ДРР {drr}% "
-                        f"(расход {spend:,.0f}₽ / выручка {revenue:,.0f}₽)"
-                    )
+                if drr <= drr_alert_threshold:
+                    continue
+                spend   = float(r["spend"]   or 0)
+                revenue = float(r["revenue"] or 0)
+                line = (
+                    f"  • <b>{r['name']}</b> — {drr:.1f}%"
+                    f"  (расход {_fmt(spend)} / выкупы {_fmt(revenue)})"
+                )
+                if r["marketplace"] == "wb":
+                    wb_lines.append(line)
+                else:
+                    ozon_lines.append(line)
 
-            if not alerts:
+            if not wb_lines and not ozon_lines:
                 return
 
+            parts = ["🔴 <b>Высокий ДРР — последние 7 дней</b>"]
+            if wb_lines:
+                parts.append("\n🟣 <b>WB</b>")
+                parts.extend(wb_lines[:5])
+            if ozon_lines:
+                parts.append("\n🔵 <b>Ozon</b>")
+                parts.extend(ozon_lines[:5])
+
+            total = len(wb_lines) + len(ozon_lines)
+            shown = min(len(wb_lines), 5) + min(len(ozon_lines), 5)
+            if total > shown:
+                parts.append(f"\n…и ещё {total - shown} позиций")
+
             peter = getattr(self, "_peter_agent", None)
-            hint = (
-                "\n\n📊 Питер анализирует ДРР — ответ придёт сейчас"
+            parts.append(
+                "\n📊 Питер анализирует — ответ придёт сейчас"
                 if peter else
-                "\n\n💡 Запроси /drr у Питера для детального анализа"
+                "\n💡 Запроси /drr у Питера для детального анализа"
             )
-            text = (
-                "🔴 <b>Высокий ДРР (&gt; 25%):</b>\n\n"
-                + "\n".join(alerts[:10])
-                + hint
+
+            await self.app.bot.send_message(
+                chat_id=chat_id, text="\n".join(parts), parse_mode="HTML"
             )
-            if len(alerts) > 10:
-                text += f"\n…и ещё {len(alerts) - 10} позиций"
-            await self.app.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
             logger.info(f"[Макс/drr_alerts] chat={chat_id} алертов: {len(alerts)}")
 
             if peter is not None:
