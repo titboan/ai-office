@@ -1153,6 +1153,52 @@ class WBClient:
             logger.error(f"[WB.get_campaign_products_v2] exception: {e}")
         return result
 
+    async def get_campaign_details(self, campaign_ids: list[str]) -> dict[str, dict]:
+        """Получить nm_ids и названия кампаний через GET /api/advert/v2/adverts.
+
+        Актуальный эндпоинт (2025+), возвращает nm_settings с nm_id для каждого товара
+        и settings.name с названием кампании. Работает для всех типов кампаний.
+        Возвращает {campaign_id: {"nm_ids": [...], "name": "..."}}.
+        """
+        import json as _json
+        result: dict[str, dict] = {}
+        url = "https://advert-api.wildberries.ru/api/advert/v2/adverts"
+        headers = {"Authorization": self._token}
+        ids = [cid for cid in campaign_ids if str(cid).lstrip("-").isdigit()]
+        if not ids:
+            return {}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url, headers=headers,
+                    params={"ids": ",".join(str(cid) for cid in ids)},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status == 404:
+                        logger.info("[WB.get_campaign_details] GET /api/advert/v2/adverts → 404 (endpoint недоступен)")
+                        return {}
+                    if resp.status != 200:
+                        logger.error(f"[WB.get_campaign_details] HTTP {resp.status}: {raw[:300]}")
+                        return {}
+                    logger.info(f"[WB.get_campaign_details] ✅ HTTP 200 — ответ: {raw[:600]}")
+                    data = _json.loads(raw)
+                    for item in (data.get("adverts") or []):
+                        cid = str(item.get("id") or "")
+                        if not cid:
+                            continue
+                        nm_ids = [
+                            str(nm["nm_id"])
+                            for nm in (item.get("nm_settings") or [])
+                            if nm.get("nm_id")
+                        ]
+                        name = (item.get("settings") or {}).get("name") or ""
+                        result[cid] = {"nm_ids": nm_ids, "name": name}
+                    logger.info(f"[WB.get_campaign_details] получено данных для {len(result)}/{len(ids)} кампаний")
+        except Exception as e:
+            logger.error(f"[WB.get_campaign_details] exception: {e}")
+        return result
+
     async def update_campaign_cpm(
         self, campaign_id: str, campaign_type: int, subject_id: int, new_cpm: int
     ) -> bool:

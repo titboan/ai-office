@@ -1653,24 +1653,35 @@ class MaxAgent(BaseAgent):
                             prod_count += 1
                     logger.info(f"[Макс/adv] WB реклама: {len(ad_stats)} записей, {prod_count} nm-записей")
 
-                    # Для кампаний без nm-данных: сначала пробуем WB v2 API,
-                    # затем fallback на ручной маппинг из wb_campaigns (/camp команда).
+                    # Для кампаний без nm-данных: цепочка fallback:
+                    # 1) GET /api/advert/v2/adverts (новый API, возвращает nm_settings + названия)
+                    # 2) POST /adv/v2/promotion/adverts (старый v2, возможно мёртв)
+                    # 3) ручной маппинг из wb_campaigns (/camp команда)
                     campaigns_no_nm = [
                         s for s in ad_stats if not s.get("product_stats") and s.get("spend", 0) > 0
                     ]
                     if campaigns_no_nm:
-                        from db import get_wb_campaign_nm_ids
+                        from db import get_wb_campaign_nm_ids, set_wb_campaign_nm_ids
                         camp_ids = [s["campaign_id"] for s in campaigns_no_nm]
 
-                        # Шаг 1: попытка WB v2 API
-                        v2_nms = await client.get_campaign_products_v2(camp_ids)
+                        # Шаг 1: новый API /api/advert/v2/adverts — возвращает nm_settings и название
+                        details = await client.get_campaign_details(camp_ids)
+                        v3_nms = {cid: info["nm_ids"] for cid, info in details.items() if info["nm_ids"]}
+                        # Автоматически сохраняем названия и маппинги из нового API
+                        for cid, info in details.items():
+                            if info["nm_ids"] or info["name"]:
+                                await set_wb_campaign_nm_ids(cid, info["nm_ids"], info["name"])
 
-                        # Шаг 2: ручной маппинг для тех кампаний, что v2 не вернул
-                        missing = [cid for cid in camp_ids if cid not in v2_nms]
-                        manual_nms = await get_wb_campaign_nm_ids(missing) if missing else {}
+                        # Шаг 2: старый v2 API для тех, кого новый не вернул
+                        missing_v3 = [cid for cid in camp_ids if cid not in v3_nms]
+                        v2_nms = await client.get_campaign_products_v2(missing_v3) if missing_v3 else {}
 
-                        # Объединяем: v2 имеет приоритет
-                        nm_source = {**manual_nms, **v2_nms}
+                        # Шаг 3: ручной маппинг для оставшихся
+                        missing_all = [cid for cid in camp_ids if cid not in v3_nms and cid not in v2_nms]
+                        manual_nms = await get_wb_campaign_nm_ids(missing_all) if missing_all else {}
+
+                        # Объединяем: новый API > старый v2 > ручной маппинг
+                        nm_source = {**manual_nms, **v2_nms, **v3_nms}
 
                         for s in campaigns_no_nm:
                             nms = nm_source.get(s["campaign_id"]) or []
@@ -1690,7 +1701,7 @@ class MaxAgent(BaseAgent):
                                     orders_count=0,
                                 )
                                 prod_count += 1
-                        src = "v2 API" if v2_nms else ("ручной маппинг" if manual_nms else "нет")
+                        src = "новый API" if v3_nms else ("v2 API" if v2_nms else ("ручной маппинг" if manual_nms else "нет"))
                         logger.info(
                             f"[Макс/adv] WB nm fallback: {len(campaigns_no_nm)} кампаний без nm, "
                             f"источник={src}, добавлено nm-записей: {prod_count}"
