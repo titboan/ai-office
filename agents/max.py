@@ -5555,15 +5555,18 @@ class MaxAgent(BaseAgent):
                     SUM(o.seller_price * o.quantity)::numeric(12,2) AS revenue_30d
                 FROM product_mapping pm
                 JOIN marketplace_orders o ON (
-                    o.product_id = pm.ozon_offer_id
+                    -- marketplace_orders для Ozon хранит ozon_sku (число), не ozon_offer_id
+                    o.product_id = pm.ozon_sku
                     AND o.chat_id = $1
+                    AND o.marketplace = 'ozon'
                     AND o.order_date >= NOW() - INTERVAL '30 days'
                 )
                 WHERE pm.chat_id  = $1
                   AND pm.ozon_sku IS NOT NULL
                   AND NOT EXISTS (
                       SELECT 1 FROM product_adv_stats adv
-                      WHERE adv.product_id = pm.ozon_offer_id
+                      -- product_adv_stats для Ozon хранит ozon_sku, не ozon_offer_id
+                      WHERE adv.product_id = pm.ozon_sku::text
                         AND adv.chat_id    = $1
                         AND adv.stat_date >= NOW() - INTERVAL '7 days'
                         AND adv.marketplace = 'ozon'
