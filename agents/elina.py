@@ -217,6 +217,18 @@ class ElinaAgent(BaseAgent):
 
         await self._auto_sync_cards(chat_id)
         ctx = await get_seo_context(chat_id, product_id)
+
+        has_data = ctx.get("card") or ctx.get("reviews") or ctx.get("keywords") or (
+            ctx.get("funnel") and ctx["funnel"].get("total_views")
+        )
+        if not has_data:
+            msg = (
+                f"⚠️ Нет данных по товару {product_id} в базе.\n"
+                f"Запусти /sync у Макса, чтобы обновить карточки, потом повтори /seo {product_id}."
+            )
+            logger.warning(f"[Элина/_do_seo_task] product_id={product_id} — пустой контекст, пропускаем")
+            return msg
+
         brief = self._build_seo_brief(product_id, ctx)
 
         answer = await self.think(
