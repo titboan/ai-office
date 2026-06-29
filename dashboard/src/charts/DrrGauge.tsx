@@ -33,7 +33,7 @@ export default function DrrGauge({ adv, salesByDay }: { adv: AdvRow[]; salesByDa
               {d !== null ? `${d.toFixed(1)}%` : '—'}
             </div>
             <div className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-              выкупы {buyouts.toLocaleString()} ₽ / реклама {s.toLocaleString()} ₽
+              продажи {buyouts.toLocaleString()} ₽ / реклама {s.toLocaleString()} ₽
             </div>
           </div>
         ))}
