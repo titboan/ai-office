@@ -806,7 +806,8 @@ class PeterAgent(BaseAgent):
         if _cid:
             await _send_rich(self.bot_token, _cid, answer)
             if after_markup:
-                await self.bot.send_message(
+                _bot = bot or self.app.bot
+                await _bot.send_message(
                     chat_id=_cid,
                     text="Что дальше?",
                     reply_markup=after_markup,
@@ -1270,15 +1271,24 @@ class PeterAgent(BaseAgent):
             after_markup=self._PETER_NEXT_DRR,
         )
 
-    async def run_drr_for_chat(self, chat_id: int, days: int = 30) -> None:
-        """Запустить ДРР-отчёт по chat_id без Update (вызов из другого агента)."""
-        await self.bot.send_message(chat_id, f"💰 Считаю ДРР за {days} дней…")
+    async def run_drr_for_chat(self, chat_id: int, days: int = 30, reply_bot=None) -> None:
+        """Запустить ДРР-отчёт по chat_id без Update (вызов из другого агента).
+
+        reply_bot — бот для ответа (если None — используется собственный бот Питера).
+        Для SaaS: передавать Мартин бот чтобы ответ шёл в один чат.
+        """
+        _bot = reply_bot or self.app.bot
+        try:
+            await _bot.send_message(chat_id, "💰 Считаю ДРР за 7 дней…")
+        except Exception as e:
+            logger.error(f"[Питер/drr] не удалось отправить статус: {e}")
+            return
         try:
             data = await self._collect_data(chat_id, days=days)
             adv_data = await self._collect_advanced_data(chat_id, days=days)
         except Exception as e:
             logger.error(f"[Питер/drr] ошибка сбора данных: {e}", exc_info=True)
-            await self.bot.send_message(chat_id, f"❌ Ошибка сбора данных: {e}")
+            await _bot.send_message(chat_id, f"❌ Ошибка сбора данных: {e}")
             return
 
         prompt = f"""Выдай ДРР-отчёт по товарам и площадкам. Используй формат PETER_DRR_PROMPT.
@@ -1315,12 +1325,13 @@ class PeterAgent(BaseAgent):
             answer = resp.content[0].text
         except Exception as e:
             logger.error(f"[Питер/drr] ошибка Claude: {e}", exc_info=True)
-            await self.bot.send_message(chat_id, f"❌ Ошибка анализа: {e}")
+            await _bot.send_message(chat_id, f"❌ Ошибка анализа: {e}")
             return
 
         await self._send_answer(
             answer,
             chat_id=chat_id,
+            bot=_bot,
             after_markup=self._PETER_NEXT_DRR,
         )
 

@@ -5187,7 +5187,8 @@ class MaxAgent(BaseAgent):
 
             if peter is not None:
                 import asyncio as _asyncio
-                _asyncio.create_task(peter.run_drr_for_chat(chat_id, days=7))
+                # Передаём свой бот — ответ Питера приходит в тот же чат, что и алерт
+                _asyncio.create_task(peter.run_drr_for_chat(chat_id, days=7, reply_bot=self.app.bot))
         except Exception as e:
             logger.error(f"[Макс/drr_alerts] ошибка: {e}", exc_info=True)
 
@@ -6192,9 +6193,9 @@ class MaxAgent(BaseAgent):
             if key == "drr" and peter is not None:
                 await query.answer()
                 import asyncio as _asyncio
-                _asyncio.create_task(peter.run_drr_for_chat(chat_id, days=30))
+                _asyncio.create_task(peter.run_drr_for_chat(chat_id, days=30, reply_bot=self.app.bot))
                 await query.message.reply_text(
-                    "💰 ДРР запускается у Питера — результат появится в его чате…"
+                    "💰 ДРР анализирует Питер — ответ придёт здесь…"
                 )
             elif key == "report" and peter is not None:
                 await query.answer()
