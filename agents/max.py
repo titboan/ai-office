@@ -4617,70 +4617,28 @@ class MaxAgent(BaseAgent):
                 """, chat_id)
 
             today = datetime.date.today()
-            critical_items: list[str] = []
-            low_items: list[str] = []
+            items: list[dict] = []
 
             for r in rows:
                 stock      = int(r["total_stock"] or 0)
                 in_transit = int(r["in_transit"] or 0)
                 vel        = float(r["daily_velocity"] or 0)
                 days_left  = (stock / vel) if vel > 0 else (999 if stock > 0 else 0)
-                mp_label   = "🟣 WB" if r["marketplace"] == "wb" else "🔵 Ozon"
-                name       = r["name"]
 
                 if stock == 0:
-                    severity = "critical"
-                    if vel > 0:
-                        raw_order    = int((lead_time + safety_days) * vel)
-                        qty_to_order = max(0, raw_order - in_transit)
-                        if in_transit > 0:
-                            line = (
-                                f"{mp_label}  <b>{name}</b>\n"
-                                f"  ❌ Нет стока · <code>{vel:.1f}</code> шт/день\n"
-                                f"  🚚 В пути: <b>{in_transit} шт</b>\n"
-                                f"  📦 Заказать: <b>{qty_to_order} шт</b> <i>(с учётом в пути)</i>"
-                            )
-                        else:
-                            line = (
-                                f"{mp_label}  <b>{name}</b>\n"
-                                f"  ❌ Нет стока · <code>{vel:.1f}</code> шт/день\n"
-                                f"  📦 Заказать: <b>{raw_order} шт</b>"
-                            )
-                    else:
-                        line = f"{mp_label}  <b>{name}</b>\n  ❌ Нет стока · продаж нет"
-                    target_list = critical_items
-
+                    severity      = "critical"
+                    raw_order     = int((lead_time + safety_days) * vel) if vel > 0 else 0
+                    qty_to_order  = max(0, raw_order - in_transit)
+                    covered       = False
+                    days_to_order = None
+                    order_by_date = None
                 elif days_left < threshold:
                     severity      = "low"
                     days_to_order = max(0, int(days_left) - lead_time)
-                    stockout_date = today + datetime.timedelta(days=int(days_left))
                     order_by_date = today + datetime.timedelta(days=days_to_order)
                     raw_order     = int((lead_time + safety_days) * vel) if vel > 0 else 0
                     qty_to_order  = max(0, raw_order - in_transit)
-
-                    if raw_order > 0 and in_transit >= raw_order:
-                        line = (
-                            f"{mp_label}  <b>{name}</b>\n"
-                            f"  📦 <code>{stock} шт</code> · <code>{int(days_left)} дн</code> · стокаут <b>{stockout_date.strftime('%d.%m')}</b>\n"
-                            f"  🚚 В пути {in_transit} шт — покроет потребность ✅"
-                        )
-                    elif qty_to_order > 0:
-                        urgency = "❗ Заказать сейчас" if days_to_order == 0 else f"🗓 До {order_by_date.strftime('%d.%m')}"
-                        transit_note = f" <i>(с учётом {in_transit} в пути)</i>" if in_transit > 0 else ""
-                        transit_line = f"\n  🚚 В пути: <b>{in_transit} шт</b>" if in_transit > 0 else ""
-                        line = (
-                            f"{mp_label}  <b>{name}</b>\n"
-                            f"  📦 <code>{stock} шт</code> · <code>{int(days_left)} дн</code> · стокаут <b>{stockout_date.strftime('%d.%m')}</b>\n"
-                            f"  📊 <code>{vel:.1f}</code> шт/день"
-                            f"{transit_line}\n"
-                            f"  {urgency}: <b>{qty_to_order} шт</b>{transit_note}"
-                        )
-                    else:
-                        line = (
-                            f"{mp_label}  <b>{name}</b>\n"
-                            f"  📦 <code>{stock} шт</code> · <code>{int(days_left)} дн</code> (нет данных о продажах)"
-                        )
-                    target_list = low_items
+                    covered       = raw_order > 0 and in_transit >= raw_order
                 else:
                     continue
 
@@ -4690,37 +4648,95 @@ class MaxAgent(BaseAgent):
                         continue
                     await self._redis_set(rkey, "1", ttl=23 * 3600)
 
-                target_list.append(line)
+                items.append({
+                    "marketplace":  r["marketplace"],
+                    "name":         r["name"],
+                    "stock":        stock,
+                    "vel":          vel,
+                    "days_left":    days_left if stock > 0 else None,
+                    "severity":     severity,
+                    "qty_to_order": qty_to_order,
+                    "days_to_order": days_to_order,
+                    "order_by_date": order_by_date,
+                    "covered":      covered,
+                    "in_transit":   in_transit,
+                })
 
-            all_items = critical_items + low_items
-            if not all_items:
+            if not items:
                 return
 
-            # Строим сообщение — все позиции без пагинации
+            def _sort_key(it: dict):
+                if it["severity"] == "critical":
+                    return (0, -(it["vel"] or 0))
+                return (1, it["days_left"] or 999)
+
+            def _build_table(group: list[dict]) -> str:
+                name_w = max((len(it["name"]) for it in group), default=5)
+                name_w = max(name_w, 5)
+                hdr = (
+                    f"{'':2} {'Товар':<{name_w}}"
+                    f" {'Ост':>5} {'Дн':>4} {'  /д':>5} {'Заказ':>6} {'Срок':>5}"
+                )
+                sep = "─" * len(hdr)
+                lines = [hdr, sep]
+                for it in group:
+                    if it["severity"] == "critical":
+                        stat = "!!"
+                    elif (it["days_to_order"] or 0) == 0:
+                        stat = " !"
+                    else:
+                        stat = " ~"
+
+                    days_str = "-" if it["days_left"] is None else str(int(it["days_left"]))
+                    vel_str  = f"{it['vel']:.1f}" if it["vel"] > 0 else "-"
+
+                    if it["covered"]:
+                        qty_str = "покр."
+                    elif it["qty_to_order"] > 0:
+                        qty_str = str(it["qty_to_order"])
+                    elif it["severity"] == "critical" and it["vel"] == 0:
+                        qty_str = "-"
+                    else:
+                        qty_str = "0"
+
+                    if it["severity"] == "critical" or it["covered"]:
+                        срок = ""
+                    elif (it["days_to_order"] or 0) == 0:
+                        срок = "сейч"
+                    elif it["order_by_date"]:
+                        срок = it["order_by_date"].strftime("%d.%m")
+                    else:
+                        срок = ""
+
+                    lines.append(
+                        f"{stat} {it['name']:<{name_w}}"
+                        f" {it['stock']:>5} {days_str:>4} {vel_str:>5} {qty_str:>6} {срок:>5}"
+                    )
+                return "\n".join(lines)
+
+            wb_items   = sorted([it for it in items if it["marketplace"] == "wb"],   key=_sort_key)
+            ozon_items = sorted([it for it in items if it["marketplace"] == "ozon"], key=_sort_key)
+
             parts: list[str] = [
                 f"📦 <b>Сток-алерт</b>  <i>{today.strftime('%d.%m')}</i>\n"
                 f"<i>Доставка {lead_time} дн · запас {safety_days} дн</i>"
             ]
-
-            if critical_items:
+            if wb_items:
                 parts.append(
-                    f"🔴 <b>НЕТ ОСТАТКОВ</b> — {len(critical_items)} поз.\n"
-                    + "━━━━━━━━━━━━━━━━\n"
-                    + "\n\n".join(critical_items)
+                    f"🟣 <b>WB</b> — {len(wb_items)} поз.\n"
+                    f"<pre>{_build_table(wb_items)}</pre>"
                 )
-
-            if low_items:
+            if ozon_items:
                 parts.append(
-                    f"⚠️ <b>ЗАКАНЧИВАЕТСЯ</b> — {len(low_items)} поз.\n"
-                    + "━━━━━━━━━━━━━━━━\n"
-                    + "\n\n".join(low_items)
+                    f"🔵 <b>Ozon</b> — {len(ozon_items)} поз.\n"
+                    f"<pre>{_build_table(ozon_items)}</pre>"
                 )
 
             text = "\n\n".join(parts)
 
             marta_bot = _TGBot(token=_cfg.MARTA_BOT_TOKEN)
             await marta_bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
-            logger.info(f"[Макс/stock_alerts] chat={chat_id} алертов: {len(all_items)} (lead={lead_time}, safety={safety_days})")
+            logger.info(f"[Макс/stock_alerts] chat={chat_id} алертов: {len(items)} (lead={lead_time}, safety={safety_days})")
         except Exception as e:
             logger.error(f"[Макс/stock_alerts] ошибка: {e}", exc_info=True)
 
