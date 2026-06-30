@@ -144,6 +144,18 @@ def _validate_init_data(init_data: str, bot_token: str) -> dict | None:
     return parsed
 
 
+def _validate_any_bot_init_data(init_data: str) -> dict | None:
+    """Validate initData against any Mini-App-launching bot (Марта, Тина).
+    Telegram подписывает initData секретом того бота, через которого открыт Mini App."""
+    for bot_token in (config.MARTA_BOT_TOKEN, config.TINA_BOT_TOKEN):
+        if not bot_token:
+            continue
+        parsed = _validate_init_data(init_data, bot_token)
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _to_json_safe(obj):
     """Recursively convert asyncpg/Decimal/date objects to JSON-serializable types."""
     if isinstance(obj, dict):
@@ -914,7 +926,7 @@ async def run_all_async() -> None:
             chat_id = config.OWNER_CHAT_ID
         else:
             init_data = request.headers.get("X-Telegram-Init-Data", "")
-            parsed = _validate_init_data(init_data, config.MARTA_BOT_TOKEN)
+            parsed = _validate_any_bot_init_data(init_data)
             if parsed is None:
                 return web.Response(status=401, text="Unauthorized", headers=cors)
             try:
@@ -989,7 +1001,7 @@ async def run_all_async() -> None:
             chat_id = config.OWNER_CHAT_ID
         else:
             init_data = request.headers.get("X-Telegram-Init-Data", "")
-            parsed = _validate_init_data(init_data, config.MARTA_BOT_TOKEN)
+            parsed = _validate_any_bot_init_data(init_data)
             if parsed is None:
                 return web.Response(status=401, text="Unauthorized", headers=cors)
             try:
@@ -1063,11 +1075,79 @@ async def run_all_async() -> None:
             return web.Response(status=500, text="Internal Error", headers=cors)
         return web.json_response({"chains": result_chains}, headers=cors)
 
+    def _resolve_dashboard_chat_id(request: web.Request, allow_token: bool = True) -> tuple[int | None, web.Response | None]:
+        """Общая авторизация для dashboard-эндпоинтов: ?token= или X-Telegram-Init-Data.
+        ?token= — общий секрет для коллег, годится только для чтения (allow_token=False для записи,
+        иначе любой обладатель ссылки сможет менять чужие настройки от имени владельца).
+        Возвращает (chat_id, None) либо (None, error_response)."""
+        cors = {"Access-Control-Allow-Origin": _CORS_ORIGIN}
+        url_token = request.rel_url.query.get("token", "")
+        if allow_token and url_token and config.DASHBOARD_TOKEN and url_token == config.DASHBOARD_TOKEN:
+            if not config.OWNER_CHAT_ID:
+                return None, web.Response(status=503, text="OWNER_CHAT_ID not configured", headers=cors)
+            return config.OWNER_CHAT_ID, None
+        init_data = request.headers.get("X-Telegram-Init-Data", "")
+        parsed = _validate_any_bot_init_data(init_data)
+        if parsed is None:
+            return None, web.Response(status=401, text="Unauthorized", headers=cors)
+        try:
+            user = _json.loads(parsed.get("user", "{}"))
+            return int(user["id"]), None
+        except Exception:
+            return None, web.Response(status=400, text="Bad Request", headers=cors)
+
+    async def _handle_tender_settings_get(request: web.Request) -> web.Response:
+        cors = {"Access-Control-Allow-Origin": _CORS_ORIGIN}
+        if request.method == "OPTIONS":
+            return web.Response(headers={
+                **cors,
+                "Access-Control-Allow-Headers": "X-Telegram-Init-Data, Content-Type",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            })
+        chat_id, err = _resolve_dashboard_chat_id(request)
+        if err is not None:
+            return err
+        if tina_agent is None:
+            return web.Response(status=503, text="Tina agent not running", headers=cors)
+        try:
+            settings = await tina_agent._get_tender_settings(chat_id)
+        except Exception as e:
+            logger.error(f"[tender-settings] get error: {e}", exc_info=True)
+            return web.Response(status=500, text="Internal Error", headers=cors)
+        return web.json_response(settings, headers=cors)
+
+    async def _handle_tender_settings_post(request: web.Request) -> web.Response:
+        cors = {"Access-Control-Allow-Origin": _CORS_ORIGIN}
+        chat_id, err = _resolve_dashboard_chat_id(request, allow_token=False)
+        if err is not None:
+            return err
+        if tina_agent is None:
+            return web.Response(status=503, text="Tina agent not running", headers=cors)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Невалидный JSON в теле запроса"}, status=400, headers=cors)
+
+        from agents.tina import parse_tender_settings
+        cleaned, errors = parse_tender_settings(body if isinstance(body, dict) else {})
+        if errors:
+            return web.json_response({"error": "; ".join(errors)}, status=400, headers=cors)
+
+        try:
+            await tina_agent._save_tender_settings(chat_id, cleaned)
+        except Exception as e:
+            logger.error(f"[tender-settings] save error: {e}", exc_info=True)
+            return web.Response(status=500, text="Internal Error", headers=cors)
+        return web.json_response({"ok": True}, headers=cors)
+
     dash_app = web.Application()
     dash_app.router.add_get("/api/dashboard", _handle_dashboard)
     dash_app.router.add_route("OPTIONS", "/api/dashboard", _handle_dashboard)
     dash_app.router.add_get("/api/timeline", _handle_timeline)
     dash_app.router.add_route("OPTIONS", "/api/timeline", _handle_timeline)
+    dash_app.router.add_get("/api/tender-settings", _handle_tender_settings_get)
+    dash_app.router.add_post("/api/tender-settings", _handle_tender_settings_post)
+    dash_app.router.add_route("OPTIONS", "/api/tender-settings", _handle_tender_settings_get)
     dash_app.router.add_get("/health", lambda r: web.Response(text="ok"))
     dash_runner = web.AppRunner(dash_app)
     await dash_runner.setup()

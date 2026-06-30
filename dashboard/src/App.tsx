@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { fetchDashboard, fetchTimeline, DashboardData, TimelineData } from './api'
+import TenderSettings from './screens/TenderSettings'
 import RevenueChart from './charts/RevenueChart'
 import TopProducts from './charts/TopProducts'
 import DrrGauge from './charts/DrrGauge'
@@ -17,6 +18,11 @@ import ChainTimeline from './charts/ChainTimeline'
 type Days = 7 | 14 | 30
 
 export default function App() {
+  const [screen] = useState<'dashboard' | 'tender_settings'>(
+    () => (new URLSearchParams(window.location.search).get('screen') === 'tender_settings'
+      ? 'tender_settings'
+      : 'dashboard')
+  )
   const [data, setData] = useState<DashboardData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [days, setDays] = useState<Days>(14)
@@ -33,17 +39,23 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (screen !== 'dashboard') return
     fetchTimeline().then(setTimeline).catch(() => {})
-  }, [])
+  }, [screen])
 
   useEffect(() => {
+    if (screen !== 'dashboard') return
     setLoading(true)
     setError(null)
     fetchDashboard(days)
       .then(setData)
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
-  }, [days])
+  }, [screen, days])
+
+  if (screen === 'tender_settings') {
+    return <TenderSettings />
+  }
 
   const totalRevenue = data?.revenue.reduce((s, r) => s + r.revenue, 0) ?? 0
   const totalOrders = data?.revenue.reduce((s, r) => s + r.orders, 0) ?? 0
@@ -91,6 +103,17 @@ export default function App() {
               {d}д
             </button>
           ))}
+          <a
+            href={(() => {
+              const params = new URLSearchParams(window.location.search)
+              params.set('screen', 'tender_settings')
+              return `?${params.toString()}`
+            })()}
+            className="px-2 py-1 rounded text-xs font-medium bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300"
+            title="Настройки поиска тендеров"
+          >
+            ⚙️
+          </a>
         </div>
       </div>
 

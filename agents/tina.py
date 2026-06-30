@@ -7,13 +7,72 @@ from datetime import datetime, timezone
 
 import asyncpg
 from loguru import logger
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
 from tools.gosplan_api import GosplanClient, STATUS_OPEN, format_tender_summary
 from tools.search import search_web
 from .base_agent import BaseAgent
+
+MAX_TENDER_KEYWORDS = 10
+MAX_TENDER_NMCK = 1_000_000_000
+
+
+def parse_tender_settings(raw: dict) -> tuple[dict | None, list[str]]:
+    """Распарсить и провалидировать настройки поиска тендеров из сырого dict
+    (например, JSON body запроса). Возвращает (cleaned, []) или (None, errors)."""
+    errors: list[str] = []
+
+    raw_keywords = raw.get("keywords")
+    keywords: list[str] = []
+    if not isinstance(raw_keywords, list) or not raw_keywords:
+        errors.append("keywords: нужен непустой список ключевых слов")
+    else:
+        seen: set[str] = set()
+        for kw in raw_keywords:
+            kw_s = str(kw).strip()
+            if not kw_s or len(kw_s) > 60:
+                continue
+            if kw_s.lower() in seen:
+                continue
+            seen.add(kw_s.lower())
+            keywords.append(kw_s)
+        if not keywords:
+            errors.append("keywords: нужно хотя бы одно ключевое слово")
+        elif len(keywords) > MAX_TENDER_KEYWORDS:
+            errors.append(f"keywords: максимум {MAX_TENDER_KEYWORDS} ключевых слов")
+
+    min_nmck = None
+    try:
+        min_nmck = int(raw.get("min_nmck"))
+        if min_nmck < 0:
+            errors.append("min_nmck: должно быть ≥ 0")
+    except (TypeError, ValueError):
+        errors.append("min_nmck: должно быть целым числом")
+
+    max_nmck = None
+    try:
+        max_nmck = int(raw.get("max_nmck"))
+        if max_nmck > MAX_TENDER_NMCK:
+            errors.append(f"max_nmck: не больше {MAX_TENDER_NMCK}")
+        elif min_nmck is not None and max_nmck <= min_nmck:
+            errors.append("max_nmck: должно быть больше min_nmck")
+    except (TypeError, ValueError):
+        errors.append("max_nmck: должно быть целым числом")
+
+    region_code = str(raw.get("region_code") or "").strip()
+    if not region_code:
+        errors.append("region_code: не может быть пустым")
+
+    if errors:
+        return None, errors
+    return {
+        "keywords": keywords,
+        "min_nmck": min_nmck,
+        "max_nmck": max_nmck,
+        "region_code": region_code,
+    }, []
 
 TINA_SYSTEM = """Ты — Тина, тендерный аналитик ИИ-офиса.
 
@@ -92,6 +151,58 @@ class TinaAgent(BaseAgent):
     def __init__(self) -> None:
         super().__init__(config.TINA_BOT_TOKEN)
         self._gosplan = GosplanClient(api_key=config.GOSPLAN_API_KEY)
+
+    # ------------------------------------------------------------------ #
+    #  Настройки поиска тендеров (user_settings, фоллбэк на config.py)     #
+    # ------------------------------------------------------------------ #
+
+    async def _get_tender_settings(self, chat_id: int) -> dict:
+        """Настройки поиска: из user_settings, иначе дефолты из config.py."""
+        from db import get_user_setting
+
+        keywords = config.TENDER_KEYWORDS
+        raw_keywords = await get_user_setting(chat_id, "tender_keywords")
+        if raw_keywords:
+            try:
+                parsed = json.loads(raw_keywords)
+                if isinstance(parsed, list) and parsed:
+                    keywords = parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        min_nmck = config.TENDER_MIN_NMCK
+        raw_min = await get_user_setting(chat_id, "tender_min_nmck")
+        if raw_min:
+            try:
+                min_nmck = int(raw_min)
+            except ValueError:
+                pass
+
+        max_nmck = config.TENDER_MAX_NMCK
+        raw_max = await get_user_setting(chat_id, "tender_max_nmck")
+        if raw_max:
+            try:
+                max_nmck = int(raw_max)
+            except ValueError:
+                pass
+
+        region_code = await get_user_setting(chat_id, "tender_region_code") or config.TENDER_REGION_CODE
+
+        return {
+            "keywords": keywords,
+            "min_nmck": min_nmck,
+            "max_nmck": max_nmck,
+            "region_code": region_code,
+        }
+
+    async def _save_tender_settings(self, chat_id: int, settings: dict) -> None:
+        """Сохранить настройки поиска тендеров для chat_id (upsert)."""
+        from db import set_user_setting
+
+        await set_user_setting(chat_id, "tender_keywords", json.dumps(settings["keywords"], ensure_ascii=False))
+        await set_user_setting(chat_id, "tender_min_nmck", str(settings["min_nmck"]))
+        await set_user_setting(chat_id, "tender_max_nmck", str(settings["max_nmck"]))
+        await set_user_setting(chat_id, "tender_region_code", settings["region_code"])
 
     # ------------------------------------------------------------------ #
     #  Инструменты для Claude (tool_use loop)                             #
@@ -189,11 +300,11 @@ class TinaAgent(BaseAgent):
         },
     ]
 
-    async def _call_tool(self, tool_name: str, tool_input: dict) -> str:
+    async def _call_tool(self, tool_name: str, tool_input: dict, settings: dict | None = None) -> str:
         """Выполнить вызов инструмента и вернуть результат как строку."""
         try:
             if tool_name == "search_tenders":
-                return await self._tool_search_tenders(**tool_input)
+                return await self._tool_search_tenders(settings=settings, **tool_input)
             if tool_name == "get_tender_details":
                 return await self._tool_get_tender_details(**tool_input)
             if tool_name == "research_supplier_prices":
@@ -212,19 +323,25 @@ class TinaAgent(BaseAgent):
         keyword: str,
         nmck_min: float = 0,
         nmck_max: float = 0,
+        settings: dict | None = None,
     ) -> str:
-        nmck_min = nmck_min or config.TENDER_MIN_NMCK
-        nmck_max = nmck_max or config.TENDER_MAX_NMCK
+        settings = settings or {}
+        if not nmck_min:
+            nmck_min = settings.get("min_nmck")
+            if nmck_min is None:
+                nmck_min = config.TENDER_MIN_NMCK
+        nmck_max = nmck_max or settings.get("max_nmck") or config.TENDER_MAX_NMCK
+        region_code = settings.get("region_code") or config.TENDER_REGION_CODE
         tenders = await self._gosplan.search_tenders(
             keyword=keyword,
-            region_code=config.TENDER_REGION_CODE,
+            region_code=region_code,
             status=STATUS_OPEN,
             nmck_min=nmck_min,
             nmck_max=nmck_max,
             per_page=10,
         )
         if not tenders:
-            return f"Тендеров по запросу «{keyword}» в Краснодарском крае не найдено."
+            return f"Тендеров по запросу «{keyword}» в регионе (код {region_code}) не найдено."
         lines = [f"Найдено тендеров: {len(tenders)}\n"]
         for t in tenders[:10]:
             lines.append(format_tender_summary(t))
@@ -330,7 +447,7 @@ class TinaAgent(BaseAgent):
     #  Tool-use loop                                                        #
     # ------------------------------------------------------------------ #
 
-    async def _run_tool_loop(self, user_message: str, chat_id: int = 0) -> str:
+    async def _run_tool_loop(self, user_message: str, chat_id: int = 0, settings: dict | None = None) -> str:
         """Запустить Claude с инструментами и вернуть итоговый текст."""
         messages = [{"role": "user", "content": user_message}]
         max_iterations = 8
@@ -362,7 +479,7 @@ class TinaAgent(BaseAgent):
 
             # Выполняем все tool_use параллельно
             tool_results = await asyncio.gather(*[
-                self._call_tool(tu.name, tu.input)
+                self._call_tool(tu.name, tu.input, settings=settings)
                 for tu in tool_uses
             ])
 
@@ -387,8 +504,9 @@ class TinaAgent(BaseAgent):
     #  Основная логика: анализ тендеров                                    #
     # ------------------------------------------------------------------ #
 
-    async def scan_and_analyze(self, keywords: list[str], chat_id: int = 0) -> str:
+    async def scan_and_analyze(self, keywords: list[str], chat_id: int = 0, settings: dict | None = None) -> str:
         """Сканировать тендеры по ключевым словам и вернуть дайджест."""
+        settings = settings or await self._get_tender_settings(chat_id)
         kw_str = ", ".join(f"«{k}»" for k in keywords)
         prompt = (
             f"Найди и проанализируй тендеры по ключевым словам: {kw_str}.\n\n"
@@ -399,13 +517,14 @@ class TinaAgent(BaseAgent):
             f"   - Используй calculate_economics для расчёта маржи\n"
             f"   - Используй save_tender_opportunity с chat_id={chat_id} для сохранения\n"
             f"3. Составь итоговый дайджест: топ тендеры с рекомендациями\n\n"
-            f"Фокус: Краснодарский край, 44-ФЗ, статус «Подача заявок».\n"
-            f"НМЦК от {_fmt_rub(config.TENDER_MIN_NMCK)} до {_fmt_rub(config.TENDER_MAX_NMCK)}."
+            f"Фокус: регион (код ОКТМО {settings['region_code']}), 44-ФЗ, статус «Подача заявок».\n"
+            f"НМЦК от {_fmt_rub(settings['min_nmck'])} до {_fmt_rub(settings['max_nmck'])}."
         )
-        return await self._run_tool_loop(prompt, chat_id=chat_id)
+        return await self._run_tool_loop(prompt, chat_id=chat_id, settings=settings)
 
     async def analyze_specific_tender(self, lot_id: str, chat_id: int = 0) -> str:
         """Полный анализ конкретного тендера по ID."""
+        settings = await self._get_tender_settings(chat_id)
         prompt = (
             f"Сделай полный анализ тендера с ID: {lot_id}\n\n"
             f"1. Получи детали: get_tender_details(lot_id={lot_id!r})\n"
@@ -414,7 +533,7 @@ class TinaAgent(BaseAgent):
             f"4. Сохрани результат: save_tender_opportunity с chat_id={chat_id}\n"
             f"5. Дай развёрнутый отчёт с рекомендацией"
         )
-        return await self._run_tool_loop(prompt, chat_id=chat_id)
+        return await self._run_tool_loop(prompt, chat_id=chat_id, settings=settings)
 
     # ------------------------------------------------------------------ #
     #  Ежедневный дайджест                                                 #
@@ -423,13 +542,14 @@ class TinaAgent(BaseAgent):
     async def send_daily_digest(self, chat_id: int) -> None:
         """Ежедневный 08:00 МСК: найти и проанализировать тендеры, уведомить пользователя."""
         logger.info(f"[Тина] Ежедневный дайджест для chat_id={chat_id}")
-        keywords = config.TENDER_KEYWORDS
+        settings = await self._get_tender_settings(chat_id)
+        keywords = settings["keywords"]
         if not keywords:
-            logger.warning("[Тина] TENDER_KEYWORDS пустой — дайджест пропущен")
+            logger.warning(f"[Тина] Список ключевых слов пуст для chat_id={chat_id} — дайджест пропущен")
             return
         try:
             await self._notify_user(chat_id, "📋 <b>Тина</b>: начинаю поиск тендеров, подожди немного…")
-            result = await self.scan_and_analyze(keywords, chat_id=chat_id)
+            result = await self.scan_and_analyze(keywords, chat_id=chat_id, settings=settings)
             if not result:
                 result = "Подходящих тендеров сегодня не найдено."
             header = "📋 <b>Тендерный дайджест</b> — " + datetime.now(timezone.utc).strftime("%d.%m.%Y") + "\n\n"
@@ -455,18 +575,19 @@ class TinaAgent(BaseAgent):
         """/tenders [ключевое слово] — поиск и анализ тендеров."""
         chat_id = update.effective_chat.id
         keyword_input = " ".join(context.args) if context.args else ""
+        settings = await self._get_tender_settings(chat_id)
 
         if keyword_input:
             keywords = [keyword_input]
         else:
-            keywords = config.TENDER_KEYWORDS or ["товары"]
+            keywords = settings["keywords"] or ["товары"]
 
         await update.message.reply_text(
             f"📋 Ищу тендеры по: {', '.join(keywords)}…\nЭто может занять 1-2 минуты.",
             parse_mode="HTML",
         )
         try:
-            result = await self.scan_and_analyze(keywords, chat_id=chat_id)
+            result = await self.scan_and_analyze(keywords, chat_id=chat_id, settings=settings)
             if not result:
                 result = "Подходящих тендеров не найдено."
             for chunk in [result[i:i+4000] for i in range(0, len(result), 4000)]:
@@ -531,7 +652,33 @@ class TinaAgent(BaseAgent):
         except Exception as e:
             await update.message.reply_text(f"⚠️ Ошибка: {e}")
 
+    async def cmd_tender_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/tender_settings — открыть форму настроек поиска тендеров (Mini App)."""
+        if not config.DASHBOARD_URL:
+            await update.message.reply_text("⚠️ Дашборд не настроен (DASHBOARD_URL пуст).")
+            return
+        url = f"{config.DASHBOARD_URL}?screen=tender_settings"
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("⚙️ Настройки поиска тендеров", web_app=WebAppInfo(url=url))
+        ]])
+        await update.message.reply_text(
+            "Настрой ключевые слова, бюджет (НМЦК) и регион поиска тендеров:",
+            reply_markup=keyboard,
+        )
+
+    def _bot_commands(self) -> list:
+        from telegram import BotCommand
+        return [
+            BotCommand("start",           "Запуск и помощь"),
+            BotCommand("tenders",         "Поиск и анализ тендеров"),
+            BotCommand("tender",          "Анализ тендера по ID"),
+            BotCommand("tenders_report",  "Сохранённые тендеры"),
+            BotCommand("tender_settings", "Настройки поиска (ключевые слова, бюджет)"),
+            BotCommand("reset",           "Очистить историю диалога"),
+        ]
+
     def _register_extra_handlers(self) -> None:
-        self.app.add_handler(CommandHandler("tenders",        self.cmd_tenders))
-        self.app.add_handler(CommandHandler("tender",         self.cmd_tender))
-        self.app.add_handler(CommandHandler("tenders_report", self.cmd_tenders_report))
+        self.app.add_handler(CommandHandler("tenders",         self.cmd_tenders))
+        self.app.add_handler(CommandHandler("tender",          self.cmd_tender))
+        self.app.add_handler(CommandHandler("tenders_report",  self.cmd_tenders_report))
+        self.app.add_handler(CommandHandler("tender_settings", self.cmd_tender_settings))

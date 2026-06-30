@@ -83,7 +83,50 @@ export interface TimelineData {
   chains: ChainRun[]
 }
 
+export interface TenderSettings {
+  keywords: string[]
+  min_nmck: number
+  max_nmck: number
+  region_code: string
+}
+
 const API_URL = import.meta.env.VITE_API_URL ?? ''
+
+function _authHeadersAndTokenParam(): { headers: Record<string, string>; tokenParam: string } {
+  const urlToken = new URLSearchParams(window.location.search).get('token') ?? ''
+  const headers: Record<string, string> = {}
+  if (!urlToken) {
+    const tg = (window as any).Telegram?.WebApp
+    headers['X-Telegram-Init-Data'] = tg?.initData ?? ''
+  }
+  return { headers, tokenParam: urlToken ? `?token=${encodeURIComponent(urlToken)}` : '' }
+}
+
+export async function fetchTenderSettings(): Promise<TenderSettings> {
+  const { headers, tokenParam } = _authHeadersAndTokenParam()
+  const res = await fetch(`${API_URL}/api/tender-settings${tokenParam}`, { headers })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json()
+}
+
+export async function saveTenderSettings(settings: TenderSettings): Promise<void> {
+  const { headers, tokenParam } = _authHeadersAndTokenParam()
+  const res = await fetch(`${API_URL}/api/tender-settings${tokenParam}`, {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  })
+  if (!res.ok) {
+    let message = `${res.status} ${res.statusText}`
+    try {
+      const data = await res.json()
+      if (data?.error) message = data.error
+    } catch {
+      // ignore — нет JSON-тела
+    }
+    throw new Error(message)
+  }
+}
 
 export async function fetchDashboard(days = 14): Promise<DashboardData> {
   const urlToken = new URLSearchParams(window.location.search).get('token') ?? ''
