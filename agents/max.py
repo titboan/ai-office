@@ -1633,6 +1633,10 @@ class MaxAgent(BaseAgent):
                     client = WBClient(shop["api_token"])
                     ad_stats = await client.get_ad_stats(date_from=date_from_adv_wb, date_to=date_to_adv)
                     prod_count = 0
+                    # Собираем по (product_id, stat_date) сумму со всех кампаний товара
+                    # ЗА ОДИН вызов синка — это полная картина за день, которая потом
+                    # ЗАМЕНЯЕТ старую запись (не складывается с ней), см. upsert_product_ad_stat.
+                    wb_product_agg: dict[tuple[str, object], dict] = {}
                     for s in ad_stats:
                         stat_date = _date.fromisoformat(s["stat_date"]) if isinstance(s["stat_date"], str) else s["stat_date"]
                         await upsert_ad_stat(
@@ -1643,15 +1647,16 @@ class MaxAgent(BaseAgent):
                         )
                         product_stats = s.get("product_stats") or []
                         for ps in product_stats:
-                            await upsert_product_ad_stat(
-                                chat_id=chat_id, marketplace="wb",
-                                product_id=ps["product_id"], campaign_id=s["campaign_id"],
-                                stat_date=stat_date, views=ps["views"],
-                                clicks=ps["clicks"], ctr=ps["ctr"], spend=ps["spend"],
-                                orders_count=ps.get("orders_count", 0),
-                            )
-                            prod_count += 1
-                    logger.info(f"[Макс/adv] WB реклама: {len(ad_stats)} записей, {prod_count} nm-записей")
+                            key = (ps["product_id"], stat_date)
+                            agg = wb_product_agg.setdefault(key, {
+                                "campaign_id": s["campaign_id"], "views": 0, "clicks": 0,
+                                "spend": 0.0, "orders_count": 0,
+                            })
+                            agg["campaign_id"] = s["campaign_id"]
+                            agg["views"] += ps["views"]
+                            agg["clicks"] += ps["clicks"]
+                            agg["spend"] += ps["spend"]
+                            agg["orders_count"] += ps.get("orders_count", 0)
 
                     # Для кампаний без nm-данных: цепочка fallback:
                     # 1) GET /api/advert/v2/adverts (новый API, возвращает nm_settings + названия)
@@ -1691,21 +1696,32 @@ class MaxAgent(BaseAgent):
                             stat_date = _date.fromisoformat(s["stat_date"]) if isinstance(s["stat_date"], str) else s["stat_date"]
                             spend_each = round(s["spend"] / n, 4) if n else 0
                             for nm_id in nms:
-                                await upsert_product_ad_stat(
-                                    chat_id=chat_id, marketplace="wb",
-                                    product_id=nm_id, campaign_id=s["campaign_id"],
-                                    stat_date=stat_date,
-                                    views=s["views"] // n if n else 0,
-                                    clicks=s["clicks"] // n if n else 0,
-                                    ctr=s["ctr"], spend=spend_each,
-                                    orders_count=0,
-                                )
-                                prod_count += 1
+                                key = (nm_id, stat_date)
+                                agg = wb_product_agg.setdefault(key, {
+                                    "campaign_id": s["campaign_id"], "views": 0, "clicks": 0,
+                                    "spend": 0.0, "orders_count": 0,
+                                })
+                                agg["campaign_id"] = s["campaign_id"]
+                                agg["views"] += s["views"] // n if n else 0
+                                agg["clicks"] += s["clicks"] // n if n else 0
+                                agg["spend"] += spend_each
                         src = "новый API" if v3_nms else ("v2 API" if v2_nms else ("ручной маппинг" if manual_nms else "нет"))
                         logger.info(
                             f"[Макс/adv] WB nm fallback: {len(campaigns_no_nm)} кампаний без nm, "
-                            f"источник={src}, добавлено nm-записей: {prod_count}"
+                            f"источник={src}"
                         )
+
+                    for (product_id, stat_date), agg in wb_product_agg.items():
+                        ctr = round(agg["clicks"] / agg["views"] * 100, 4) if agg["views"] else 0
+                        await upsert_product_ad_stat(
+                            chat_id=chat_id, marketplace="wb",
+                            product_id=product_id, campaign_id=agg["campaign_id"],
+                            stat_date=stat_date, views=agg["views"],
+                            clicks=agg["clicks"], ctr=ctr, spend=round(agg["spend"], 4),
+                            orders_count=agg["orders_count"],
+                        )
+                        prod_count += 1
+                    logger.info(f"[Макс/adv] WB реклама: {len(ad_stats)} записей, {prod_count} nm-записей")
 
                     # Заполняем wb_nm_id в product_mapping через Statistics stocks API.
                     # Content API требует разрешение "Контент" — stocks работает на том же токене.
@@ -1757,6 +1773,10 @@ class MaxAgent(BaseAgent):
                         perf_client = OzonPerformanceClient(ozon_perf_client_id, ozon_perf_client_secret, redis)
                         ad_stats = await perf_client.get_ad_stats(date_from=date_from_adv_ozon, date_to=date_to_adv)
                         prod_count = 0
+                        # Суммируем по (product_id, stat_date) со всех кампаний ЗА ОДИН
+                        # вызов синка — итог заменяет старую запись, не складывается с ней
+                        # (см. upsert_product_ad_stat), иначе 30-дневное окно раздувает spend.
+                        ozon_product_agg: dict[tuple[str, object], dict] = {}
                         for s in ad_stats:
                             stat_date = _date.fromisoformat(s["stat_date"]) if isinstance(s["stat_date"], str) else s["stat_date"]
                             await upsert_ad_stat(
@@ -1766,14 +1786,27 @@ class MaxAgent(BaseAgent):
                                 clicks=s["clicks"], ctr=s["ctr"], spend=s["spend"],
                             )
                             for ps in (s.get("product_stats") or []):
-                                await upsert_product_ad_stat(
-                                    chat_id=chat_id, marketplace="ozon",
-                                    product_id=ps["product_id"], campaign_id=s["campaign_id"],
-                                    stat_date=stat_date, views=ps["views"],
-                                    clicks=ps["clicks"], ctr=ps["ctr"], spend=ps["spend"],
-                                    orders_count=ps.get("orders_count", 0),
-                                )
-                                prod_count += 1
+                                key = (ps["product_id"], stat_date)
+                                agg = ozon_product_agg.setdefault(key, {
+                                    "campaign_id": s["campaign_id"], "views": 0, "clicks": 0,
+                                    "spend": 0.0, "orders_count": 0,
+                                })
+                                agg["campaign_id"] = s["campaign_id"]
+                                agg["views"] += ps["views"]
+                                agg["clicks"] += ps["clicks"]
+                                agg["spend"] += ps["spend"]
+                                agg["orders_count"] += ps.get("orders_count", 0)
+
+                        for (product_id, stat_date), agg in ozon_product_agg.items():
+                            ctr = round(agg["clicks"] / agg["views"] * 100, 4) if agg["views"] else 0
+                            await upsert_product_ad_stat(
+                                chat_id=chat_id, marketplace="ozon",
+                                product_id=product_id, campaign_id=agg["campaign_id"],
+                                stat_date=stat_date, views=agg["views"],
+                                clicks=agg["clicks"], ctr=ctr, spend=round(agg["spend"], 4),
+                                orders_count=agg["orders_count"],
+                            )
+                            prod_count += 1
                         logger.info(f"[Макс/adv] Ozon реклама (client_id={shop.get('client_id')}): {len(ad_stats)} записей, {prod_count} sku-записей")
                     else:
                         logger.warning(f"[Макс/adv] Ozon Performance credentials не настроены для client_id={shop.get('client_id')}")

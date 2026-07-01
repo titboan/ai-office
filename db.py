@@ -1238,7 +1238,13 @@ async def upsert_product_ad_stat(
     stat_date, views: int, clicks: int, ctr: float, spend: float,
     orders_count: int = 0,
 ) -> None:
-    """Сохранить/обновить рекламную статистику на уровне товара за день."""
+    """Сохранить/обновить рекламную статистику на уровне товара за день.
+
+    Значения — это итог за конкретный stat_date (по всем кампаниям товара
+    в рамках одного вызова синка), поэтому запись ЗАМЕНЯЕТ старую, а не
+    складывается с ней. Иначе повторный ежедневный синк одного и того же
+    скользящего окна дат раздувает spend/views/clicks на каждый повтор.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
@@ -1249,14 +1255,11 @@ async def upsert_product_ad_stat(
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
             ON CONFLICT (chat_id, marketplace, product_id, stat_date) DO UPDATE
                 SET campaign_id   = COALESCE(EXCLUDED.campaign_id, product_adv_stats.campaign_id),
-                    views         = product_adv_stats.views + EXCLUDED.views,
-                    clicks        = product_adv_stats.clicks + EXCLUDED.clicks,
-                    ctr           = CASE WHEN (product_adv_stats.views + EXCLUDED.views) > 0
-                                         THEN ROUND((product_adv_stats.clicks + EXCLUDED.clicks)::numeric
-                                              / (product_adv_stats.views + EXCLUDED.views) * 100, 4)
-                                         ELSE 0 END,
-                    spend         = product_adv_stats.spend + EXCLUDED.spend,
-                    orders_count  = product_adv_stats.orders_count + EXCLUDED.orders_count,
+                    views         = EXCLUDED.views,
+                    clicks        = EXCLUDED.clicks,
+                    ctr           = EXCLUDED.ctr,
+                    spend         = EXCLUDED.spend,
+                    orders_count  = EXCLUDED.orders_count,
                     updated_at    = NOW()
             """,
             chat_id, marketplace, product_id, campaign_id,
