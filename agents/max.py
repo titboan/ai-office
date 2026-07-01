@@ -4670,72 +4670,66 @@ class MaxAgent(BaseAgent):
                     return (0, -(it["vel"] or 0))
                 return (1, it["days_left"] or 999)
 
-            def _build_table(group: list[dict]) -> str:
-                name_w = max((len(it["name"]) for it in group), default=5)
-                name_w = max(name_w, 5)
-                hdr = (
-                    f"{'':2} {'Товар':<{name_w}}"
-                    f" {'Ост':>5} {'Дн':>4} {'  /д':>5} {'Заказ':>6} {'Срок':>5}"
-                )
-                sep = "─" * len(hdr)
-                lines = [hdr, sep]
-                for it in group:
-                    if it["severity"] == "critical":
-                        stat = "!!"
-                    elif (it["days_to_order"] or 0) == 0:
-                        stat = " !"
-                    else:
-                        stat = " ~"
+            def _build_mp_section(group: list[dict]) -> list[str]:
+                critical = [it for it in group if it["severity"] == "critical"]
+                urgent   = [it for it in group if it["severity"] == "low" and not it["covered"] and (it["days_to_order"] or 0) == 0]
+                planned  = [it for it in group if it["severity"] == "low" and not it["covered"] and (it["days_to_order"] or 0) > 0]
+                covered  = [it for it in group if it["covered"]]
+                sec: list[str] = []
 
-                    days_str = "-" if it["days_left"] is None else str(int(it["days_left"]))
-                    vel_str  = f"{it['vel']:.1f}" if it["vel"] > 0 else "-"
+                if critical:
+                    rows = ["| Товар | Прод/д | Заказать |", "|---|---:|---:|"]
+                    for it in critical:
+                        if it["vel"] > 0:
+                            rows.append(f"| **{it['name']}** | {it['vel']:.1f} | **{it['qty_to_order']} шт** |")
+                        else:
+                            rows.append(f"| **{it['name']}** | — | *нет продаж* |")
+                    sec.append("**🔴 Нет остатков**\n\n" + "\n".join(rows))
 
-                    if it["covered"]:
-                        qty_str = "покр."
-                    elif it["qty_to_order"] > 0:
-                        qty_str = str(it["qty_to_order"])
-                    elif it["severity"] == "critical" and it["vel"] == 0:
-                        qty_str = "-"
-                    else:
-                        qty_str = "0"
+                if urgent:
+                    rows = ["| Товар | Ост | Дн | Прод/д | Заказать |", "|---|---:|---:|---:|---:|"]
+                    for it in urgent:
+                        rows.append(
+                            f"| **{it['name']}** | {it['stock']} | {int(it['days_left'])} "
+                            f"| {it['vel']:.1f} | **{it['qty_to_order']} шт** |"
+                        )
+                    sec.append("**⚡ Срочно заказать**\n\n" + "\n".join(rows))
 
-                    if it["severity"] == "critical" or it["covered"]:
-                        срок = ""
-                    elif (it["days_to_order"] or 0) == 0:
-                        срок = "сейч"
-                    elif it["order_by_date"]:
-                        срок = it["order_by_date"].strftime("%d.%m")
-                    else:
-                        срок = ""
+                if planned:
+                    rows = ["| Товар | Ост | Дн | Прод/д | Заказать | До |", "|---|---:|---:|---:|---:|---|"]
+                    for it in planned:
+                        срок    = it["order_by_date"].strftime("%d.%m") if it["order_by_date"] else "—"
+                        qty_str = f"**{it['qty_to_order']} шт**" if it["qty_to_order"] > 0 else "—"
+                        rows.append(
+                            f"| {it['name']} | {it['stock']} | {int(it['days_left'])} "
+                            f"| {it['vel']:.1f} | {qty_str} | {срок} |"
+                        )
+                    sec.append("**📅 Запланировать**\n\n" + "\n".join(rows))
 
-                    lines.append(
-                        f"{stat} {it['name']:<{name_w}}"
-                        f" {it['stock']:>5} {days_str:>4} {vel_str:>5} {qty_str:>6} {срок:>5}"
-                    )
-                return "\n".join(lines)
+                if covered:
+                    names = ", ".join(f"`{it['name']}`" for it in covered)
+                    sec.append(f"*✅ Покрыто транзитом: {names}*")
+
+                return sec
 
             wb_items   = sorted([it for it in items if it["marketplace"] == "wb"],   key=_sort_key)
             ozon_items = sorted([it for it in items if it["marketplace"] == "ozon"], key=_sort_key)
 
-            parts: list[str] = [
-                f"📦 <b>Сток-алерт</b>  <i>{today.strftime('%d.%m')}</i>\n"
-                f"<i>Доставка {lead_time} дн · запас {safety_days} дн</i>"
+            md_parts: list[str] = [
+                f"# 📦 Сток-алерт · {today.strftime('%d.%m')}\n"
+                f"*Доставка {lead_time} дн · запас {safety_days} дн*"
             ]
-            if wb_items:
-                parts.append(
-                    f"🟣 <b>WB</b> — {len(wb_items)} поз.\n"
-                    f"<pre>{_build_table(wb_items)}</pre>"
-                )
-            if ozon_items:
-                parts.append(
-                    f"🔵 <b>Ozon</b> — {len(ozon_items)} поз.\n"
-                    f"<pre>{_build_table(ozon_items)}</pre>"
-                )
+            for mp_label, group in [("🟣 WB", wb_items), ("🔵 Ozon", ozon_items)]:
+                if not group:
+                    continue
+                md_parts.append("---")
+                md_parts.append(f"## {mp_label} · {len(group)} поз.")
+                md_parts.extend(_build_mp_section(group))
 
-            text = "\n\n".join(parts)
+            markdown = "\n\n".join(md_parts)
 
-            marta_bot = _TGBot(token=_cfg.MARTA_BOT_TOKEN)
-            await marta_bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            from utils.tg_rich import send_rich_or_fallback
+            await send_rich_or_fallback(_cfg.MARTA_BOT_TOKEN, chat_id, markdown)
             logger.info(f"[Макс/stock_alerts] chat={chat_id} алертов: {len(items)} (lead={lead_time}, safety={safety_days})")
         except Exception as e:
             logger.error(f"[Макс/stock_alerts] ошибка: {e}", exc_info=True)
