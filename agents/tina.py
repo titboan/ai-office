@@ -588,13 +588,7 @@ class TinaAgent(BaseAgent):
         )
         try:
             result = await self.scan_and_analyze(keywords, chat_id=chat_id, settings=settings)
-            if not result:
-                result = "Подходящих тендеров не найдено."
-            for chunk in [result[i:i+4000] for i in range(0, len(result), 4000)]:
-                try:
-                    await update.message.reply_text(chunk, parse_mode="HTML")
-                except Exception:
-                    await update.message.reply_text(chunk)
+            await self._send_html_chunks(context, chat_id, result or "Подходящих тендеров не найдено.")
         except Exception as e:
             logger.error(f"[Тина] cmd_tenders ошибка: {e}\n{traceback.format_exc()}")
             await update.message.reply_text(f"⚠️ Ошибка анализа: {e}")
@@ -609,35 +603,30 @@ class TinaAgent(BaseAgent):
         await update.message.reply_text(f"🔍 Анализирую тендер {lot_id}…")
         try:
             result = await self.analyze_specific_tender(lot_id, chat_id=chat_id)
-            for chunk in [result[i:i+4000] for i in range(0, len(result), 4000)]:
-                try:
-                    await update.message.reply_text(chunk, parse_mode="HTML")
-                except Exception:
-                    await update.message.reply_text(chunk)
+            await self._send_html_chunks(context, chat_id, result)
         except Exception as e:
             await update.message.reply_text(f"⚠️ Ошибка: {e}")
 
-    async def cmd_tenders_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/tenders_report — показать сохранённые тендеры из БД."""
-        chat_id = update.effective_chat.id
+    async def _render_tenders_report(self, chat_id: int) -> str:
+        """Текст отчёта по сохранённым тендерам для chat_id."""
         if not config.DATABASE_URL:
-            await update.message.reply_text("⚠️ БД недоступна.")
-            return
+            return "⚠️ БД недоступна."
         try:
             conn = await asyncpg.connect(config.DATABASE_URL)
-            rows = await conn.fetch("""
-                SELECT title, nmck, margin_estimate, recommendation, submission_deadline
-                FROM tender_opportunities
-                WHERE (chat_id = $1 OR chat_id = 0)
-                  AND recommendation IN ('УЧАСТВОВАТЬ','АНАЛИЗИРОВАТЬ')
-                ORDER BY margin_estimate DESC
-                LIMIT 10
-            """, chat_id)
-            await conn.close()
+            try:
+                rows = await conn.fetch("""
+                    SELECT title, nmck, margin_estimate, recommendation, submission_deadline
+                    FROM tender_opportunities
+                    WHERE (chat_id = $1 OR chat_id = 0)
+                      AND recommendation IN ('УЧАСТВОВАТЬ','АНАЛИЗИРОВАТЬ')
+                    ORDER BY margin_estimate DESC
+                    LIMIT 10
+                """, chat_id)
+            finally:
+                await conn.close()
 
             if not rows:
-                await update.message.reply_text("📋 Сохранённых тендеров нет. Запусти /tenders для поиска.")
-                return
+                return "📋 Сохранённых тендеров нет. Нажми «🔍 Найти тендеры» в меню (/start)."
 
             lines = ["📋 <b>Сохранённые тендеры</b>\n"]
             for r in rows:
@@ -648,9 +637,15 @@ class TinaAgent(BaseAgent):
                 dl    = str(r["submission_deadline"])[:10] if r["submission_deadline"] else "—"
                 title = (r["title"] or "")[:60]
                 lines.append(f"{emoji} {title}\n   💰 {nmck} | маржа {margin} | до {dl}")
-            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+            return "\n".join(lines)
         except Exception as e:
-            await update.message.reply_text(f"⚠️ Ошибка: {e}")
+            return f"⚠️ Ошибка: {e}"
+
+    async def cmd_tenders_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/tenders_report — показать сохранённые тендеры из БД."""
+        chat_id = update.effective_chat.id
+        text = await self._render_tenders_report(chat_id)
+        await update.message.reply_text(text, parse_mode="HTML")
 
     async def cmd_tender_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/tender_settings — открыть форму настроек поиска тендеров (Mini App)."""
@@ -666,10 +661,69 @@ class TinaAgent(BaseAgent):
             reply_markup=keyboard,
         )
 
+    # ------------------------------------------------------------------ #
+    #  Главное меню (кнопки вместо команд)                                #
+    # ------------------------------------------------------------------ #
+
+    def _menu_keyboard(self) -> InlineKeyboardMarkup:
+        rows = [
+            [InlineKeyboardButton("🔍 Найти тендеры", callback_data="tina_menu:find")],
+            [InlineKeyboardButton("📋 Сохранённые тендеры", callback_data="tina_menu:report")],
+        ]
+        if config.DASHBOARD_URL:
+            rows.append([InlineKeyboardButton(
+                "⚙️ Настройки поиска", web_app=WebAppInfo(url=f"{config.DASHBOARD_URL}?screen=tender_settings")
+            )])
+        return InlineKeyboardMarkup(rows)
+
+    async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/start — главное меню с кнопками."""
+        await update.message.reply_text(
+            "📋 <b>Тина</b> — тендерный аналитик 44-ФЗ.\n\n"
+            "🔍 <b>Найти тендеры</b> — поиск по твоим сохранённым ключевым словам\n"
+            "📋 <b>Сохранённые тендеры</b> — что уже нашли и проанализировали\n"
+            "⚙️ <b>Настройки поиска</b> — ключевые слова, бюджет, регион\n\n"
+            "Для поиска по конкретному слову: <code>/tenders слово</code>\n"
+            "Для анализа тендера по ID: <code>/tender ID</code>",
+            parse_mode="HTML",
+            reply_markup=self._menu_keyboard(),
+        )
+
+    async def _handle_menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        await query.answer()
+        chat_id = query.message.chat_id
+
+        if query.data == "tina_menu:find":
+            settings = await self._get_tender_settings(chat_id)
+            keywords = settings["keywords"] or ["товары"]
+            await query.edit_message_text(
+                f"📋 Ищу тендеры по: {', '.join(keywords)}…\nЭто может занять 1-2 минуты."
+            )
+            try:
+                result = await self.scan_and_analyze(keywords, chat_id=chat_id, settings=settings)
+                await self._send_html_chunks(context, chat_id, result or "Подходящих тендеров не найдено.")
+            except Exception as e:
+                logger.error(f"[Тина] menu find ошибка: {e}\n{traceback.format_exc()}")
+                await context.bot.send_message(chat_id, f"⚠️ Ошибка анализа: {e}")
+
+        elif query.data == "tina_menu:report":
+            text = await self._render_tenders_report(chat_id)
+            await self._send_html_chunks(context, chat_id, text)
+
+    @staticmethod
+    async def _send_html_chunks(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str) -> None:
+        """Отправить длинный HTML-текст частями по 4000 симв. (лимит Telegram)."""
+        for chunk in [text[i:i+4000] for i in range(0, max(len(text), 1), 4000)]:
+            try:
+                await context.bot.send_message(chat_id, chunk, parse_mode="HTML")
+            except Exception:
+                await context.bot.send_message(chat_id, chunk)
+
     def _bot_commands(self) -> list:
         from telegram import BotCommand
         return [
-            BotCommand("start",           "Запуск и помощь"),
+            BotCommand("start",           "Главное меню"),
             BotCommand("tenders",         "Поиск и анализ тендеров"),
             BotCommand("tender",          "Анализ тендера по ID"),
             BotCommand("tenders_report",  "Сохранённые тендеры"),
@@ -678,7 +732,9 @@ class TinaAgent(BaseAgent):
         ]
 
     def _register_extra_handlers(self) -> None:
+        from telegram.ext import CallbackQueryHandler
         self.app.add_handler(CommandHandler("tenders",         self.cmd_tenders))
         self.app.add_handler(CommandHandler("tender",          self.cmd_tender))
         self.app.add_handler(CommandHandler("tenders_report",  self.cmd_tenders_report))
         self.app.add_handler(CommandHandler("tender_settings", self.cmd_tender_settings))
+        self.app.add_handler(CallbackQueryHandler(self._handle_menu_callback, pattern=r"^tina_menu:"))
