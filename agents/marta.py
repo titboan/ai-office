@@ -1672,6 +1672,7 @@ class MartaAgent(BaseAgent):
                     InlineKeyboardButton("🔴 Ошибки (24ч)",   callback_data="mmenu_run:logs_all"),
                     InlineKeyboardButton("📡 Ошибки WB рекл", callback_data="mmenu_run:logs_adv"),
                 ],
+                [InlineKeyboardButton("📦 Настройки поставок", callback_data="mmenu:supply_settings")],
                 [InlineKeyboardButton("◀️ Назад",           callback_data="mmenu:back")],
             ],
         ),
@@ -1702,6 +1703,40 @@ class MartaAgent(BaseAgent):
                 self._MARTA_MENU_HEADER,
                 parse_mode="HTML",
                 reply_markup=self._MARTA_MENU_KEYBOARD,
+            )
+            return
+
+        # ── Настройки поставок (требует async DB) ─────────────────────
+        if data == "mmenu:supply_settings":
+            from db import get_user_setting
+            from config import config as _cfg
+            user_id = query.from_user.id
+            raw_lead   = await get_user_setting(user_id, "supply_lead_days")
+            raw_safety = await get_user_setting(user_id, "supply_safety_days")
+            lead   = int(raw_lead)   if raw_lead   else getattr(_cfg, "SUPPLY_LEAD_TIME_DAYS",    21)
+            safety = int(raw_safety) if raw_safety else getattr(_cfg, "SUPPLY_SAFETY_STOCK_DAYS", 14)
+            await query.edit_message_text(
+                f"⚙️ <b>Настройки поставок</b>\n\n"
+                f"📦 Срок доставки: <b>{lead} дн</b>\n"
+                f"🛡 Страховой запас: <b>{safety} дн</b>\n"
+                f"<i>Порог алерта = {lead + safety} дн</i>\n\n"
+                f"Быстро изменить:",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("📦 7 дн",  callback_data="msset:lead:7"),
+                        InlineKeyboardButton("📦 14 дн", callback_data="msset:lead:14"),
+                        InlineKeyboardButton("📦 21 дн", callback_data="msset:lead:21"),
+                        InlineKeyboardButton("📦 30 дн", callback_data="msset:lead:30"),
+                    ],
+                    [
+                        InlineKeyboardButton("🛡 7 дн",  callback_data="msset:safety:7"),
+                        InlineKeyboardButton("🛡 14 дн", callback_data="msset:safety:14"),
+                        InlineKeyboardButton("🛡 21 дн", callback_data="msset:safety:21"),
+                        InlineKeyboardButton("🛡 30 дн", callback_data="msset:safety:30"),
+                    ],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="mmenu:office")],
+                ]),
             )
             return
 
@@ -2046,6 +2081,53 @@ class MartaAgent(BaseAgent):
             query = update.callback_query
             await query.answer()
             await query.edit_message_text(query.message.text + "\n\n❌ Агент Макс недоступен", parse_mode="HTML")
+
+    async def _handle_supply_settings_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Пресет-кнопки настроек поставок (msset:lead|safety:N) — сохраняет и обновляет панель."""
+        query = update.callback_query
+        parts = query.data.split(":")
+        if len(parts) != 3:
+            await query.answer()
+            return
+        _, key, val_str = parts
+        user_id = query.from_user.id
+        val = int(val_str)
+        from db import get_user_setting, set_user_setting
+        from config import config as _cfg
+        if key == "lead":
+            await set_user_setting(user_id, "supply_lead_days", str(val))
+        else:
+            await set_user_setting(user_id, "supply_safety_days", str(val))
+        raw_lead   = await get_user_setting(user_id, "supply_lead_days")
+        raw_safety = await get_user_setting(user_id, "supply_safety_days")
+        lead   = int(raw_lead)   if raw_lead   else getattr(_cfg, "SUPPLY_LEAD_TIME_DAYS",    21)
+        safety = int(raw_safety) if raw_safety else getattr(_cfg, "SUPPLY_SAFETY_STOCK_DAYS", 14)
+        await query.answer("✅ Сохранено")
+        await query.edit_message_text(
+            f"⚙️ <b>Настройки поставок</b>\n\n"
+            f"📦 Срок доставки: <b>{lead} дн</b>\n"
+            f"🛡 Страховой запас: <b>{safety} дн</b>\n"
+            f"<i>Порог алерта = {lead + safety} дн</i>\n\n"
+            f"Быстро изменить:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📦 7 дн",  callback_data="msset:lead:7"),
+                    InlineKeyboardButton("📦 14 дн", callback_data="msset:lead:14"),
+                    InlineKeyboardButton("📦 21 дн", callback_data="msset:lead:21"),
+                    InlineKeyboardButton("📦 30 дн", callback_data="msset:lead:30"),
+                ],
+                [
+                    InlineKeyboardButton("🛡 7 дн",  callback_data="msset:safety:7"),
+                    InlineKeyboardButton("🛡 14 дн", callback_data="msset:safety:14"),
+                    InlineKeyboardButton("🛡 21 дн", callback_data="msset:safety:21"),
+                    InlineKeyboardButton("🛡 30 дн", callback_data="msset:safety:30"),
+                ],
+                [InlineKeyboardButton("◀️ Назад", callback_data="mmenu:office")],
+            ]),
+        )
 
     async def _handle_review_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Кнопки rev: (отзывы) через бот Марты — делегируем Максу."""
@@ -2399,3 +2481,4 @@ class MartaAgent(BaseAgent):
         # Делегирование кнопок вопросов/отзывов Максу (когда уведомление пришло через Марту)
         self.app.add_handler(CallbackQueryHandler(self._delegate_max_question, pattern=r"^qrev:"))
         self.app.add_handler(CallbackQueryHandler(self._delegate_max_review,   pattern=r"^rev:"))
+        self.app.add_handler(CallbackQueryHandler(self._handle_supply_settings_callback, pattern=r"^msset:"))
