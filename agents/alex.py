@@ -154,6 +154,7 @@ class AlexAgent(BaseAgent):
     emoji = "🗓️"
     system_prompt = ALEX_SYSTEM
     claude_model = config.CLAUDE_HAIKU_MODEL
+    direct_commands_enabled = False  # SaaS single-entry: только через Марту
 
     def __init__(self) -> None:
         super().__init__(config.ALEX_BOT_TOKEN)
@@ -365,6 +366,8 @@ class AlexAgent(BaseAgent):
         ]
 
     def _register_extra_handlers(self) -> None:
+        if not self.direct_commands_enabled:
+            return
         self.app.add_handler(CommandHandler("plans",    self.cmd_plans))
         self.app.add_handler(CommandHandler("roadmap",  self.cmd_roadmap))
         self.app.add_handler(CommandHandler("testpush", self.cmd_testpush))

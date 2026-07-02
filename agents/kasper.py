@@ -40,6 +40,7 @@ class KasperAgent(BaseAgent):
     emoji = "🔍"
     system_prompt = KASPER_SYSTEM
     claude_model = config.CLAUDE_OPUS_MODEL
+    direct_commands_enabled = False  # SaaS single-entry: только через Марту
 
     def __init__(self) -> None:
         super().__init__(config.KASPER_BOT_TOKEN)
@@ -158,4 +159,6 @@ class KasperAgent(BaseAgent):
         ]
 
     def _register_extra_handlers(self) -> None:
+        if not self.direct_commands_enabled:
+            return
         self.app.add_handler(CommandHandler("research", self.cmd_research))

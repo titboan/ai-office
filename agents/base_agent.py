@@ -123,6 +123,11 @@ class BaseAgent(ABC):
     agent_key: str = ""  # латиница для БД: "kasper", "kevin", etc.
     system_prompt: str = ""
 
+    # SaaS single-entry (ROADMAP Phase 10): False — бот агента не принимает личные
+    # команды/сообщения, только Марта. Worker loop (задачи из очереди) продолжает
+    # работать всегда, независимо от этого флага. Переопределяется в потомках.
+    direct_commands_enabled: bool = True
+
     @property
     def _effective_system(self) -> str:
         ctx = getattr(config, "COMPANY_CONTEXT", "")
@@ -1090,7 +1095,8 @@ class BaseAgent(ABC):
     def build_app(self) -> Application:
         async def _post_init(app: Application) -> None:
             from telegram import MenuButtonCommands
-            await app.bot.set_my_commands(self._bot_commands())
+            commands = self._bot_commands() if self.direct_commands_enabled else []
+            await app.bot.set_my_commands(commands)
             await app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
         self.app = (
@@ -1100,26 +1106,56 @@ class BaseAgent(ABC):
             .build()
         )
         self.app.add_error_handler(self._error_handler)
-        self.app.add_handler(CommandHandler("start", self.cmd_start))
-        self.app.add_handler(CommandHandler("help", self.cmd_help))
-        self.app.add_handler(CommandHandler("reset", self.cmd_reset))
-        self.app.add_handler(
-            MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
-        )
-        self.app.add_handler(
-            MessageHandler(filters.VOICE, self.handle_voice)
-        )
+        if self.direct_commands_enabled:
+            self.app.add_handler(CommandHandler("start", self.cmd_start))
+            self.app.add_handler(CommandHandler("help", self.cmd_help))
+            self.app.add_handler(CommandHandler("reset", self.cmd_reset))
+            self.app.add_handler(
+                MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
+            )
+            self.app.add_handler(
+                MessageHandler(filters.VOICE, self.handle_voice)
+            )
+        else:
+            # SaaS single-entry: личные команды/сообщения этого бота отключены,
+            # редирект на Марту. Групповые хендлеры (если есть) агент регистрирует
+            # сам в _register_extra_handlers() — она вызывается независимо от флага.
+            self.app.add_handler(
+                MessageHandler(
+                    filters.ChatType.PRIVATE & (filters.TEXT | filters.COMMAND | filters.VOICE),
+                    self._redirect_to_marta,
+                )
+            )
         self._register_extra_handlers()
 
         voice_status = "Groq ✓" if (_GROQ_AVAILABLE and config.GROQ_API_KEY) else "Groq — нет ключа"
-        logger.info(
-            f"[{self.name}] Handlers зарегистрированы: "
-            f"/start, /reset, MessageHandler(TEXT), MessageHandler(VOICE) [{voice_status}]"
-        )
+        if self.direct_commands_enabled:
+            logger.info(
+                f"[{self.name}] Handlers зарегистрированы: "
+                f"/start, /reset, MessageHandler(TEXT), MessageHandler(VOICE) [{voice_status}]"
+            )
+        else:
+            logger.info(
+                f"[{self.name}] Личные команды отключены (SaaS single-entry) — "
+                f"редирект на Марту, worker loop работает как обычно"
+            )
         return self.app
 
+    async def _redirect_to_marta(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Личный доступ к этому боту отключён (SaaS single-entry) — редирект на Марту."""
+        if update.message:
+            await update.message.reply_text(
+                f"👋 {self.name} теперь работает только через бота Марты — "
+                "напиши там, все команды и результаты будут приходить туда."
+            )
+
     def _register_extra_handlers(self) -> None:
-        """Переопределить в потомке для регистрации дополнительных команд."""
+        """Переопределить в потомке для регистрации дополнительных команд.
+
+        Вызывается всегда, независимо от direct_commands_enabled — если агенту
+        нужны хендлеры, не зависящие от личного доступа (например, групповой
+        триггер у Макса), регистрируй их здесь с явной проверкой filters.ChatType.GROUPS.
+        """
 
     # ── Async-запуск (многоагентный режим) ──────────────────────────────
 

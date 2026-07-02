@@ -59,6 +59,7 @@ class ElinaAgent(BaseAgent):
     role = "Копирайтер"
     emoji = "✍️"
     system_prompt = ELINA_SYSTEM
+    direct_commands_enabled = False  # SaaS single-entry: только через Марту
 
     def __init__(self) -> None:
         super().__init__(config.ELINA_BOT_TOKEN)
@@ -516,6 +517,8 @@ class ElinaAgent(BaseAgent):
         ]
 
     def _register_extra_handlers(self) -> None:
+        if not self.direct_commands_enabled:
+            return
         self.app.add_handler(CommandHandler("write", self.cmd_write))
         self.app.add_handler(CommandHandler("post",  self.cmd_post))
         self.app.add_handler(CommandHandler("seo",   self.cmd_seo))

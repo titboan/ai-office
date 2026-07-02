@@ -225,6 +225,7 @@ class PeterAgent(BaseAgent):
     role = "Бизнес-аналитик"
     emoji = "📊"
     system_prompt = PETER_SYSTEM
+    direct_commands_enabled = False  # SaaS single-entry: только через Марту
 
     def __init__(self) -> None:
         super().__init__(config.PETER_BOT_TOKEN)
@@ -3088,6 +3089,8 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
         ]
 
     def _register_extra_handlers(self) -> None:
+        if not self.direct_commands_enabled:
+            return
         self.app.add_handler(CommandHandler("menu",    self.cmd_menu))
         self.app.add_handler(CommandHandler("report",  self.cmd_report))
         self.app.add_handler(CommandHandler("analyze", self.cmd_analyze))

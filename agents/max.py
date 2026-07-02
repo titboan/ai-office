@@ -276,6 +276,10 @@ class MaxAgent(BaseAgent):
     role = "Менеджер отзывов"
     emoji = "🛒"
     system_prompt = MAX_SYSTEM
+    # SaaS single-entry: личные команды отключены, только через Марту.
+    # Бот Макса остаётся живым (polling) исключительно ради группы партнёров —
+    # см. _register_extra_handlers(), которая регистрируется независимо от флага.
+    direct_commands_enabled = False
 
     def __init__(self) -> None:
         super().__init__(config.MAX_BOT_TOKEN)
@@ -6489,6 +6493,22 @@ class MaxAgent(BaseAgent):
         ]
 
     def _register_extra_handlers(self) -> None:
+        if not self.direct_commands_enabled:
+            # Личные команды отключены (SaaS single-entry) — бот Макса живёт
+            # только ради группы партнёров: реагирует на "@бот"/"Макс" в group-чате.
+            self.app.add_handler(
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS,
+                    self._handle_group_message,
+                ),
+                group=3,
+            )
+            self.app.add_handler(
+                MessageHandler(filters.VOICE & filters.ChatType.GROUPS, self.handle_voice),
+                group=3,
+            )
+            return
+
         self.app.add_handler(CommandHandler("dashboard",     self.cmd_dashboard))
         self.app.add_handler(CommandHandler("start",         self.cmd_start))
         self.app.add_handler(CommandHandler("menu",          self.cmd_menu))

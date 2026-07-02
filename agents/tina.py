@@ -88,6 +88,7 @@ class TinaAgent(BaseAgent):
     role      = "Тендерный аналитик"
     emoji     = "📋"
     system_prompt = TINA_SYSTEM
+    direct_commands_enabled = False  # SaaS single-entry: только через Марту
 
     def __init__(self) -> None:
         super().__init__(config.TINA_BOT_TOKEN)
@@ -532,6 +533,8 @@ class TinaAgent(BaseAgent):
             await update.message.reply_text(f"⚠️ Ошибка: {e}")
 
     def _register_extra_handlers(self) -> None:
+        if not self.direct_commands_enabled:
+            return
         self.app.add_handler(CommandHandler("tenders",        self.cmd_tenders))
         self.app.add_handler(CommandHandler("tender",         self.cmd_tender))
         self.app.add_handler(CommandHandler("tenders_report", self.cmd_tenders_report))

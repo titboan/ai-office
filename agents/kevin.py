@@ -154,6 +154,7 @@ class KevinAgent(BaseAgent):
     role = "Старший разработчик"
     emoji = "👨‍💻"
     system_prompt = KEVIN_SYSTEM
+    direct_commands_enabled = False  # SaaS single-entry: только через Марту
 
     def __init__(self) -> None:
         super().__init__(config.KEVIN_BOT_TOKEN)
@@ -302,4 +303,6 @@ class KevinAgent(BaseAgent):
         ]
 
     def _register_extra_handlers(self) -> None:
+        if not self.direct_commands_enabled:
+            return
         self.app.add_handler(CommandHandler("code", self.cmd_code))
