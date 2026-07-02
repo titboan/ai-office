@@ -21,6 +21,12 @@ from telegram.ext import (
     ContextTypes,
 )
 
+from agents.registry import (
+    AGENTS as _AGENT_REGISTRY,
+    agent_emoji as _registry_emoji,
+    agent_name as _registry_name,
+    agent_timeout as _registry_timeout,
+)
 from config import config
 from db import log_event
 from utils.tg_format import clean_agent_output as _clean_output
@@ -74,15 +80,11 @@ def _calc_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     return (input_tokens * in_p + output_tokens * out_p) / 1_000_000
 
 
-# Имена агентов для уведомлений в цепочках
-_AGENT_NAMES: dict[str, str] = {
-    "kasper": "🔍 Каспер",
-    "kevin":  "👨‍💻 Кевин",
-    "peter":  "📊 Питер",
-    "elina":  "✍️ Элина",
-    "alex":   "🗓️ Алекс",
-    "marta":  "👩‍💼 Марта",
-}
+def _agent_label(agent_key: str, fallback: str | None = None) -> str:
+    """'эмодзи Имя' агента для уведомлений в цепочках — из единого реестра agents/registry.py."""
+    if agent_key in _AGENT_REGISTRY:
+        return f"{_registry_emoji(agent_key)} {_registry_name(agent_key)}"
+    return fallback if fallback is not None else agent_key
 
 
 def _build_context(prev_results: list[dict]) -> str:
@@ -93,7 +95,7 @@ def _build_context(prev_results: list[dict]) -> str:
         result = r.get("result") or ""
         if len(result) > MAX_SUBTASK_CONTEXT_CHARS:
             result = result[:MAX_SUBTASK_CONTEXT_CHARS] + "\n[обрезано]"
-        label = _AGENT_NAMES.get(agent, agent)
+        label = _agent_label(agent)
         parts.append(f"=== {label} ===\n{result}")
     return "\n\n".join(parts)
 
@@ -906,24 +908,13 @@ class BaseAgent(ABC):
                     if repo_match:
                         github_repo_url = repo_match.group(0).rstrip(')/,. ')
 
-                _AGENT_EMOJI = {
-                    "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
-                    "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
-                    "dan": "🎨", "tina": "📋", "digest": "📰",
-                }
-                _AGENT_NAME = {
-                    "kasper": "Каспер", "kevin": "Кевин", "peter": "Питер",
-                    "elina": "Элина", "alex": "Алекс", "marta": "Марта",
-                    "dan": "Дэн", "tina": "Тина", "digest": "Дайджест",
-                }
-
                 result_lines = ""
                 if chain_results:
                     for r in chain_results:
                         agent_k = r.get("assigned_agent", "")
                         r_result = (r.get("result") or "").strip()
-                        emoji = _AGENT_EMOJI.get(agent_k, "🤖")
-                        name  = _AGENT_NAME.get(agent_k, agent_k)
+                        emoji = _registry_emoji(agent_k)
+                        name  = _registry_name(agent_k)
                         excerpt = _re.sub(r"<[^>]+>", "", r_result)[:200].strip()
                         if len(_re.sub(r"<[^>]+>", "", r_result)) > 200:
                             excerpt += "…"
@@ -965,11 +956,11 @@ class BaseAgent(ABC):
 
         # Уведомляем пользователя о прогрессе
         if chat_id:
-            me = _AGENT_NAMES.get(self.agent_key, self.name)
+            me = _agent_label(self.agent_key, self.name)
             if is_parallel_next:
-                them = " + ".join(_AGENT_NAMES.get(s["agent"], s["agent"]) for s in next_steps)
+                them = " + ".join(_agent_label(s["agent"]) for s in next_steps)
             else:
-                them = _AGENT_NAMES.get(next_steps[0]["agent"], next_steps[0]["agent"])
+                them = _agent_label(next_steps[0]["agent"])
             await self._notify_user(
                 chat_id,
                 f"✅ {me} завершил [{chain_index+1}/{chain_total}]\n➡️ Передаю {them}…",
@@ -1008,7 +999,7 @@ class BaseAgent(ABC):
                 from_agent=self.agent_key,
                 correlation_id=completed_task.correlation_id,
                 priority=getattr(completed_task, "priority", 0),
-                timeout_seconds=600 if next_agent == "dan" else 300,
+                timeout_seconds=_registry_timeout(next_agent),
             )
             if task_id:
                 enqueued_ids.append(task_id)
@@ -1057,7 +1048,7 @@ class BaseAgent(ABC):
 
         step     = plan["steps"][chain_index]
         required = step.get("required", True)
-        me       = _AGENT_NAMES.get(self.agent_key, self.name)
+        me       = _agent_label(self.agent_key, self.name)
         err_msg  = getattr(failed_task, "error_message", None) or "неизвестно"
 
         logger.error(

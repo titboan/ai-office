@@ -15,20 +15,11 @@ from telegram.error import BadRequest, TelegramError
 
 from config import config
 from utils.tg_format import bold, code, escape
+from agents.registry import AGENTS, agent_emoji, agent_name
 
 _REDIS_KEY = "status:pinned_msg_id"
 
-_AGENT_EMOJI = {
-    "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
-    "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
-    "dan": "🎨", "eva": "📰", "max": "🛒",
-}
-_AGENT_NAMES = {
-    "kasper": "Каспер", "kevin": "Кевин", "peter": "Питер",
-    "elina": "Элина", "alex": "Алекс", "marta": "Марта",
-    "dan": "Дэн", "eva": "Ева", "max": "Макс",
-}
-_ALL_AGENTS = ["marta", "kasper", "kevin", "peter", "elina", "alex", "dan", "eva", "max"]
+_ALL_AGENTS = list(AGENTS.keys())
 
 
 def _build_status_text(active_tasks: list, recent_tasks: list) -> str:
@@ -56,8 +47,8 @@ def _build_status_text(active_tasks: list, recent_tasks: list) -> str:
 
     lines.append(bold("Агенты"))
     for agent_key in _ALL_AGENTS:
-        emoji = _AGENT_EMOJI.get(agent_key, "🤖")
-        name = _AGENT_NAMES.get(agent_key, agent_key)
+        emoji = agent_emoji(agent_key)
+        name = agent_name(agent_key)
         if agent_key in busy_agents:
             task = next((t for t in active_tasks if t["assigned_agent"] == agent_key), None)
             if task:
@@ -82,7 +73,7 @@ def _build_status_text(active_tasks: list, recent_tasks: list) -> str:
         lines.append("")
         lines.append(bold("Последние задачи"))
         for task in recent_tasks[:5]:
-            a_emoji = _AGENT_EMOJI.get(task["assigned_agent"], "🤖")
+            a_emoji = agent_emoji(task["assigned_agent"])
             payload = task["payload"]
             short = (payload[:50] + "…") if len(payload) > 50 else payload
             finished_at = task.get("finished_at")

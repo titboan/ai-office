@@ -17,7 +17,8 @@ from db import save_project, find_project, list_projects
 from utils.tg_format import clean_agent_output as _clean_output
 from utils.tg_rich import send_rich_or_fallback as _send_rich
 from task_queue import create_task as enqueue_task, get_active_tasks, get_recent_tasks, enqueue_chain_task
-from .base_agent import BaseAgent, _AGENT_NAMES
+from .base_agent import BaseAgent
+from agents.registry import agent_emoji, agent_name, agent_timeout
 
 _HEAVY_SYNC_PAYLOADS = {
     "__sync__", "__sync_adv__", "__sync_fin__",
@@ -26,12 +27,10 @@ _HEAVY_SYNC_PAYLOADS = {
 }
 
 def _task_timeout(agent_key: str, payload: str) -> int:
-    """Таймаут задачи в секундах. Тяжёлые синки Макса — 900 с, Дэн — 600 с, остальное — 300 с."""
+    """Таймаут задачи в секундах. Тяжёлые синки Макса — 900 с, остальное — из реестра агентов."""
     if agent_key == "max" and payload in _HEAVY_SYNC_PAYLOADS:
         return 900
-    if agent_key == "dan":
-        return 600
-    return 300
+    return agent_timeout(agent_key)
 
 
 def _detect_priority(text: str) -> int:
@@ -648,22 +647,12 @@ class MartaAgent(BaseAgent):
                 return
 
             if plan and plan.get("is_chain"):
-                _CHAIN_AGENT_EMOJI = {
-                    "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
-                    "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
-                    "dan": "🎨", "tina": "📋", "digest": "📰",
-                }
-                _CHAIN_AGENT_NAMES = {
-                    "kasper": "Каспер", "kevin": "Кевин", "peter": "Питер",
-                    "elina": "Элина", "alex": "Алекс", "marta": "Марта",
-                    "dan": "Дэн", "tina": "Тина", "digest": "Дайджест",
-                }
                 steps = plan.get("steps", [])
                 steps_lines = ""
                 for i, step in enumerate(steps, 1):
                     a_key   = step.get("agent", "")
-                    emoji   = _CHAIN_AGENT_EMOJI.get(a_key, "🤖")
-                    name    = _CHAIN_AGENT_NAMES.get(a_key, a_key)
+                    emoji   = agent_emoji(a_key)
+                    name    = agent_name(a_key)
                     task_str = step.get("task", "")
                     task_short = task_str[:55] + ("..." if len(task_str) > 55 else "")
                     steps_lines += f"{i}. {emoji} **{name}** — {task_short}\n"
@@ -1190,11 +1179,6 @@ class MartaAgent(BaseAgent):
         """/status — показать состояние офиса."""
         from task_queue import get_recent_tasks
 
-        _AGENT_EMOJI = {
-            "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
-            "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
-            "dan": "🎨", "tina": "📋", "digest": "📰",
-        }
         _STATUS_EMOJI = {
             "queued": "🕐", "acknowledged": "👀",
             "running": "⚙️", "failed": "🔴", "timeout": "⏱️",
@@ -1208,7 +1192,7 @@ class MartaAgent(BaseAgent):
             lines.append("✅ Все агенты свободны")
         else:
             for t in tasks:
-                agent_emoji  = _AGENT_EMOJI.get(t["assigned_agent"], "🤖")
+                a_emoji      = agent_emoji(t["assigned_agent"])
                 status_emoji = _STATUS_EMOJI.get(t["status"], "❓")
                 short_task   = t["payload"][:60].strip() + ("..." if len(t["payload"]) > 60 else "")
                 created_at = t["created_at"]
@@ -1221,7 +1205,7 @@ class MartaAgent(BaseAgent):
                     else f"{int(wait.total_seconds())} сек"
                 )
                 lines.append(
-                    f"{status_emoji} {agent_emoji} **{t['assigned_agent']}** — {short_task}\n"
+                    f"{status_emoji} {a_emoji} **{t['assigned_agent']}** — {short_task}\n"
                     f"⏳ В работе: {wait_str}\n"
                 )
 
@@ -1229,9 +1213,9 @@ class MartaAgent(BaseAgent):
         if recent:
             lines.append("\n📜 **Последние выполненные:**")
             for t in recent:
-                agent_emoji = _AGENT_EMOJI.get(t["assigned_agent"], "🤖")
-                short_task  = t["payload"][:60].strip() + ("..." if len(t["payload"]) > 60 else "")
-                lines.append(f"✅ {agent_emoji} {t['assigned_agent']} — {short_task}")
+                a_emoji    = agent_emoji(t["assigned_agent"])
+                short_task = t["payload"][:60].strip() + ("..." if len(t["payload"]) > 60 else "")
+                lines.append(f"✅ {a_emoji} {t['assigned_agent']} — {short_task}")
 
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("📜 История", callback_data="status:history"),
@@ -1765,16 +1749,12 @@ class MartaAgent(BaseAgent):
                     "queued": "🕐", "acknowledged": "👀",
                     "running": "⚙️", "failed": "🔴", "timeout": "⏱️",
                 }
-                _AGENT_EMOJI = {
-                    "peter": "📊", "max": "🛒", "elina": "✍️", "alex": "🗓️",
-                    "kasper": "🔍", "kevin": "👨‍💻", "tina": "🏛️", "marta": "👩‍💼",
-                }
                 if not tasks:
                     text = "✅ <b>Статус очереди</b>\n\nВсе агенты свободны."
                 else:
                     lines = ["📋 <b>Статус очереди</b>\n"]
                     for t in tasks:
-                        ae = _AGENT_EMOJI.get(t["assigned_agent"], "🤖")
+                        ae = agent_emoji(t["assigned_agent"])
                         se = _STATUS_EMOJI.get(t["status"], "❓")
                         short = t["payload"][:60] + ("…" if len(t["payload"]) > 60 else "")
                         lines.append(f"{ae} {se} <b>{t['assigned_agent']}</b>: {short}")
@@ -1788,12 +1768,8 @@ class MartaAgent(BaseAgent):
                     text = "📜 <b>История задач</b>\n\nЗадач пока нет."
                 else:
                     lines = ["📜 <b>Последние задачи</b>\n"]
-                    _AGENT_EMOJI = {
-                        "peter": "📊", "max": "🛒", "elina": "✍️", "alex": "🗓️",
-                        "kasper": "🔍", "kevin": "👨‍💻", "tina": "🏛️", "marta": "👩‍💼",
-                    }
                     for t in rows_db:
-                        ae = _AGENT_EMOJI.get(t["assigned_agent"], "🤖")
+                        ae = agent_emoji(t["assigned_agent"])
                         short = t["payload"][:60] + ("…" if len(t["payload"]) > 60 else "")
                         lines.append(f"{ae} {t['assigned_agent']}: {short}")
                     text = "\n".join(lines)
