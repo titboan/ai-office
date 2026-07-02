@@ -24,6 +24,7 @@
 ## Коммуникация
 
 - [communication-style.md](communication-style.md) — кратко объяснять шаги, резюмировать зачем (не что), давать практические примеры
+- [plain-language-explanations.md](plain-language-explanations.md) — объяснять простыми словами, без технического жаргона (CommandHandler, хардкод, JOIN и т.п.) — особенно легко забыть в технических сессиях
 - [format-prompt-matches-parse-mode.md](format-prompt-matches-parse-mode.md) — формат в промпте обязан совпадать с parse_mode во всех путях отправки
 
 ## Общее
