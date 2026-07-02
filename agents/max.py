@@ -4594,6 +4594,8 @@ class MaxAgent(BaseAgent):
         """Проверяет остатки и шлёт алерт если stock_days < threshold или stock = 0.
 
         Показывает ВСЕ позиции. lead_time и safety_days берутся из настроек пользователя.
+        Скорость продаж считается только по дням, когда товар реально был в наличии
+        (по stock_history_daily) — иначе дефицит сам себя занижает в отчёте.
         deduplicate=True: пропускает товары, по которым алерт уже отправлялся сегодня.
         """
         from config import config as _cfg
@@ -4614,6 +4616,8 @@ class MaxAgent(BaseAgent):
             safety_days = getattr(_cfg, "SUPPLY_SAFETY_STOCK_DAYS", 14)
 
         threshold = lead_time + safety_days  # порог алерта = срок поставки + страховой запас
+        # окно для скорости продаж = порог алерта, но не короче недели (иначе шумно на коротких настройках)
+        velocity_window = max(threshold, 7)
 
         try:
             pool = await get_pool()
@@ -4630,15 +4634,31 @@ class MaxAgent(BaseAgent):
                                 LIMIT 1), 0
                            )::int AS in_transit,
                            COALESCE(
-                               (SELECT SUM(o.quantity) / 14.0
+                               (SELECT SUM(o.quantity)
                                 FROM marketplace_orders o
                                 WHERE o.chat_id = $1
                                   AND o.marketplace = s.marketplace
                                   AND o.product_id  = CASE WHEN s.marketplace = 'ozon'
                                                             THEN COALESCE(m.ozon_sku, s.product_id)
                                                             ELSE s.product_id END
-                                  AND o.order_date >= NOW() - INTERVAL '14 days'),
+                                  AND o.order_date >= NOW() - $2 * INTERVAL '1 day'),
                                0
+                           )::float / GREATEST(
+                               COALESCE(
+                                   (SELECT (CASE WHEN COUNT(*) = 0 THEN NULL
+                                                 ELSE COUNT(*) FILTER (WHERE daily.stock_sum > 0)
+                                            END)::int
+                                    FROM (
+                                        SELECT h.snapshot_date, SUM(h.stock) AS stock_sum
+                                        FROM stock_history_daily h
+                                        WHERE h.chat_id = $1
+                                          AND h.marketplace = s.marketplace
+                                          AND h.product_id = s.product_id
+                                          AND h.snapshot_date >= CURRENT_DATE - $2::int
+                                        GROUP BY h.snapshot_date
+                                    ) daily),
+                                   $2::int  -- нет истории остатков за период — считаем как раньше, по всему окну
+                               ), 1
                            ) AS daily_velocity
                     FROM marketplace_stocks s
                     LEFT JOIN product_mapping m ON (
@@ -4647,7 +4667,7 @@ class MaxAgent(BaseAgent):
                     )
                     WHERE s.chat_id = $1
                     GROUP BY s.marketplace, s.product_id, m.display_name, m.ozon_sku
-                """, chat_id)
+                """, chat_id, velocity_window)
 
             today = datetime.date.today()
             items: list[dict] = []
