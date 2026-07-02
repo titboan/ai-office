@@ -5244,36 +5244,53 @@ class MaxAgent(BaseAgent):
         from db import get_pool
         pool = await get_pool()
         async with pool.acquire() as conn:
+            # Обе стороны предварительно агрегируются в CTE ДО джойна.
+            # Раньше джойн шёл на "сырые" таблицы (много строк product_adv_stats
+            # за 7 дней × много строк marketplace_orders за 7 дней) — это давало
+            # декартово произведение внутри группы, и SUM(p.spend)/SUM(revenue)
+            # умножались на количество строк с другой стороны джойна (fan-out).
+            # Результат — ДРР, раздутый на порядки (видели 719% при реальном
+            # расходе на товар в разы меньше показанного).
             rows = await conn.fetch("""
-                SELECT
-                    p.marketplace,
-                    p.campaign_id,
-                    COALESCE(m.display_name, MAX(o.product_name), p.product_id) AS name,
-                    SUM(p.spend)::numeric(12,2)                                 AS spend_7d,
-                    COALESCE(SUM(o.seller_price * o.quantity), 0)::numeric(12,2) AS revenue_7d,
-                    CASE WHEN COALESCE(SUM(o.seller_price * o.quantity), 0) > 0
-                         THEN ROUND(SUM(p.spend) /
-                              SUM(o.seller_price * o.quantity) * 100, 1)
-                         ELSE NULL END AS drr
-                FROM product_adv_stats p
-                LEFT JOIN product_mapping m ON (
-                    m.wb_nm_id = p.product_id OR m.ozon_sku = p.product_id
+                WITH adv AS (
+                    SELECT marketplace, campaign_id, product_id,
+                           SUM(spend)::numeric(12,2) AS spend_7d
+                    FROM product_adv_stats
+                    WHERE chat_id = $1
+                      AND stat_date >= NOW() - INTERVAL '7 days'
+                      AND campaign_id IS NOT NULL
+                    GROUP BY marketplace, campaign_id, product_id
+                    HAVING SUM(spend) > 200
+                ),
+                orders AS (
+                    SELECT marketplace, product_id, MAX(product_name) AS product_name,
+                           SUM(seller_price * quantity)::numeric(12,2) AS revenue_7d
+                    FROM marketplace_orders
+                    WHERE chat_id = $1
+                      AND order_date >= NOW() - INTERVAL '7 days'
+                    GROUP BY marketplace, product_id
                 )
-                LEFT JOIN marketplace_orders o ON (
-                    o.chat_id = p.chat_id
-                    AND o.marketplace = p.marketplace
+                SELECT
+                    a.marketplace,
+                    a.campaign_id,
+                    COALESCE(m.display_name, o.product_name, a.product_id) AS name,
+                    a.spend_7d,
+                    COALESCE(o.revenue_7d, 0) AS revenue_7d,
+                    CASE WHEN COALESCE(o.revenue_7d, 0) > 0
+                         THEN ROUND(a.spend_7d / o.revenue_7d * 100, 1)
+                         ELSE NULL END AS drr
+                FROM adv a
+                LEFT JOIN product_mapping m ON (
+                    m.wb_nm_id = a.product_id OR m.ozon_sku = a.product_id
+                )
+                LEFT JOIN orders o ON (
+                    o.marketplace = a.marketplace
                     -- WB: marketplace_orders.product_id = wb_article, product_adv_stats.product_id = nm_id
                     AND (
-                        (p.marketplace = 'wb'   AND o.product_id = m.wb_article)
-                        OR (p.marketplace = 'ozon' AND o.product_id = p.product_id)
+                        (a.marketplace = 'wb'   AND o.product_id = m.wb_article)
+                        OR (a.marketplace = 'ozon' AND o.product_id = a.product_id)
                     )
-                    AND o.order_date >= NOW() - INTERVAL '7 days'
                 )
-                WHERE p.chat_id = $1
-                  AND p.stat_date >= NOW() - INTERVAL '7 days'
-                  AND p.campaign_id IS NOT NULL
-                GROUP BY p.marketplace, p.campaign_id, p.product_id, m.display_name
-                HAVING SUM(p.spend) > 200
                 ORDER BY drr DESC NULLS LAST
             """, chat_id)
 
