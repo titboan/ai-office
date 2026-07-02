@@ -347,6 +347,13 @@ class PeterAgent(BaseAgent):
             _today = _date.today()
             _oz_month_end   = _today.replace(day=1) - timedelta(days=1)
             _oz_month_start = _oz_month_end.replace(day=1)
+            # WB: report_date всегда понедельник недели (см. WBClient.get_financial_report —
+            # агрегат по nm_id/неделе). Сравнение "report_date >= date_from" с обычным
+            # "сегодня минус N дней" на коротких периодах (7 дней) систематически теряет
+            # текущую неделю: её report_date (понедельник) почти всегда раньше date_from,
+            # хотя данные внутри периода есть. Округляем date_from вниз до понедельника
+            # его недели, чтобы захватить всю неделю, в которую попадает начало периода.
+            _wb_date_from = date_from - timedelta(days=date_from.weekday())
             net_margin_raw = await _q(conn, "net_margin", """
                 SELECT
                     COALESCE(m.display_name, f.product_id) AS product_name,
@@ -373,7 +380,7 @@ class PeterAgent(BaseAgent):
                 )
                 GROUP BY COALESCE(m.display_name, f.product_id)
                 HAVING COALESCE(SUM(f.payout), 0) != 0
-            """, chat_id, date_from, _oz_month_start, _oz_month_end)
+            """, chat_id, _wb_date_from, _oz_month_start, _oz_month_end)
 
             # Средняя цена продажи (с учётом скидки селлера) за тот же период — нужна, чтобы
             # перевести "требуемый payout на штуку" в рекомендованную розничную цену. payout уже
