@@ -1755,9 +1755,10 @@ class PeterAgent(BaseAgent):
             mkt_supplies = supply_orders_map.get((mp, pid), [])
 
             # Статусы поставок, уже находящихся в процессе (вычитаем из to_order)
-            _WB_COMMITTED  = {"Запланировано", "Отгрузка разрешена", "В пути", "Транзит", "Идёт приёмка"}
-            _OZON_COMMITTED = {"Новая", "Готова к отгрузке", "В пути", "Принята на склад"}
-            committed_statuses = _WB_COMMITTED if mp == "wb" else _OZON_COMMITTED
+            committed_statuses = (
+                config.SUPPLY_COMMITTED_STATUSES_WB if mp == "wb"
+                else config.SUPPLY_COMMITTED_STATUSES_OZON
+            )
             supply_committed = sum(
                 s["qty"] for s in mkt_supplies
                 if s["status"] in committed_statuses
@@ -2022,9 +2023,10 @@ cluster_dr для Ozon — из аналитики Ozon /v1/analytics/data (ес
 
     async def _collect_order_advice_data(self, chat_id: int, days: int = 30) -> list[dict]:
         """Суммарный сток по товару (все склады) + темп продаж → совет заказывать или нет."""
-        from db import get_pool
+        from db import get_pool, get_supply_pipeline
         pool = await get_pool()
         date_from = (datetime.now(_UTC) - timedelta(days=days)).date()
+        pipeline = await get_supply_pipeline(chat_id)
 
         async with pool.acquire() as conn:
             # Суммарный сток по каждому товару (все склады суммируем)
@@ -2093,6 +2095,11 @@ cluster_dr для Ozon — из аналитики Ozon /v1/analytics/data (ес
             stock = row["total_stock"] or 0
             unit_cost = float(row["unit_cost"] or 0)
 
+            pipe = pipeline.get(key, {"in_transit": 0, "supply_committed": 0})
+            in_transit = pipe["in_transit"]
+            supply_committed = pipe["supply_committed"]
+
+            # days_left — по физическому остатку на складе МП (когда реально кончится)
             days_left = round(stock / dr, 1) if dr > 0 else 999
 
             # Статус: насколько срочно заказывать
@@ -2105,14 +2112,18 @@ cluster_dr для Ozon — из аналитики Ozon /v1/analytics/data (ес
             else:
                 status = "ok"             # 🟢 запас есть
 
-            # Сколько заказать для 3 горизонтов (с учётом текущего стока)
+            # Сколько заказать для 3 горизонтов — за вычетом того, что уже едет
+            # (in_transit) или уже оформлено в поставке на МП (supply_committed),
+            # тот же принцип что и в _collect_supply_data (/supply)
             def qty_for(target_days: int) -> int:
-                return max(0, round(target_days * dr - stock))
+                return max(0, round(target_days * dr - stock - in_transit - supply_committed))
 
             result.append({
                 "name":       name,
                 "marketplace": mp,
                 "total_stock": stock,
+                "in_transit":  in_transit,
+                "supply_committed": supply_committed,
                 "daily_rate":  round(dr, 2),
                 "days_left":   days_left,
                 "lead_days":   lead,
@@ -2216,6 +2227,10 @@ cluster_dr для Ozon — из аналитики Ozon /v1/analytics/data (ес
 - Если cost_30d/60d/90d = null — себестоимость не задана, показывай только штуки
 - Если daily_rate = 0 (status=no_sales) — пропусти товар, упомяни одной строкой в конце
 - Если qty_30d = 0 — текущего стока хватает на 30 дней без дозаказа, можно указать это
+- qty_30d/60d/90d уже учитывают in_transit (едет к складу МП) и supply_committed
+  (уже оформлено в поставке на МП) — не вычитай их повторно, не упоминай отдельно
+  если они равны 0
+- days_left — по физическому остатку на складе МП, не учитывает in_transit/supply_committed
 - Три горизонта: 30/60/90 дней — это сколько дней продаж надо обеспечить (не срок поставки)
 - Если нет данных по стокам — предупреди что нужен /sync у Макса"""
 

@@ -4598,7 +4598,7 @@ class MaxAgent(BaseAgent):
         """
         from config import config as _cfg
         import datetime
-        from db import get_pool, get_user_setting
+        from db import get_pool, get_user_setting, get_supply_pipeline
         from telegram import Bot as _TGBot
 
         # Читаем настройки пользователя (те же что и у Питера)
@@ -4623,13 +4623,6 @@ class MaxAgent(BaseAgent):
                            COALESCE(m.display_name, s.product_id) AS name,
                            SUM(s.stock)::int AS total_stock,
                            COALESCE(
-                               (SELECT qty FROM marketplace_in_transit it
-                                WHERE it.chat_id = $1
-                                  AND it.marketplace = s.marketplace
-                                  AND it.product_id = s.product_id
-                                LIMIT 1), 0
-                           )::int AS in_transit,
-                           COALESCE(
                                (SELECT SUM(o.quantity) / 14.0
                                 FROM marketplace_orders o
                                 WHERE o.chat_id = $1
@@ -4649,19 +4642,25 @@ class MaxAgent(BaseAgent):
                     GROUP BY s.marketplace, s.product_id, m.display_name, m.ozon_sku
                 """, chat_id)
 
+            # Единая карта in_transit + supply_committed — тот же источник что у Питера (/supply, /order)
+            pipeline = await get_supply_pipeline(chat_id)
+
             today = datetime.date.today()
             items: list[dict] = []
 
             for r in rows:
                 stock      = int(r["total_stock"] or 0)
-                in_transit = int(r["in_transit"] or 0)
+                pipe       = pipeline.get((r["marketplace"], r["product_id"]), {})
+                in_transit = int(pipe.get("in_transit", 0))
+                supply_committed = int(pipe.get("supply_committed", 0))
+                incoming   = in_transit + supply_committed
                 vel        = float(r["daily_velocity"] or 0)
                 days_left  = (stock / vel) if vel > 0 else (999 if stock > 0 else 0)
 
                 if stock == 0:
                     severity      = "critical"
                     raw_order     = int((lead_time + safety_days) * vel) if vel > 0 else 0
-                    qty_to_order  = max(0, raw_order - in_transit)
+                    qty_to_order  = max(0, raw_order - incoming)
                     covered       = False
                     days_to_order = None
                     order_by_date = None
@@ -4670,8 +4669,8 @@ class MaxAgent(BaseAgent):
                     days_to_order = max(0, int(days_left) - lead_time)
                     order_by_date = today + datetime.timedelta(days=days_to_order)
                     raw_order     = int((lead_time + safety_days) * vel) if vel > 0 else 0
-                    qty_to_order  = max(0, raw_order - in_transit)
-                    covered       = raw_order > 0 and in_transit >= raw_order
+                    qty_to_order  = max(0, raw_order - incoming)
+                    covered       = raw_order > 0 and incoming >= raw_order
                 else:
                     continue
 
@@ -4693,6 +4692,7 @@ class MaxAgent(BaseAgent):
                     "order_by_date": order_by_date,
                     "covered":      covered,
                     "in_transit":   in_transit,
+                    "supply_committed": supply_committed,
                 })
 
             if not items:

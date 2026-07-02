@@ -1175,6 +1175,54 @@ async def upsert_supply_orders(
         )
 
 
+async def get_supply_pipeline(chat_id: int) -> dict[tuple, dict]:
+    """Единая карта 'товар уже в пути/оформлен' для расчёта остатков и дозаказа.
+
+    Ключ: (marketplace, product_id). Значение: {"in_transit": int, "supply_committed": int}.
+    in_transit — из marketplace_in_transit (агрегат из аналитики остатков WB/Ozon).
+    supply_committed — из marketplace_supply_orders, только активные статусы
+    (config.SUPPLY_COMMITTED_STATUSES_WB/OZON) — уже оформленные поставки на МП.
+    Используется в /supply, /order и алертах остатков — чтобы не рекомендовать
+    заказ товара, который и так уже едет или оформлен в поставке.
+    """
+    from config import config as _cfg
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        in_transit_rows = await conn.fetch(
+            "SELECT marketplace, product_id, qty FROM marketplace_in_transit WHERE chat_id = $1",
+            chat_id,
+        )
+        supply_rows = await conn.fetch(
+            """
+            SELECT marketplace, product_id, status_name, qty
+            FROM marketplace_supply_orders
+            WHERE chat_id = $1 AND product_id != ''
+            """,
+            chat_id,
+        )
+
+    pipeline: dict[tuple, dict] = {}
+    for r in in_transit_rows:
+        key = (r["marketplace"], r["product_id"])
+        pipeline.setdefault(key, {"in_transit": 0, "supply_committed": 0})
+        pipeline[key]["in_transit"] += int(r["qty"])
+
+    for r in supply_rows:
+        mp = r["marketplace"]
+        committed_statuses = (
+            _cfg.SUPPLY_COMMITTED_STATUSES_WB if mp == "wb"
+            else _cfg.SUPPLY_COMMITTED_STATUSES_OZON
+        )
+        if r["status_name"] not in committed_statuses:
+            continue
+        key = (mp, r["product_id"])
+        pipeline.setdefault(key, {"in_transit": 0, "supply_committed": 0})
+        pipeline[key]["supply_committed"] += int(r["qty"])
+
+    return pipeline
+
+
 async def get_active_supply_orders(chat_id: int) -> list[dict]:
     """Активные поставки (не 'Принято'/'Отгружено на воротах') по всем МП."""
     pool = await get_pool()
