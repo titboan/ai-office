@@ -895,6 +895,11 @@ class WBClient:
         rrdid = 0
         # Агрегируем в памяти: (nm_id, week) → суммы
         agg: dict[tuple, dict] = {}
+        # Диагностика: если WB когда-нибудь переименует/переформатирует doc_type_name,
+        # фильтр ниже перестанет находить "Продажа" молча (quantity=0 у всех при
+        # ненулевых payout) — см. retrospectives/2026-06-16_net-marja-wb-ozon-quantity-revenue.md.
+        # Считаем распределение встреченных значений, чтобы это было видно в логах.
+        doc_type_counts: dict[str, int] = {}
 
         while True:
             params = {
@@ -925,7 +930,8 @@ class WBClient:
                 # (nm_id — внутренний числовой ID карточки WB, с ним product_mapping не сматчится)
                 sa_name  = str(row.get("sa_name", "") or "").strip()
                 nm_id    = str(row.get("nm_id", "") or "")
-                doc_type = row.get("doc_type_name", "")
+                doc_type = str(row.get("doc_type_name", "") or "").strip()
+                doc_type_counts[doc_type] = doc_type_counts.get(doc_type, 0) + 1
                 product_id = sa_name or nm_id
                 if not product_id:
                     continue
@@ -973,6 +979,18 @@ class WBClient:
                 break
 
         results = list(agg.values())
+        total_qty    = sum(r["quantity"] for r in results)
+        total_payout = sum(r["payout"] for r in results)
+        if total_qty == 0 and total_payout != 0:
+            # Выплаты пришли, а "проданных штук" — ноль: doc_type_name == "Продажа"
+            # не совпал ни разу. Раньше это уже приводило к пустым колонкам в NET-марже
+            # (см. retrospectives/2026-06-16_net-marja-wb-ozon-quantity-revenue.md) —
+            # логируем реальные значения doc_type_name, чтобы можно было поправить фильтр.
+            logger.warning(
+                f"[WB.get_financial_report] {date_from}–{date_to}: payout={total_payout:.2f} есть, "
+                f"а quantity=0 — фильтр doc_type_name=='Продажа' не сматчился ни разу. "
+                f"Встреченные значения doc_type_name: {doc_type_counts}"
+            )
         logger.info(f"[WB.get_financial_report] {date_from}–{date_to}: {len(results)} агрегатов по nm_id/неделе")
         return results
 
