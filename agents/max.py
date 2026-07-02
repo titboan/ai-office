@@ -4615,6 +4615,8 @@ class MaxAgent(BaseAgent):
 
         threshold = lead_time + safety_days  # порог алерта = срок поставки + страховой запас
 
+        velocity_window = _cfg.SALES_VELOCITY_WINDOW_DAYS  # то же окно, что в /supply у Питера
+
         try:
             pool = await get_pool()
             async with pool.acquire() as conn:
@@ -4623,14 +4625,14 @@ class MaxAgent(BaseAgent):
                            COALESCE(m.display_name, s.product_id) AS name,
                            SUM(s.stock)::int AS total_stock,
                            COALESCE(
-                               (SELECT SUM(o.quantity) / 14.0
+                               (SELECT SUM(o.quantity) / $2::numeric
                                 FROM marketplace_orders o
                                 WHERE o.chat_id = $1
                                   AND o.marketplace = s.marketplace
                                   AND o.product_id  = CASE WHEN s.marketplace = 'ozon'
                                                             THEN COALESCE(m.ozon_sku, s.product_id)
                                                             ELSE s.product_id END
-                                  AND o.order_date >= NOW() - INTERVAL '14 days'),
+                                  AND o.order_date >= NOW() - make_interval(days => $2)),
                                0
                            ) AS daily_velocity
                     FROM marketplace_stocks s
@@ -4640,7 +4642,7 @@ class MaxAgent(BaseAgent):
                     )
                     WHERE s.chat_id = $1
                     GROUP BY s.marketplace, s.product_id, m.display_name, m.ozon_sku
-                """, chat_id)
+                """, chat_id, velocity_window)
 
             # Единая карта in_transit + supply_committed — тот же источник что у Питера (/supply, /order)
             pipeline = await get_supply_pipeline(chat_id)
@@ -4781,6 +4783,7 @@ class MaxAgent(BaseAgent):
         from config import config as _cfg
 
         TAX = _cfg.NET_MARGIN_TAX_RATE
+        velocity_window = _cfg.SALES_VELOCITY_WINDOW_DAYS  # то же окно, что в /supply и сток-алертах
 
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -4830,13 +4833,13 @@ class MaxAgent(BaseAgent):
                     /* Дней остатков WB */
                     (SELECT CASE WHEN COALESCE(SUM(o2.quantity), 0) > 0
                                  THEN FLOOR(COALESCE(SUM(s.stock), 0)::float
-                                            / (SUM(o2.quantity) / 14.0))
+                                            / (SUM(o2.quantity) / $2::numeric))
                                  ELSE NULL END
                      FROM marketplace_stocks s
                      LEFT JOIN marketplace_orders o2
                             ON o2.chat_id = $1 AND o2.marketplace = 'wb'
                            AND o2.product_id = m.wb_article
-                           AND o2.order_date >= NOW() - INTERVAL '14 days'
+                           AND o2.order_date >= NOW() - make_interval(days => $2)
                      WHERE s.chat_id = $1 AND s.marketplace = 'wb'
                        AND s.product_id = m.wb_article
                     ) AS days_wb,
@@ -4844,13 +4847,13 @@ class MaxAgent(BaseAgent):
                     /* Дней остатков Ozon */
                     (SELECT CASE WHEN COALESCE(SUM(o2.quantity), 0) > 0
                                  THEN FLOOR(COALESCE(SUM(s.stock), 0)::float
-                                            / (SUM(o2.quantity) / 14.0))
+                                            / (SUM(o2.quantity) / $2::numeric))
                                  ELSE NULL END
                      FROM marketplace_stocks s
                      LEFT JOIN marketplace_orders o2
                             ON o2.chat_id = $1 AND o2.marketplace = 'ozon'
                            AND o2.product_id = COALESCE(m.ozon_sku, s.product_id)
-                           AND o2.order_date >= NOW() - INTERVAL '14 days'
+                           AND o2.order_date >= NOW() - make_interval(days => $2)
                      WHERE s.chat_id = $1 AND s.marketplace = 'ozon'
                        AND s.product_id = m.ozon_offer_id
                     ) AS days_ozon
@@ -4858,7 +4861,7 @@ class MaxAgent(BaseAgent):
                 JOIN product_costs c ON c.mapping_id = m.id
                 GROUP BY m.id, m.display_name, m.wb_article, m.wb_nm_id,
                          m.ozon_offer_id, m.ozon_sku, m.wb_price, m.ozon_price
-            """, chat_id)
+            """, chat_id, velocity_window)
 
         suggestions = []
 

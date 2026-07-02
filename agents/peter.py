@@ -1833,7 +1833,7 @@ class PeterAgent(BaseAgent):
     ) -> None:
         """/supply [период=14] — план поставок по регионам/кластерам."""
         chat_id = update.effective_user.id
-        days = 14
+        days = config.SALES_VELOCITY_WINDOW_DAYS
         for tok in (context.args or []):
             if tok.startswith("период="):
                 try:
@@ -2147,7 +2147,12 @@ cluster_dr для Ozon — из аналитики Ozon /v1/analytics/data (ес
     async def cmd_order(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """/order [период=30] — совет заказывать ли у поставщика, три горизонта (30/60/90 дней)."""
+        """/order [период=30] — совет заказывать ли у поставщика, три горизонта (30/60/90 дней).
+
+        Окно темпа продаж здесь намеренно длиннее, чем config.SALES_VELOCITY_WINDOW_DAYS
+        (/supply, сток-алерты, /reprice) — для заказа у поставщика нужен сглаженный
+        месячный тренд, а не быстрая реакция на последние 14 дней.
+        """
         chat_id = update.effective_user.id
         days = 30
         for tok in (context.args or []):
