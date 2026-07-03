@@ -26,9 +26,9 @@ _HEAVY_SYNC_PAYLOADS = {
 }
 
 def _task_timeout(agent_key: str, payload: str) -> int:
-    """Таймаут задачи в секундах. Тяжёлые синки Макса — 900 с, Дэн — 600 с, остальное — 300 с."""
+    """Таймаут задачи в секундах. Тяжёлые синки Макса — 1800 с, Дэн — 600 с, остальное — 300 с."""
     if agent_key == "max" and payload in _HEAVY_SYNC_PAYLOADS:
-        return 900
+        return 1800
     if agent_key == "dan":
         return 600
     return 300
