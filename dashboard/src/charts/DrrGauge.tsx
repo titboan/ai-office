@@ -1,15 +1,10 @@
 import { AdvRow, DayRevenue } from '../api'
+import Card from '../components/Card'
+import { MARKETPLACE, drrColorClass } from '../theme'
 
 function drr(buyouts: number, spend: number) {
   if (!buyouts) return null
   return (spend / buyouts) * 100
-}
-
-function color(val: number | null) {
-  if (val === null) return 'text-gray-400'
-  if (val > 30) return 'text-red-500'
-  if (val > 20) return 'text-yellow-500'
-  return 'text-green-600'
 }
 
 export default function DrrGauge({ adv, salesByDay }: { adv: AdvRow[]; salesByDay: DayRevenue[] }) {
@@ -23,13 +18,12 @@ export default function DrrGauge({ adv, salesByDay }: { adv: AdvRow[]; salesByDa
   const ozon = byMp('ozon')
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
-      <h2 className="text-sm font-semibold mb-3">ДРР по площадкам</h2>
+    <Card title="ДРР по площадкам">
       <div className="flex gap-4">
-        {[{ label: '🟣 WB', ...wb }, { label: '🔵 Ozon', ...ozon }].map(({ label, buyouts, s, drr: d }) => (
+        {[{ label: MARKETPLACE.wb.label, ...wb }, { label: MARKETPLACE.ozon.label, ...ozon }].map(({ label, buyouts, s, drr: d }) => (
           <div key={label} className="flex-1 text-center">
             <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">{label}</div>
-            <div className={`text-2xl font-bold ${color(d)}`}>
+            <div className={`text-2xl font-bold ${drrColorClass(d)}`}>
               {d !== null ? `${d.toFixed(1)}%` : '—'}
             </div>
             <div className="text-xs text-gray-400 dark:text-gray-500 mt-1">
@@ -43,6 +37,6 @@ export default function DrrGauge({ adv, salesByDay }: { adv: AdvRow[]; salesByDa
         <span className="text-yellow-500 ml-2">●</span> 20-30% высокий
         <span className="text-red-500 ml-2">●</span> &gt;30% критично
       </div>
-    </div>
+    </Card>
   )
 }

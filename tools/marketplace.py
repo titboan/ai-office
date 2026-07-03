@@ -3054,6 +3054,105 @@ class OzonClient:
         return result
 
 
+def _extract_csv_texts_from_zip(raw_bytes: bytes) -> list[str]:
+    """Читает ВСЕ файлы из ZIP-архива Ozon Performance (по одному CSV на кампанию в батче)."""
+    import zipfile as _zipfile, io as _io
+    csv_texts = []
+    with _zipfile.ZipFile(_io.BytesIO(raw_bytes)) as zf:
+        for fname in zf.namelist():
+            csv_texts.append(zf.read(fname).decode("utf-8-sig", errors="replace"))
+    return csv_texts
+
+
+def _parse_ozon_ad_stats_csv(
+    csv_texts: list[str],
+    campaign_names: dict[str, str],
+    date_from: str,
+    date_to: str,
+) -> list[dict]:
+    """
+    Парсит CSV-отчёты Ozon Performance и разбивает агрегат за период на дни.
+
+    Формат Ozon Performance CSV:
+      строка 1: ";Рекламная кампания № ID, период ..."  — мета
+      строка 2: заголовки колонок (sku;Название товара;...;Показы;Клики;CTR (%);Расход, ₽, с НДС;...)
+      строки 3+: данные по SKU
+      последняя: "Всего;;;;;N;N;..."  — агрегат, пропускаем
+
+    Ozon Performance API возвращает только суммарный расход за весь период, не по дням.
+    Разбиваем на ежедневную долю (spend/days) — иначе ежедневный синк создаёт новую
+    строку на каждый date_from и суммарные расходы искажаются кратно числу синков.
+    """
+    import csv as _csv, io as _io, re as _re
+    from datetime import datetime as _dt, timedelta as _td
+
+    results = []
+    for csv_text_batch in csv_texts:
+        lines = csv_text_batch.splitlines()
+        if len(lines) < 2:
+            continue
+        m = _re.search(r"№\s*(\d+)", lines[0])
+        if not m:
+            continue
+        cid = m.group(1)
+        header_and_data = "\n".join(lines[1:])
+        reader = _csv.DictReader(_io.StringIO(header_and_data), delimiter=";")
+        views_sum = clicks_sum = spend_sum = 0
+        row_count = 0
+        product_stats = []
+        for row in reader:
+            sku_val = str(row.get("sku", "")).strip()
+            if sku_val.lower() in ("всего", ""):
+                continue
+            nm_views  = int(float(row.get("Показы", 0) or 0))
+            nm_clicks = int(float(row.get("Клики", 0) or 0))
+            nm_spend  = float(str(row.get("Расход, ₽, с НДС", 0) or 0).replace(",", "."))
+            views_sum  += nm_views
+            clicks_sum += nm_clicks
+            spend_sum  += nm_spend
+            row_count  += 1
+            nm_ctr = round(nm_clicks / nm_views * 100, 2) if nm_views else 0.0
+            product_stats.append({
+                "product_id":   sku_val,
+                "views":        nm_views,
+                "clicks":       nm_clicks,
+                "ctr":          nm_ctr,
+                "spend":        nm_spend,
+                "orders_count": 0,
+            })
+        if row_count == 0:
+            continue  # кампания без активности — не пишем в БД
+        ctr = round(clicks_sum / views_sum * 100, 2) if views_sum else 0.0
+        try:
+            d0 = _dt.strptime(date_from, "%Y-%m-%d")
+            d1 = _dt.strptime(date_to,   "%Y-%m-%d")
+        except ValueError:
+            d0 = d1 = _dt.now()
+        days_count = max((d1 - d0).days + 1, 1)
+        daily_spend   = round(spend_sum   / days_count, 4)
+        daily_views   = views_sum   // days_count
+        daily_clicks  = clicks_sum  // days_count
+        for day_offset in range(days_count):
+            day_str = (d0 + _td(days=day_offset)).strftime("%Y-%m-%d")
+            day_ps  = [
+                {**ps, "spend": round(ps["spend"] / days_count, 4),
+                       "views": ps["views"] // days_count,
+                       "clicks": ps["clicks"] // days_count}
+                for ps in product_stats
+            ]
+            results.append({
+                "campaign_id":   cid,
+                "campaign_name": campaign_names.get(cid, cid),
+                "stat_date":     day_str,
+                "views":         daily_views,
+                "clicks":        daily_clicks,
+                "ctr":           ctr,
+                "spend":         daily_spend,
+                "product_stats": day_ps,
+            })
+    return results
+
+
 class OzonPerformanceClient:
     _BASE = "https://api-performance.ozon.ru"
 
@@ -3105,8 +3204,6 @@ class OzonPerformanceClient:
 
     async def get_ad_stats(self, date_from: str, date_to: str) -> list[dict]:
         """Статистика рекламных кампаний Ozon Performance за период."""
-        import json as _json, csv, io
-
         token = await self._get_token()
         if not token:
             return []
@@ -3230,13 +3327,9 @@ class OzonPerformanceClient:
                         raw_bytes = await resp.read()
                         logger.info(f"[OzonPerf] batch {batch_num} CSV bytes={len(raw_bytes)}")
                         if raw_bytes:
-                            import zipfile as _zipfile
-                            with _zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
-                                names = zf.namelist()
-                                for fname in names:
-                                    csv_text_file = zf.read(fname).decode("utf-8-sig", errors="replace")
-                                    csv_texts.append(csv_text_file)
-                            logger.info(f"[OzonPerf] batch {batch_num}/{total_batches} ZIP файлов: {len(names)}, строк в первом: {csv_texts[-len(names)].count(chr(10)) if names else 0}")
+                            batch_csv_texts = _extract_csv_texts_from_zip(raw_bytes)
+                            csv_texts.extend(batch_csv_texts)
+                            logger.info(f"[OzonPerf] batch {batch_num}/{total_batches} ZIP файлов: {len(batch_csv_texts)}")
                 except Exception as e:
                     logger.error(f"[OzonPerf] batch {batch_num} report exception: {e}")
 
@@ -3244,87 +3337,12 @@ class OzonPerformanceClient:
             logger.error("[OzonPerf] нет CSV-данных")
             return []
 
-        # Шаг 5: парсим CSV
-        # Формат Ozon Performance CSV:
-        #   строка 1: ";Рекламная кампания № ID, период ..."  — мета
-        #   строка 2: заголовки колонок (sku;Название товара;...;Показы;Клики;CTR (%);Расход, ₽, с НДС;...)
-        #   строки 3+: данные по SKU
-        #   последняя: "Всего;;;;;N;N;..."  — агрегат, пропускаем
-        results = []
+        # Шаг 5: парсим CSV (все кампании из ZIP, агрегат разбит на дни)
         try:
-            import re as _re
-            for csv_text_batch in csv_texts:
-                lines = csv_text_batch.splitlines()
-                if len(lines) < 2:
-                    continue
-                # Извлекаем campaign_id из первой строки: "№ 28852510"
-                m = _re.search(r"№\s*(\d+)", lines[0])
-                if not m:
-                    continue
-                cid = m.group(1)
-                # Парсим через DictReader начиная со строки заголовков (строка 2)
-                header_and_data = "\n".join(lines[1:])
-                reader = csv.DictReader(io.StringIO(header_and_data), delimiter=";")
-                views_sum = clicks_sum = spend_sum = 0
-                row_count = 0
-                product_stats = []
-                for row in reader:
-                    sku_val = str(row.get("sku", "")).strip()
-                    if sku_val.lower() in ("всего", ""):
-                        continue
-                    nm_views  = int(float(row.get("Показы", 0) or 0))
-                    nm_clicks = int(float(row.get("Клики", 0) or 0))
-                    nm_spend  = float(str(row.get("Расход, ₽, с НДС", 0) or 0).replace(",", "."))
-                    views_sum  += nm_views
-                    clicks_sum += nm_clicks
-                    spend_sum  += nm_spend
-                    row_count  += 1
-                    nm_ctr = round(nm_clicks / nm_views * 100, 2) if nm_views else 0.0
-                    product_stats.append({
-                        "product_id":   sku_val,
-                        "views":        nm_views,
-                        "clicks":       nm_clicks,
-                        "ctr":          nm_ctr,
-                        "spend":        nm_spend,
-                        "orders_count": 0,
-                    })
-                if row_count == 0:
-                    continue  # кампания без активности — не пишем в БД
-                ctr = round(clicks_sum / views_sum * 100, 2) if views_sum else 0.0
-                # Разбиваем агрегат на дни: Ozon Performance API возвращает только
-                # суммарный расход за период, не по дням. Храним ежедневную долю
-                # (spend/days) на каждый день отдельно — это позволяет корректно
-                # суммировать данные в дашборде без двойного счёта при ежедневных синках.
-                from datetime import datetime as _dt, timedelta as _td
-                try:
-                    d0 = _dt.strptime(date_from, "%Y-%m-%d")
-                    d1 = _dt.strptime(date_to,   "%Y-%m-%d")
-                except ValueError:
-                    d0 = d1 = _dt.now()
-                days_count = max((d1 - d0).days + 1, 1)
-                daily_spend   = round(spend_sum   / days_count, 4)
-                daily_views   = views_sum   // days_count
-                daily_clicks  = clicks_sum  // days_count
-                for day_offset in range(days_count):
-                    day_str = (d0 + _td(days=day_offset)).strftime("%Y-%m-%d")
-                    day_ps  = [
-                        {**ps, "spend": round(ps["spend"] / days_count, 4),
-                               "views": ps["views"] // days_count,
-                               "clicks": ps["clicks"] // days_count}
-                        for ps in product_stats
-                    ]
-                    results.append({
-                        "campaign_id":   cid,
-                        "campaign_name": campaign_names.get(cid, cid),
-                        "stat_date":     day_str,
-                        "views":         daily_views,
-                        "clicks":        daily_clicks,
-                        "ctr":           ctr,
-                        "spend":         daily_spend,
-                        "product_stats": day_ps,
-                    })
+            results = _parse_ozon_ad_stats_csv(csv_texts, campaign_names, date_from, date_to)
         except Exception as e:
             logger.error(f"[OzonPerf] CSV parse exception: {e}")
+            results = []
 
         logger.info(f"[OzonPerf] итого записей: {len(results)}")
         return results

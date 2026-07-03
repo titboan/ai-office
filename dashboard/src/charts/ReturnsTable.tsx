@@ -1,4 +1,5 @@
 import { ReturnRow } from '../api'
+import Card from '../components/Card'
 
 function rateColor(rate: number) {
   const pct = rate * 100
@@ -13,8 +14,7 @@ export default function ReturnsTable({ data }: { data: ReturnRow[] }) {
   if (!data.length) return null
   const rows = data.slice(0, 8)
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
-      <h2 className="text-sm font-semibold mb-3">Топ возвратов</h2>
+    <Card title="Топ возвратов">
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
@@ -39,6 +39,6 @@ export default function ReturnsTable({ data }: { data: ReturnRow[] }) {
           </tbody>
         </table>
       </div>
-    </div>
+    </Card>
   )
 }

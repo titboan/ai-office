@@ -1,18 +1,6 @@
 import { StockVelocity } from '../api'
-
-const MP_LABEL: Record<string, string> = { wb: '🟣 WB', ozon: '🔵 Ozon' }
-
-function barColor(days: number) {
-  if (days < 7) return 'bg-red-500'
-  if (days < 14) return 'bg-yellow-500'
-  return 'bg-green-500'
-}
-
-function textColor(days: number) {
-  if (days < 7) return 'text-red-600 dark:text-red-400'
-  if (days < 14) return 'text-yellow-600 dark:text-yellow-400'
-  return 'text-green-600 dark:text-green-400'
-}
+import Card from '../components/Card'
+import { marketplaceLabel, stockBarClass, stockColorClass } from '../theme'
 
 // Шкала прогресс-бара: 30 дней = полная полоса, 999 (нет продаж) — особый случай
 const SCALE_DAYS = 30
@@ -42,20 +30,19 @@ export default function StockTable({ data }: { data: StockVelocity[] }) {
   const rows = groupByProduct(data).slice(0, 15)
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
-      <h2 className="text-sm font-semibold mb-3">Остатки (дней продаж)</h2>
+    <Card title="Остатки (дней продаж)">
       <div className="space-y-3">
         {rows.map((r) => (
           <div key={r.name} className="space-y-1">
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-medium truncate">{r.name}</span>
-              <span className={`text-xs font-semibold whitespace-nowrap ${textColor(r.days_left)}`}>
+              <span className={`text-xs font-semibold whitespace-nowrap ${stockColorClass(r.days_left)}`}>
                 {r.days_left === 999 ? '∞' : `${r.days_left} дн.`}
               </span>
             </div>
             <div className="h-1.5 w-full rounded-full bg-gray-100 dark:bg-gray-700 overflow-hidden">
               <div
-                className={`h-full rounded-full ${barColor(r.days_left)}`}
+                className={`h-full rounded-full ${stockBarClass(r.days_left)}`}
                 style={{ width: `${r.days_left === 999 ? 100 : Math.min(100, (r.days_left / SCALE_DAYS) * 100)}%` }}
               />
             </div>
@@ -65,7 +52,7 @@ export default function StockTable({ data }: { data: StockVelocity[] }) {
                   key={mp.marketplace}
                   className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-gray-50 dark:bg-gray-900/40 text-gray-500 dark:text-gray-400"
                 >
-                  {MP_LABEL[mp.marketplace] ?? mp.marketplace} · {mp.stock} шт
+                  {marketplaceLabel(mp.marketplace)} · {mp.stock} шт
                 </span>
               ))}
             </div>
@@ -75,6 +62,6 @@ export default function StockTable({ data }: { data: StockVelocity[] }) {
           <div className="py-4 text-center text-xs text-gray-400 dark:text-gray-500">Нет данных</div>
         )}
       </div>
-    </div>
+    </Card>
   )
 }

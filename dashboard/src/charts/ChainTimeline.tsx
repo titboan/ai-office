@@ -1,4 +1,5 @@
 import { ChainRun, TimelineEvent } from '../api'
+import Card from '../components/Card'
 
 const AGENT_EMOJI: Record<string, string> = {
   marta: '👩‍💼', kevin: '👨‍💻', kasper: '🔍', peter: '📊',
@@ -46,9 +47,8 @@ function buildAgentSteps(events: TimelineEvent[]): Array<{ key: string; status: 
 
 export default function ChainTimeline({ chains }: { chains: ChainRun[] }) {
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm space-y-3">
-      <div className="text-sm font-semibold text-gray-700 dark:text-gray-200">⚡ Последние цепочки</div>
-
+    <Card title={<span className="text-gray-700 dark:text-gray-200">⚡ Последние цепочки</span>}>
+      <div className="space-y-3">
       {chains.length === 0 && (
         <div className="text-sm text-gray-400 dark:text-gray-500">Нет данных за последние 7 дней</div>
       )}
@@ -98,6 +98,7 @@ export default function ChainTimeline({ chains }: { chains: ChainRun[] }) {
           </div>
         )
       })}
-    </div>
+      </div>
+    </Card>
   )
 }

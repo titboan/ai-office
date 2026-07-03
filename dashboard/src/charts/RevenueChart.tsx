@@ -1,5 +1,7 @@
 import { ComposedChart, Area, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import { DayRevenue } from '../api'
+import Card from '../components/Card'
+import { MARKETPLACE, TOOLTIP_STYLE } from '../theme'
 
 interface Props {
   data: DayRevenue[]
@@ -14,8 +16,6 @@ const fmtDate = (iso: string) => {
   return `${d}.${m}`
 }
 
-const tooltipStyle = { backgroundColor: 'var(--tooltip-bg)', color: 'var(--tooltip-text)', border: '1px solid var(--tooltip-border)' }
-
 export default function RevenueChart({ data, sales }: Props) {
   const salesMap = new Map(sales.map(s => [s.date, s]))
   const merged = data.map(r => ({
@@ -27,8 +27,7 @@ export default function RevenueChart({ data, sales }: Props) {
   }))
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
-      <h2 className="text-sm font-semibold mb-3">Выручка по дням</h2>
+    <Card title="Выручка по дням">
       <ResponsiveContainer width="100%" height={180}>
         <ComposedChart data={merged} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
           <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'currentColor' }} tickFormatter={fmtDate} />
@@ -36,15 +35,15 @@ export default function RevenueChart({ data, sales }: Props) {
           <Tooltip
             formatter={(v: number) => `${v.toLocaleString()} ₽`}
             labelFormatter={fmtDate}
-            contentStyle={tooltipStyle}
+            contentStyle={TOOLTIP_STYLE}
           />
           <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
-          <Line type="monotone" dataKey="wb" name="WB заказы" stroke="#7c3aed" dot={false} strokeWidth={2} />
-          <Area type="monotone" dataKey="wb_s" name="WB выкупы" fill="#7c3aed" stroke="none" fillOpacity={0.18} legendType="none" />
-          <Line type="monotone" dataKey="ozon" name="Ozon заказы" stroke="#2563eb" dot={false} strokeWidth={2} />
-          <Area type="monotone" dataKey="ozon_s" name="Ozon выкупы" fill="#2563eb" stroke="none" fillOpacity={0.18} legendType="none" />
+          <Line type="monotone" dataKey="wb" name="WB заказы" stroke={MARKETPLACE.wb.color} dot={false} strokeWidth={2} />
+          <Area type="monotone" dataKey="wb_s" name="WB выкупы" fill={MARKETPLACE.wb.color} stroke="none" fillOpacity={0.18} legendType="none" />
+          <Line type="monotone" dataKey="ozon" name="Ozon заказы" stroke={MARKETPLACE.ozon.color} dot={false} strokeWidth={2} />
+          <Area type="monotone" dataKey="ozon_s" name="Ozon выкупы" fill={MARKETPLACE.ozon.color} stroke="none" fillOpacity={0.18} legendType="none" />
         </ComposedChart>
       </ResponsiveContainer>
-    </div>
+    </Card>
   )
 }

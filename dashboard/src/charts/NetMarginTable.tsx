@@ -1,14 +1,6 @@
 import { NetMarginRow } from '../api'
-
-const TARGET_PCT = 50
-
-function marginColor(pct: number | null) {
-  if (pct === null) return 'text-gray-400 dark:text-gray-500'
-  if (pct < 10) return 'text-red-600'
-  if (pct < 30) return 'text-yellow-600'
-  if (pct < TARGET_PCT) return 'text-orange-500'
-  return 'text-green-600'
-}
+import Card from '../components/Card'
+import { MARGIN_TARGET_PCT, marginColorClass as marginColor } from '../theme'
 
 const fmt = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}к` : v.toLocaleString()
 
@@ -37,9 +29,7 @@ export default function NetMarginTable({ data }: { data: NetMarginRow[] }) {
   if (!data.length) return null
   const rows = [...data].sort((a, b) => b.net_profit_total - a.net_profit_total)
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
-      <h2 className="text-sm font-semibold mb-1">NET маржа (реальные выплаты)</h2>
-      <p className="text-xs text-gray-400 dark:text-gray-500 mb-3">Цель: {TARGET_PCT}% · ✓ норма · % → цена₽ = рекомендация</p>
+    <Card title="NET маржа (реальные выплаты)" subtitle={`Цель: ${MARGIN_TARGET_PCT}% · ✓ норма · % → цена₽ = рекомендация`}>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
@@ -70,6 +60,6 @@ export default function NetMarginTable({ data }: { data: NetMarginRow[] }) {
           </tbody>
         </table>
       </div>
-    </div>
+    </Card>
   )
 }

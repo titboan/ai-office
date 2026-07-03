@@ -42,43 +42,45 @@
 Принцип: `enqueue_task(agent_key=X, payload=..., chat_id=..., from_agent="marta")`.
 
 ### Команды Питера для Марты
-- [ ] `/order [период=N]` → peter
-- [ ] `/supply [период=N]` → peter
-- [ ] `/drr [период=N]` → peter
-- [ ] `/abc [период=N]` → peter
-- [ ] `/funnel [период=N]` → peter
-- [ ] `/returns [период=N]` → peter
-- [ ] `/audit` → peter
-- [ ] `/seo_audit` → peter
-- [ ] `/analyze <вопрос>` → peter
+- [x] `/order [период=N]` → peter
+- [x] `/supply [период=N]` → peter
+- [x] `/drr [период=N]` → peter
+- [x] `/abc [период=N]` → peter
+- [x] `/funnel [период=N]` → peter
+- [x] `/returns [период=N]` → peter
+- [x] `/audit` → peter
+- [x] `/seo_audit` → peter
+- [x] `/analyze <вопрос>` → peter
 
 ### Команды Макса для Марты
-- [ ] `/sync_fin` → max
-- [ ] `/sync_adv` → max
-- [ ] `/sync_funnel` → max
-- [ ] `/sync_returns` → max
-- [ ] `/sync_cards` → max
-- [ ] `/sync_keywords` → max
-- [ ] `/sync_sku` → max
-- [ ] `/questions` → max
-- [ ] `/pending` → max
-- [ ] `/products` → max
-- [ ] `/shop_kpi` → max
-- [ ] `/data_status` → max
-- [ ] `/shops` → max
-- [ ] `/seo_check` → max
-- [ ] `/reprice` → max (без wizard — просто запустить анализ)
-- [ ] `/bid_adjust` → max
-- [ ] `/margin <артикул>` → max
+- [x] `/sync_fin` → max
+- [x] `/sync_adv` → max
+- [x] `/sync_funnel` → max
+- [x] `/sync_returns` → max
+- [x] `/sync_cards` → max
+- [x] `/sync_keywords` → max
+- [x] `/sync_sku` → max
+- [x] `/questions` → max
+- [x] `/pending` → max
+- [x] `/products` → max
+- [x] `/shop_kpi` → max
+- [x] `/data_status` → max
+- [x] `/shops` → max
+- [x] `/seo_check` → max
+- [x] `/reprice` → max (без wizard — просто запустить анализ)
+- [x] `/bid_adjust` → max
+- [x] `/margin <артикул>` → max
 
 ### Команды остальных
-- [ ] `/code <задача>` → kevin
-- [ ] `/plan <идея>` → kevin
-- [ ] `/post <тема>` → elina
-- [ ] `/seo <артикул>` → elina
-- [ ] `/tenders` → tina
-- [ ] `/tenders_report` → tina
-- [ ] `/testpush` → alex
+- [x] `/code <задача>` → kevin
+- [x] `/plan <идея>` → kevin
+- [x] `/post <тема>` → elina
+- [x] `/seo <артикул>` → elina
+- [x] `/tenders` → tina
+- [x] `/tenders_report` → tina
+- [x] `/testpush` → alex
+
+(Сверено с кодом 2026-07-03: все перечисленные команды зарегистрированы в `agents/marta.py::_register_extra_handlers` как `cmd_proxy_*`. Фаза 2-4 ниже не проверялись — статус как был.)
 
 **Результат Фазы 1:** пользователь может запускать все команды из чата Марты. Результаты приходят туда же. Кнопки пока не работают (они всё ещё шлются через бот агента).
 

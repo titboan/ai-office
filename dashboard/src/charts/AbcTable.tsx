@@ -1,4 +1,5 @@
 import { AbcRow } from '../api'
+import Card from '../components/Card'
 
 const GROUP_STYLE: Record<string, string> = {
   A: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
@@ -20,16 +21,16 @@ export default function AbcTable({ data }: { data: AbcRow[] }) {
   const countC = data.filter(r => r.group === 'C').length
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
-      <div className="flex items-center justify-between mb-3">
-        <div className="text-sm font-semibold text-gray-700 dark:text-gray-200">🔤 ABC-анализ</div>
+    <Card
+      title={<span className="text-gray-700 dark:text-gray-200">🔤 ABC-анализ</span>}
+      headerExtra={
         <div className="flex gap-1 text-xs">
           <span className={`px-2 py-0.5 rounded-full font-medium ${GROUP_STYLE.A}`}>A: {countA}</span>
           <span className={`px-2 py-0.5 rounded-full font-medium ${GROUP_STYLE.B}`}>B: {countB}</span>
           <span className={`px-2 py-0.5 rounded-full font-medium ${GROUP_STYLE.C}`}>C: {countC}</span>
         </div>
-      </div>
-
+      }
+    >
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
@@ -73,6 +74,6 @@ export default function AbcTable({ data }: { data: AbcRow[] }) {
       <div className="mt-2 text-xs text-gray-400 dark:text-gray-500">
         A = 80% выручки · B = 95% · C = остальные
       </div>
-    </div>
+    </Card>
   )
 }

@@ -24,10 +24,7 @@ tavily-python==0.7.24              # AsyncTavilyClient для нативного
 asyncpg==0.29.0                    # нативный async Postgres драйвер для task queue
 
 # ── Голосовые сообщения (Groq Whisper) ───────────────────────────────────────
-groq>=0.11.0                       # AsyncGroq — транскрипция voice → text через Whisper
-
-# ── Notion (setup_notion.py + будущая интеграция агентов) ─────────────────────
-requests==2.32.3                   # HTTP-клиент для setup_notion.py (sync, stdlib-style)
+groq==1.5.0                        # AsyncGroq — транскрипция voice → text через Whisper
 
 # ── Ева — чтение Telegram-каналов через MTProto ───────────────────────────────
-telethon>=1.36.0                   # MTProto клиент; StringSession совместим с asyncio
+telethon==1.44.0                   # MTProto клиент; StringSession совместим с asyncio
