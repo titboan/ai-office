@@ -8,6 +8,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from config import config
 from utils.tg_rich import send_rich_or_fallback as _send_rich
+from utils.mp_format import mp_emoji as _mp_emoji, split_by_marketplace
 from task_queue import create_task as enqueue_task
 from .base_agent import BaseAgent
 
@@ -1869,8 +1870,7 @@ class PeterAgent(BaseAgent):
             else:
                 p["urgency"] = "НОРМА"
 
-        wb_products  = [p for p in products if p["marketplace"] == "wb"]
-        ozon_products = [p for p in products if p["marketplace"] == "ozon"]
+        wb_products, ozon_products = split_by_marketplace(products)
 
         wb_open = supply_data.get("wb_open_warehouses")
         if wb_open:
@@ -2823,7 +2823,7 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
 
         for r in rows:
             rate_pct  = float(r["avg_rate"] or 0) * 100
-            mp_label  = "🟣" if r["marketplace"] == "wb" else "🔵"
+            mp_label  = _mp_emoji(r["marketplace"])
             amount_k  = float(r["total_amount"] or 0) / 1000
             flag      = " ⚠️" if rate_pct > 5 else ""
             lines.append(

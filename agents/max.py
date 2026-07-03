@@ -16,6 +16,7 @@ from telegram.ext import (
 from config import config
 from utils.tg_format import bold, escape
 from utils.tg_rich import send_rich_or_fallback as _send_rich
+from utils.mp_format import mp_label as _mp_label, mp_emoji as _mp_emoji
 from .base_agent import BaseAgent
 
 _UTC = timezone.utc
@@ -564,7 +565,7 @@ class MaxAgent(BaseAgent):
             return "Магазинов нет. Нажми /start чтобы подключить."
         lines = []
         for s in shops:
-            emoji = "🟣" if s["marketplace"] == "wb" else "🔵"
+            emoji = _mp_emoji(s["marketplace"])
             name = s.get("shop_name") or _MP_LABELS.get(s["marketplace"], s["marketplace"])
             lines.append(f"{emoji} {name} — подключён")
         return "\n".join(lines)
@@ -2104,7 +2105,7 @@ class MaxAgent(BaseAgent):
 
         lines = ["🎁 <b>Акции WB / Ozon:</b>\n"]
         for row in active[:10]:
-            mp_label = "🟣 WB" if row["marketplace"] == "wb" else "🔵 Ozon"
+            mp_label = _mp_label(row["marketplace"])
             end_str  = row["end_date"].strftime("%d.%m") if row["end_date"] else "—"
             pids     = row["product_ids"] or []
             discount = f" -{int(row['discount_pct'])}%" if row.get("discount_pct") else ""
@@ -2575,7 +2576,7 @@ class MaxAgent(BaseAgent):
             date_from = (_date.today() - _td(days=30)).strftime("%Y-%m-%d")
             lines = ["✅ Возвраты синхронизированы"]
             for mp, cnt in totals.items():
-                label = "🟣 WB" if mp == "wb" else "🔵 Ozon"
+                label = _mp_label(mp)
                 lines.append(f"{label}: {cnt} записей")
             lines.append(f"Период: {date_from} — {date_to}")
             await update.message.reply_text("\n".join(lines))
@@ -2645,7 +2646,7 @@ class MaxAgent(BaseAgent):
             return "⚠️ Данные KPI недоступны (магазины не подключены или API не поддерживается)."
         lines = ["<b>Рейтинг продавца</b>"]
         for mp, kpi in results.items():
-            label = "🟣 WB" if mp == "wb" else "🔵 Ozon"
+            label = _mp_label(mp)
             if not kpi:
                 lines.append(f"\n{label}\n<i>данные временно недоступны</i>")
                 continue
@@ -2727,7 +2728,6 @@ class MaxAgent(BaseAgent):
         from db import get_orders_summary, get_orders_total, get_orders_days_count, get_sales_period, get_sales_total
         from zoneinfo import ZoneInfo
         _bot = bot if bot is not None else self.app.bot
-        _SHORT = {"wb": "🟣 WB", "ozon": "🔵 Ozon"}
 
         from zoneinfo import ZoneInfo as _ZI
         now_utc       = datetime.now(_UTC)
@@ -2792,7 +2792,7 @@ class MaxAgent(BaseAgent):
         def _mp_line(mp: str, orders_map: dict, sales_map: dict,
                      cmp_orders: dict | None = None, cmp_sales: dict | None = None,
                      cmp_label: str = "") -> str:
-            label = _SHORT.get(mp, mp)
+            label = _mp_label(mp)
             o = orders_map.get(mp)
             s = sales_map.get(mp)
             if not o and not s:
@@ -2839,7 +2839,7 @@ class MaxAgent(BaseAgent):
                 parts.append(f"{'▲+' if dr > 0 else '▼'}{_fmt(abs(dr))}")
             return " ".join(parts) or "="
 
-        _MP = [("wb", "🟣 WB"), ("ozon", "🔵 Ozon")]
+        _MP = [(mp, _mp_label(mp)) for mp in ("wb", "ozon")]
         lines = [f"# 💰 Статистика — {date_str}", ""]
 
         # Сегодня
@@ -3060,10 +3060,13 @@ class MaxAgent(BaseAgent):
         _first_line = _orig_lines[0]
         _rv_line = next((l for l in _orig_lines if l.startswith('💬')), '')
 
-        # Защита от двойного нажатия
+        # Защита от двойного нажатия — атомарный лок (SET NX), не check-then-set
         lock_key = f"review_lock:{review_id}"
-        locked = await self._redis_get(lock_key)
-        if locked:
+        user = query.from_user
+        first_name = (user.first_name if user else None) or "Участник"
+        acquired = await self._redis_acquire_lock(lock_key, first_name, ttl=300)
+        if not acquired:
+            locked = await self._redis_get(lock_key) or first_name
             await query.answer(f"✅ Уже обработал: {locked}", show_alert=False)
             try:
                 await query.edit_message_text(
@@ -3074,9 +3077,6 @@ class MaxAgent(BaseAgent):
                 pass
             return
 
-        user = query.from_user
-        first_name = (user.first_name if user else None) or "Участник"
-        await self._redis_set(lock_key, first_name, ttl=300)
         await query.answer()
 
         # Если кнопка нажата в группе — pending_edit ставим на group_id
@@ -3222,8 +3222,11 @@ class MaxAgent(BaseAgent):
         _q_line = next((l for l in _orig_lines if l.startswith('💬')), '')
 
         lock_key = f"question_lock:{question_id}"
-        locked = await self._redis_get(lock_key)
-        if locked:
+        user = query.from_user
+        first_name = (user.first_name if user else None) or "Участник"
+        acquired = await self._redis_acquire_lock(lock_key, first_name, ttl=300)
+        if not acquired:
+            locked = await self._redis_get(lock_key) or first_name
             await query.answer(f"✅ Уже обработал: {locked}", show_alert=False)
             try:
                 await query.edit_message_text(
@@ -3234,9 +3237,6 @@ class MaxAgent(BaseAgent):
                 pass
             return
 
-        user = query.from_user
-        first_name = (user.first_name if user else None) or "Участник"
-        await self._redis_set(lock_key, first_name, ttl=300)
         await query.answer()
 
         msg_chat_id = query.message.chat_id
@@ -4751,7 +4751,7 @@ class MaxAgent(BaseAgent):
                 f"# 📦 Сток-алерт · {today.strftime('%d.%m')}\n"
                 f"*Доставка {lead_time} дн · запас {safety_days} дн*"
             ]
-            for mp_label, group in [("🟣 WB", wb_items), ("🔵 Ozon", ozon_items)]:
+            for mp_label, group in [(_mp_label("wb"), wb_items), (_mp_label("ozon"), ozon_items)]:
                 if not group:
                     continue
                 md_parts.append("---")
@@ -4893,7 +4893,7 @@ class MaxAgent(BaseAgent):
                 if not reasons and not low_margin:
                     continue  # всё в норме — не предлагать
 
-                mp_label = "🟣 WB" if mp == "wb" else "🔵 Ozon"
+                mp_label = _mp_label(mp)
                 product_id = r["wb_article"] if mp == "wb" else r["ozon_offer_id"]
                 nm_id      = r["wb_nm_id"]   if mp == "wb" else None
                 offer_id   = r["ozon_offer_id"] if mp == "ozon" else None
@@ -4929,7 +4929,7 @@ class MaxAgent(BaseAgent):
         chat_id = update.effective_user.id
 
         lock_key = f"reprice_lock:{chat_id}"
-        if await self._redis_get(lock_key):
+        if not await self._redis_acquire_lock(lock_key, "1", ttl=600):
             await update.message.reply_text(
                 "⏳ Уже есть активные предложения по ценам.\n"
                 "Ответь на них или подожди 10 минут."
@@ -4944,9 +4944,8 @@ class MaxAgent(BaseAgent):
                 "✅ Все цены выглядят нормально — сигналов для изменения нет.\n\n"
                 "Проверь что заданы себестоимости (/cost) и синхронизированы финотчёты (/sync_fin)."
             )
+            await self._redis_set(lock_key, "", ttl=1)  # снимаем лок — предложений нет, разрешаем повтор сразу
             return
-
-        await self._redis_set(lock_key, "1", ttl=600)
 
         sent = 0
         for s in suggestions[:10]:
@@ -5025,10 +5024,9 @@ class MaxAgent(BaseAgent):
 
         if action == "apply":
             lock = f"reprice_apply:{mp}:{product_id}"
-            if await self._redis_get(lock):
+            if not await self._redis_acquire_lock(lock, "1", ttl=60):
                 await query.answer("Уже применяется…", show_alert=False)
                 return
-            await self._redis_set(lock, "1", ttl=60)
 
             ok = await self._apply_price(chat_id, mp, product_id, new_price)
             suffix = f"\n\n{'✅ Цена обновлена → {new_price} ₽'.format(new_price=new_price) if ok else '❌ Ошибка при обновлении цены — проверь логи'}"
@@ -5346,11 +5344,12 @@ class MaxAgent(BaseAgent):
         Возвращает количество отправленных предложений.
         """
         lock_key = f"bid_lock:{chat_id}"
-        if await self._redis_get(lock_key):
+        if not await self._redis_acquire_lock(lock_key, "1", ttl=600):
             return 0
 
         suggestions = await self._collect_bid_suggestions(chat_id)
         if not suggestions:
+            await self._redis_set(lock_key, "", ttl=1)  # снимаем лок — предложений нет, разрешаем повтор сразу
             return 0
 
         # Для Ozon нужен shop_id чтобы корректно вызвать pause_campaign через camp: callback
@@ -5358,8 +5357,6 @@ class MaxAgent(BaseAgent):
         shops = await get_marketplace_shops(chat_id)
         ozon_shop = next((s for s in shops if s["marketplace"] == "ozon"), None)
         ozon_shop_id = str(ozon_shop["id"]) if ozon_shop else None
-
-        await self._redis_set(lock_key, "1", ttl=600)
         await self.app.bot.send_message(
             chat_id=chat_id,
             text="🤖 <b>Авто-анализ ставок</b>\nПо данным за 7 дней есть предложения по корректировке:",
@@ -5369,7 +5366,7 @@ class MaxAgent(BaseAgent):
         sent = 0
         for s in suggestions[:8]:
             mp = s["marketplace"]
-            mp_label = "🟣 WB" if mp == "wb" else "🔵 Ozon"
+            mp_label = _mp_label(mp)
             cid = s["campaign_id"]
             d   = s["direction"]
             dp  = s["delta_pct"]
@@ -5857,7 +5854,7 @@ class MaxAgent(BaseAgent):
         lines = ["🎯 <b>Рекомендации по ставкам</b>\n"]
         for s in suggestions[:8]:
             arrow = "📉 Снизить" if s["direction"] == "down" else "📈 Поднять"
-            mp_label = "🟣 WB" if s["marketplace"] == "wb" else "🔵 Ozon"
+            mp_label = _mp_label(s["marketplace"])
             lines.append(
                 f"• {mp_label} <b>{s['name']}</b> — ДРР {s['drr']:.0f}%: {arrow} ставку на {s['delta_pct']}%\n"
                 f"  {s['reason']}"
@@ -6329,7 +6326,7 @@ class MaxAgent(BaseAgent):
                         return
                     lines = ["<b>Рейтинг продавца</b>"]
                     for mp, kpi in results.items():
-                        label = "🟣 WB" if mp == "wb" else "🔵 Ozon"
+                        label = _mp_label(mp)
                         rating = kpi.get("rating") or 0
                         ret    = kpi.get("return_pct") or 0
                         cancel = kpi.get("cancellation_pct") or 0
@@ -6381,7 +6378,7 @@ class MaxAgent(BaseAgent):
                     else:
                         lines = ["✅ Возвраты синхронизированы"]
                         for mp, cnt in totals.items():
-                            lines.append(f"{'🟣 WB' if mp == 'wb' else '🔵 Ozon'}: {cnt} записей")
+                            lines.append(f"{_mp_label(mp)}: {cnt} записей")
                         await msg.reply_text("\n".join(lines))
                 except Exception as e:
                     await msg.reply_text(f"❌ Ошибка: {e}")

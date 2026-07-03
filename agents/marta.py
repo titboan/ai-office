@@ -175,7 +175,6 @@ class MartaAgent(BaseAgent):
             from .elina  import ElinaAgent
             from .alex   import AlexAgent
             from .max    import MaxAgent
-            from .dan    import DanAgent
 
             registry: dict[str, type[BaseAgent]] = {
                 "kevin":  KevinAgent,
@@ -184,8 +183,10 @@ class MartaAgent(BaseAgent):
                 "elina":  ElinaAgent,
                 "alex":   AlexAgent,
                 "max":    MaxAgent,
-                "dan":    DanAgent,
             }
+            if key in ("dan", "eva"):
+                logger.warning(f"[Марта] Агент {key!r} заморожен — делегирование отклонено")
+                return None
             agent_cls = registry.get(key)
             if agent_cls is None:
                 logger.warning(f"[Марта] Неизвестный агент для делегирования: {key!r}")
@@ -224,8 +225,9 @@ class MartaAgent(BaseAgent):
         "  peter  — аналитик магазина WB+Ozon: продажи, ДРР, ROAS, рентабельность, план поставок, заказ у поставщика, настройки срока доставки и буфера\n"
         "  elina  — тексты, посты, контент, копирайтинг\n"
         "  alex   — планирование, roadmap, задачи, Notion\n"
-        "  dan    — дизайнер: генерация изображений, hero-картинки, иконки для лендингов\n"
         "  max    — синхронизация данных магазина: отзывы, остатки, реклама WB/Ozon, товары\n\n"
+        "Дэн (дизайнер) временно отключён (заморожен) — НЕ включай его ни в одну цепочку,\n"
+        "даже если задача упоминает изображения/картинки для лендинга.\n\n"
         "ПРАВИЛА ДЛЯ PETER (АНАЛИТИКА МАГАЗИНА):\n"
         "Peter — это аналитик НАШЕГО магазина на WB и Ozon. Он работает с реальными данными из БД.\n"
         "Всегда routing на peter (одиночный агент) для запросов:\n"
@@ -247,10 +249,6 @@ class MartaAgent(BaseAgent):
         "  - создание сайта, лендинга, веб-интерфейса\n"
         "  - написание бота, скрипта, приложения\n"
         "  - любой код для деплоя или коммита в репо\n\n"
-        "ПРАВИЛА ДЛЯ DAN:\n"
-        "  - Включай Дэна когда нужны изображения для сайта или лендинга\n"
-        "  - Дэн всегда идёт ДО Кевина\n"
-        "  - НЕ включай Дэна для задач без визуального контента\n\n"
         "ПАРАЛЛЕЛЬНЫЕ ГРУППЫ:\n"
         "Добавляй поле 'group' (int) чтобы запустить агентов одновременно.\n"
         "Агенты с одинаковым group выполняются параллельно; следующий group стартует когда все готовы.\n"
@@ -259,13 +257,12 @@ class MartaAgent(BaseAgent):
         "ТИПОВЫЕ ЦЕПОЧКИ:\n"
         "  Аналитика магазина / цели по обороту: [peter]\n"
         "  Лендинг/сайт по готовому референсу или макету: [kevin]\n"
-        "  Лендинг/сайт с изображениями: [dan(group:0), kevin(group:1)]\n"
         "  Лендинг с исследованием рынка: [kasper(group:0), kevin(group:1)]\n"
-        "  Лендинг: исследование → (тексты + дизайн параллельно) → деплой: [kasper(0), elina(1)+dan(1), kevin(2)]\n"
+        "  Лендинг: исследование → тексты → деплой: [kasper(0), elina(1), kevin(2)]\n"
         "  Технический проект (бот, приложение): [kevin] или [kasper(0), kevin(1)]\n"
         "  Контентный проект: [elina] или [kasper(0), elina(1)]\n"
         "  Бизнес-исследование внешнего рынка: [kasper(0), peter(1)]\n"
-        "  Полный проект (исследование + дизайн + разработка): [kasper(0), dan(1), kevin(2)]\n\n"
+        "  Полный проект (исследование + разработка): [kasper(0), kevin(1)]\n\n"
         "ПРАВИЛА ДЛЯ needs_project_page:\n"
         "  true  — проект: сайт, бот, исследование рынка, продукт, приложение, контент-пакет\n"
         "  false — разовый вопрос, справка, простая задача\n\n"
@@ -310,10 +307,27 @@ class MartaAgent(BaseAgent):
             logger.debug(f"[Марта] _plan_chain raw response: {raw[:300]}")
             plan = json.loads(raw)
             logger.debug(f"[Марта] _plan_chain result: {raw[:500]}")
+
+            # Защита от зомби-агентов: dan/eva заморожены (нет worker_loop в main.py),
+            # задача, назначенная на них, зависла бы в очереди навсегда без таймаута.
+            _FROZEN_AGENTS = {"dan", "eva"}
             if plan.get("is_chain"):
+                steps = plan.get("steps", [])
+                filtered = [s for s in steps if s.get("agent") not in _FROZEN_AGENTS]
+                if len(filtered) != len(steps):
+                    logger.warning(
+                        f"[Марта] chain_plan: убраны шаги с замороженными агентами "
+                        f"({len(steps) - len(filtered)} из {len(steps)})"
+                    )
+                plan["steps"] = filtered
+                if not filtered:
+                    return None
                 logger.info(
                     f"chain_plan | steps={len(plan.get('steps', []))} | request={user_request[:60]!r}"
                 )
+            elif plan.get("agent") in _FROZEN_AGENTS:
+                logger.warning(f"[Марта] plan_chain: агент {plan.get('agent')!r} заморожен, план отклонён")
+                return None
             return plan
         except Exception as e:
             logger.warning(f"[Марта] _plan_chain error: {e} | raw: {raw[:200] if 'raw' in locals() else 'no response'}")

@@ -15,8 +15,10 @@ from loguru import logger
 from telegram import Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CommandHandler,
     MessageHandler,
+    TypeHandler,
     filters,
     ContextTypes,
 )
@@ -194,6 +196,27 @@ class BaseAgent(ABC):
             await redis.set(key, value, ex=ttl)
         except Exception as e:
             logger.warning(f"[{self.name}] Redis set error ({key}): {e}")
+
+    async def _redis_acquire_lock(self, key: str, value: str, ttl: int) -> bool:
+        """
+        Атомарно занять лок (SET NX EX) — вместо check-then-set (`_redis_get` + `_redis_set`
+        по отдельности), где между проверкой и установкой есть await-разрыв и конкурентный
+        вызов (кнопка + тик планировщика, или два быстрых тапа) может пройти проверку
+        одновременно и выполнить действие дважды.
+        Returns True — лок наш (действие можно выполнять), False — уже занят кем-то другим
+        (в т.ч. при ошибке Redis — безопаснее пропустить действие, чем рискнуть дублем).
+        """
+        redis = await self._get_redis()
+        if redis is None:
+            if key in self._history_fallback:
+                return False
+            self._history_fallback[key] = value
+            return True
+        try:
+            return bool(await redis.set(key, value, nx=True, ex=ttl))
+        except Exception as e:
+            logger.warning(f"[{self.name}] Redis lock error ({key}): {e}")
+            return False
 
     # ------------------------------------------------------------------ #
     #  История диалога — чтение / запись                                  #
@@ -1081,6 +1104,25 @@ class BaseAgent(ABC):
     #  Запуск                                                             #
     # ------------------------------------------------------------------ #
 
+    async def _auth_guard(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Единственный владелец (config.OWNER_CHAT_ID) может писать ботам компании.
+        Без этого любой человек, узнавший username бота, тратит Claude API за наш счёт.
+        Если OWNER_CHAT_ID не настроен (0) — ограничение не включается (dev-режим).
+        """
+        if not config.OWNER_CHAT_ID:
+            return
+        user = update.effective_user
+        if user and user.id != config.OWNER_CHAT_ID:
+            logger.warning(
+                f"[{self.name}] Заблокирован доступ: user_id={user.id} "
+                f"username={user.username!r}"
+            )
+            if update.effective_chat:
+                with contextlib.suppress(Exception):
+                    await context.bot.send_message(update.effective_chat.id, "⛔ Доступ ограничен.")
+            raise ApplicationHandlerStop
+
     async def _error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Глобальный обработчик ошибок PTB (update processing уровень)."""
         logger.error(f"[{self.name}] PTB error: {context.error}")
@@ -1100,6 +1142,7 @@ class BaseAgent(ABC):
             .build()
         )
         self.app.add_error_handler(self._error_handler)
+        self.app.add_handler(TypeHandler(Update, self._auth_guard), group=-1)
         self.app.add_handler(CommandHandler("start", self.cmd_start))
         self.app.add_handler(CommandHandler("help", self.cmd_help))
         self.app.add_handler(CommandHandler("reset", self.cmd_reset))

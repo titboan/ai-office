@@ -29,6 +29,7 @@ from loguru import logger
 
 from config import config
 from task_queue import get_active_tasks, get_recent_tasks
+from utils.loop_health import report_loop_failure, report_loop_success
 from agents import (
     MartaAgent,
     KevinAgent,
@@ -254,8 +255,10 @@ async def run_all_async() -> None:
                 for chat_id in unique_chats:
                     try:
                         await max_agent.process_reviews(chat_id)
+                        report_loop_success(f"reviews:{chat_id}")
                     except Exception as e:
                         logger.error(f"[reviews_scheduler] chat={chat_id} error: {e}")
+                        await report_loop_failure(f"reviews:{chat_id}", e)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -291,8 +294,10 @@ async def run_all_async() -> None:
                         await max_agent.sync_ad_stats(chat_id)
                         logger.info(f"[adv_sync] chat_id={chat_id} завершено")
                         await max_agent._check_drr_alerts(chat_id)
+                        report_loop_success(f"adv_sync:{chat_id}")
                     except Exception as e:
                         logger.error(f"[adv_sync] chat_id={chat_id} ошибка: {e}")
+                        await report_loop_failure(f"adv_sync:{chat_id}", e)
 
             except asyncio.CancelledError:
                 break
@@ -331,8 +336,10 @@ async def run_all_async() -> None:
                     try:
                         await max_agent.sync_financial_report(chat_id, days=90)
                         logger.info(f"[fin_sync] chat_id={chat_id} завершено")
+                        report_loop_success(f"fin_sync:{chat_id}")
                     except Exception as e:
                         logger.error(f"[fin_sync] chat_id={chat_id} ошибка: {e}")
+                        await report_loop_failure(f"fin_sync:{chat_id}", e)
 
             except asyncio.CancelledError:
                 break
@@ -365,8 +372,10 @@ async def run_all_async() -> None:
                         found = sum(s.get("found", 0) for s in results.values())
                         if found:
                             logger.info(f"[questions_scheduler] chat={chat_id}: {found} новых вопросов")
+                        report_loop_success(f"questions:{chat_id}")
                     except Exception as e:
                         logger.error(f"[questions_scheduler] chat={chat_id} error: {e}")
+                        await report_loop_failure(f"questions:{chat_id}", e)
 
             except asyncio.CancelledError:
                 break
@@ -397,8 +406,10 @@ async def run_all_async() -> None:
                     try:
                         await max_agent.sync_marketplace_data(chat_id)
                         logger.info(f"[orders_sync] chat_id={chat_id} завершено")
+                        report_loop_success(f"orders_sync:{chat_id}")
                     except Exception as e:
                         logger.error(f"[orders_sync] chat_id={chat_id} ошибка: {e}")
+                        await report_loop_failure(f"orders_sync:{chat_id}", e)
 
             except asyncio.CancelledError:
                 break
@@ -435,8 +446,10 @@ async def run_all_async() -> None:
                     try:
                         await peter_agent.run_weekly_audit(chat_id)
                         logger.info(f"[weekly_audit] chat_id={chat_id} завершено")
+                        report_loop_success(f"weekly_audit:{chat_id}")
                     except Exception as e:
                         logger.error(f"[weekly_audit] chat_id={chat_id} ошибка: {e}")
+                        await report_loop_failure(f"weekly_audit:{chat_id}", e)
 
             except asyncio.CancelledError:
                 break
@@ -493,8 +506,10 @@ async def run_all_async() -> None:
                                 avg_price=float(r["avg_price"] or 0),
                             )
                         logger.info(f"[snapshot] chat={chat_id} revenue snapshot: {len(rows)} строк за {yesterday}")
+                        report_loop_success(f"snapshot_revenue:{chat_id}")
                     except Exception as e:
                         logger.error(f"[snapshot] revenue chat={chat_id}: {e}")
+                        await report_loop_failure(f"snapshot_revenue:{chat_id}", e)
 
                     # Снимок остатков (текущие → история)
                     try:
@@ -514,15 +529,19 @@ async def run_all_async() -> None:
                                 stock=s["stock"],
                             )
                         logger.info(f"[snapshot] chat={chat_id} stock history: {len(stocks)} позиций за {yesterday}")
+                        report_loop_success(f"snapshot_stocks:{chat_id}")
                     except Exception as e:
                         logger.error(f"[snapshot] stocks chat={chat_id}: {e}")
+                        await report_loop_failure(f"snapshot_stocks:{chat_id}", e)
 
                     # Алерт остатков после ежедневного снимка
                     if max_agent is not None:
                         try:
                             await max_agent._check_stock_alerts(chat_id)
+                            report_loop_success(f"snapshot_alerts:{chat_id}")
                         except Exception as e:
                             logger.error(f"[snapshot] stock_alerts chat={chat_id}: {e}")
+                            await report_loop_failure(f"snapshot_alerts:{chat_id}", e)
 
             except asyncio.CancelledError:
                 break
@@ -562,8 +581,10 @@ async def run_all_async() -> None:
                 for user_chat_id in unique_chats:
                     try:
                         await tina_agent.send_daily_digest(user_chat_id)
+                        report_loop_success(f"tender_digest:{user_chat_id}")
                     except Exception as e:
                         logger.error(f"[tender_scheduler] user={user_chat_id} error: {e}")
+                        await report_loop_failure(f"tender_digest:{user_chat_id}", e)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -596,8 +617,10 @@ async def run_all_async() -> None:
                 for chat_id in unique_chats:
                     try:
                         await max_agent._check_stock_alerts(chat_id, deduplicate=True)
+                        report_loop_success(f"stock_alerts:{chat_id}")
                     except Exception as e:
                         logger.error(f"[stock_alerts] chat_id={chat_id} ошибка: {e}")
+                        await report_loop_failure(f"stock_alerts:{chat_id}", e)
 
             except asyncio.CancelledError:
                 break
@@ -632,8 +655,10 @@ async def run_all_async() -> None:
                 for chat_id in unique_chats:
                     try:
                         await max_agent._send_promotions_summary(chat_id)
+                        report_loop_success(f"promotions_weekly:{chat_id}")
                     except Exception as e:
                         logger.error(f"[promotions_weekly] chat_id={chat_id} ошибка: {e}")
+                        await report_loop_failure(f"promotions_weekly:{chat_id}", e)
 
             except asyncio.CancelledError:
                 break
@@ -687,11 +712,13 @@ async def run_all_async() -> None:
                 if all_rows:
                     await upsert_competitor_snapshot(all_rows)
                     logger.info(f"[competitor_monitor] сохранено {len(all_rows)} строк по {len(keywords)} запросам")
+                report_loop_success("competitor_monitor")
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"[competitor_monitor] ошибка: {e}")
+                await report_loop_failure("competitor_monitor", e)
                 await asyncio.sleep(300)
 
     asyncio.create_task(_competitor_monitor_loop())
@@ -723,8 +750,10 @@ async def run_all_async() -> None:
                     try:
                         await peter_agent.run_daily_digest(chat_id)
                         logger.info(f"[daily_digest] chat_id={chat_id} завершено")
+                        report_loop_success(f"daily_digest:{chat_id}")
                     except Exception as e:
                         logger.error(f"[daily_digest] chat_id={chat_id} ошибка: {e}")
+                        await report_loop_failure(f"daily_digest:{chat_id}", e)
 
             except asyncio.CancelledError:
                 break
@@ -755,8 +784,10 @@ async def run_all_async() -> None:
                     try:
                         await marta_agent.send_daily_digest(chat_id)
                         logger.info(f"[marta_digest] chat_id={chat_id} отправлено")
+                        report_loop_success(f"marta_digest:{chat_id}")
                     except Exception as e:
                         logger.error(f"[marta_digest] chat_id={chat_id} ошибка: {e}")
+                        await report_loop_failure(f"marta_digest:{chat_id}", e)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -786,8 +817,10 @@ async def run_all_async() -> None:
                     try:
                         await max_agent.sync_funnel(chat_id)
                         logger.info(f"[funnel_sync] chat_id={chat_id} завершено")
+                        report_loop_success(f"funnel_sync:{chat_id}")
                     except Exception as e:
                         logger.error(f"[funnel_sync] chat_id={chat_id} ошибка: {e}")
+                        await report_loop_failure(f"funnel_sync:{chat_id}", e)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -821,8 +854,10 @@ async def run_all_async() -> None:
                     try:
                         await max_agent.sync_returns(chat_id)
                         logger.info(f"[returns_sync] chat_id={chat_id} завершено")
+                        report_loop_success(f"returns_sync:{chat_id}")
                     except Exception as e:
                         logger.error(f"[returns_sync] chat_id={chat_id} ошибка: {e}")
+                        await report_loop_failure(f"returns_sync:{chat_id}", e)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -852,8 +887,10 @@ async def run_all_async() -> None:
                     try:
                         await max_agent.sync_shop_kpi(chat_id)
                         logger.info(f"[kpi_sync] chat_id={chat_id} завершено")
+                        report_loop_success(f"kpi_sync:{chat_id}")
                     except Exception as e:
                         logger.error(f"[kpi_sync] chat_id={chat_id} ошибка: {e}")
+                        await report_loop_failure(f"kpi_sync:{chat_id}", e)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -884,8 +921,10 @@ async def run_all_async() -> None:
                         sent = await max_agent.auto_bid_suggest(chat_id)
                         if sent:
                             logger.info(f"[auto_bid] chat_id={chat_id} отправлено {sent} предложений")
+                        report_loop_success(f"auto_bid:{chat_id}")
                     except Exception as e:
                         logger.error(f"[auto_bid] chat_id={chat_id} ошибка: {e}")
+                        await report_loop_failure(f"auto_bid:{chat_id}", e)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -908,7 +947,7 @@ async def run_all_async() -> None:
             })
         # Токен-доступ для коллег: ?token=SECRET → показываем данные владельца
         url_token = request.rel_url.query.get("token", "")
-        if url_token and config.DASHBOARD_TOKEN and url_token == config.DASHBOARD_TOKEN:
+        if url_token and config.DASHBOARD_TOKEN and hmac.compare_digest(url_token, config.DASHBOARD_TOKEN):
             if not config.OWNER_CHAT_ID:
                 return web.Response(status=503, text="OWNER_CHAT_ID not configured", headers=cors)
             chat_id = config.OWNER_CHAT_ID
@@ -983,7 +1022,7 @@ async def run_all_async() -> None:
                 "Access-Control-Allow-Methods": "GET, OPTIONS",
             })
         url_token = request.rel_url.query.get("token", "")
-        if url_token and config.DASHBOARD_TOKEN and url_token == config.DASHBOARD_TOKEN:
+        if url_token and config.DASHBOARD_TOKEN and hmac.compare_digest(url_token, config.DASHBOARD_TOKEN):
             if not config.OWNER_CHAT_ID:
                 return web.Response(status=503, text="OWNER_CHAT_ID not configured", headers=cors)
             chat_id = config.OWNER_CHAT_ID
