@@ -703,15 +703,19 @@ class WBClient:
                     return []
                 count_data = _json.loads(raw)
 
-        # Только активные кампании (status=9) — у завершённых нет свежей статистики
-        # Диагностика: логируем ВСЕ статусы чтобы понять почему нет кампаний
+        # Берём активные (9), паузу (11) и завершённые (7) — у завершённых/остановленных
+        # ВНУТРИ запрошенного периода тоже есть расход, и он должен попасть в ДРР
+        # (раньше фильтровали только status=9, из-за чего сумма расхода бота не сходилась
+        # с "Финансы → Списание" в приложении WB — кампании, остановленные в середине
+        # периода, выпадали из отчёта целиком)
+        _INCLUDE_STATUSES = {9, 11, 7}
         campaign_ids = []
         all_statuses: dict[int, int] = {}
         for group in (count_data.get("adverts") or []):
             st = group.get("status", -1)
             cnt = group.get("count", 0)
             all_statuses[st] = all_statuses.get(st, 0) + cnt
-            if st == 9:
+            if st in _INCLUDE_STATUSES:
                 for adv in (group.get("advert_list") or []):
                     cid = adv.get("advertId")
                     if cid:
@@ -721,7 +725,7 @@ class WBClient:
             logger.info(f"[WB.get_ad_stats] кампании по статусам: {all_statuses} "
                         f"(9=активные, 11=пауза, 7=завершены)")
         if not campaign_ids:
-            logger.error("[WB.get_ad_stats] нет активных кампаний WB (status=9) — "
+            logger.error("[WB.get_ad_stats] нет кампаний WB (статусы 9/11/7) — "
                          f"все статусы: {all_statuses}. "
                          f"WB per-product ДРР недоступен.")
             return []
