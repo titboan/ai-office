@@ -2337,71 +2337,91 @@ class OzonClient:
 
         Использует /v3/finance/transaction/list (transaction_type=all) и фильтрует
         по _ADV_OPERATION_TYPES. Возвращает суммы по дням, совпадающие с разделом
-        «Продвижение и реклама» в кабинете продавца (кроме «Бонусов продавца» — 2₽,
-        пренебрежимо малы и не видны отдельным operation_type).
+        «Продвижение и реклама» в кабинете продавца (кроме «Бонусов продавца» —
+        единицы рублей, пренебрежимо малы и не видны отдельным operation_type).
+
+        Ozon отвергает запрос с периодом дольше месяца ("too long period, only
+        one month allowed") — тот же баг, что был в get_financial_report (см. его
+        комментарий про чанкинг). Без разбивки на чанки любой синк с окном ≥30 дней
+        (см. вызов в agents/max.py) молча возвращал 0 операций, и ДРР Ozon тихо
+        откатывался на perf_spend из Performance API (только CPC, без CPO/бренда/Premium).
         """
         import json as _json
+        import datetime as _dt_mod
         url = f"{self._BASE}/v3/finance/transaction/list"
         daily: dict[str, float] = {}
         seen_op_ids: set = set()
 
-        page = 1
-        while True:
-            body = {
-                "filter": {
-                    "date": {
-                        "from": f"{date_from}T00:00:00.000Z",
-                        "to":   f"{date_to}T23:59:59.000Z",
+        d_from = _dt_mod.date.fromisoformat(date_from)
+        d_to   = _dt_mod.date.fromisoformat(date_to)
+        chunks: list[tuple[_dt_mod.date, _dt_mod.date]] = []
+        chunk_start = d_from
+        while chunk_start <= d_to:
+            chunk_end = min(chunk_start + _dt_mod.timedelta(days=27), d_to)
+            chunks.append((chunk_start, chunk_end))
+            chunk_start = chunk_end + _dt_mod.timedelta(days=1)
+
+        for chunk_from, chunk_to in chunks:
+            page = 1
+            while True:
+                body = {
+                    "filter": {
+                        "date": {
+                            "from": f"{chunk_from.isoformat()}T00:00:00.000Z",
+                            "to":   f"{chunk_to.isoformat()}T23:59:59.000Z",
+                        },
+                        "transaction_type": "all",
                     },
-                    "transaction_type": "all",
-                },
-                "page":      page,
-                "page_size": 1000,
-            }
-            data = None
-            async with aiohttp.ClientSession() as s:
-                for attempt in range(3):
-                    try:
-                        async with s.post(
-                            url, json=body, headers=self._headers(),
-                            timeout=aiohttp.ClientTimeout(total=30),
-                        ) as resp:
-                            raw = await resp.text()
-                            if resp.status == 429:
-                                await asyncio.sleep(60)
-                                continue
-                            if resp.status != 200:
-                                logger.error(f"[Ozon.get_fin_adv_spend] HTTP {resp.status}: {raw[:200]}")
+                    "page":      page,
+                    "page_size": 1000,
+                }
+                data = None
+                async with aiohttp.ClientSession() as s:
+                    for attempt in range(3):
+                        try:
+                            async with s.post(
+                                url, json=body, headers=self._headers(),
+                                timeout=aiohttp.ClientTimeout(total=30),
+                            ) as resp:
+                                raw = await resp.text()
+                                if resp.status == 429:
+                                    await asyncio.sleep(60)
+                                    continue
+                                if resp.status != 200:
+                                    logger.error(f"[Ozon.get_fin_adv_spend] chunk {chunk_from}–{chunk_to} "
+                                                 f"HTTP {resp.status}: {raw[:200]}")
+                                    break
+                                data = _json.loads(raw)
                                 break
-                            data = _json.loads(raw)
+                        except Exception as e:
+                            logger.error(f"[Ozon.get_fin_adv_spend] chunk {chunk_from}–{chunk_to}: {e}")
                             break
-                    except Exception as e:
-                        logger.error(f"[Ozon.get_fin_adv_spend] {e}")
-                        break
-            if data is None:
-                break
+                if data is None:
+                    logger.warning(f"[Ozon.get_fin_adv_spend] чанк {chunk_from}–{chunk_to} не получен — "
+                                    f"итог по этому периоду будет НЕПОЛНЫМ")
+                    break
 
-            operations = (data.get("result") or {}).get("operations") or []
-            for op in operations:
-                op_id = op.get("operation_id")
-                if op_id is not None:
-                    if op_id in seen_op_ids:
+                operations = (data.get("result") or {}).get("operations") or []
+                for op in operations:
+                    op_id = op.get("operation_id")
+                    if op_id is not None:
+                        if op_id in seen_op_ids:
+                            continue
+                        seen_op_ids.add(op_id)
+
+                    op_type = op.get("operation_type") or op.get("operation_type_name") or ""
+                    if op_type not in self._ADV_OPERATION_TYPES:
                         continue
-                    seen_op_ids.add(op_id)
 
-                op_type = op.get("operation_type") or op.get("operation_type_name") or ""
-                if op_type not in self._ADV_OPERATION_TYPES:
-                    continue
+                    amount   = abs(float(op.get("amount", 0) or 0))
+                    op_date  = (op.get("operation_date") or chunk_from.isoformat())[:10]
+                    if amount > 0:
+                        daily[op_date] = daily.get(op_date, 0.0) + amount
 
-                amount   = abs(float(op.get("amount", 0) or 0))
-                op_date  = (op.get("operation_date") or date_from)[:10]
-                if amount > 0:
-                    daily[op_date] = daily.get(op_date, 0.0) + amount
-
-            page_count = (data.get("result") or {}).get("page_count") or 1
-            if page >= page_count or not operations:
-                break
-            page += 1
+                page_count = (data.get("result") or {}).get("page_count") or 1
+                if page >= page_count or not operations:
+                    break
+                page += 1
 
         results = [{"date": d, "adv_spend": round(v, 2)} for d, v in sorted(daily.items())]
         total = sum(r["adv_spend"] for r in results)
