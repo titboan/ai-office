@@ -32,7 +32,6 @@ from task_queue import get_active_tasks, get_recent_tasks
 from utils.loop_health import report_loop_failure, report_loop_success
 from agents import (
     MartaAgent,
-    KevinAgent,
     KasperAgent,
     PeterAgent,
     ElinaAgent,
@@ -100,11 +99,11 @@ async def _db_log_writer_loop() -> None:
 # Реестр: ключ → (класс агента, webhook-суффикс)
 AGENTS: dict[str, tuple] = {
     "marta":  (MartaAgent,  "marta"),
-    "kevin":  (KevinAgent,  "kevin"),
     "kasper": (KasperAgent, "kasper"),
     "peter":  (PeterAgent,  "peter"),
     "elina":  (ElinaAgent,  "elina"),
     "alex":   (AlexAgent,   "alex"),
+    # "kevin": (KevinAgent, "kevin"),  # заморожен 2026-07-04: ни разу не использовался за месяц работы (создание лендингов/PR через Claude Code сессии удобнее и с ревью)
     # "dan": (DanAgent, "dan"),  # заморожен: Pollinations.ai слишком медленный, заменить на DALL-E 3 если нужно
     # "eva": (EvaAgent, "eva"),  # заморожена: TELETHON_SESSION не получена, email-дайджест не актуален
     "max":    (MaxAgent,    "max"),

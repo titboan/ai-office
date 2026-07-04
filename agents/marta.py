@@ -114,10 +114,12 @@ MARTA_SYSTEM = """Ты — Марта, координатор ИИ-офиса.
 
 Команда:
 • kasper — исследователь (поиск, анализ)
-• kevin  — разработчик (код, GitHub, PR)
 • peter  — бизнес-аналитик WB+Ozon: продажи, маржа, ДРР, план поставок (/supply), заказ у поставщика (/order), настройки поставок (срок доставки, буфер запаса)
 • elina  — копирайтер (тексты, посты)
 • alex   — планировщик (roadmap, напоминания, Notion Tasks)
+
+Кевин (разработчик) временно заморожен — не делегируй ему, если спрашивают про код/сайт/PR,
+отвечай, что разработка сейчас недоступна.
 
 Правила:
 1. Специализированные задачи — делегируй нужному агенту.
@@ -127,7 +129,7 @@ MARTA_SYSTEM = """Ты — Марта, координатор ИИ-офиса.
 5. При делегировании ОБЯЗАТЕЛЬНО добавь блок:
 
 ##DELEGATE##
-agent: kasper/kevin/peter/elina/alex
+agent: kasper/peter/elina/alex
 task: конкретная задача для агента
 ##END##
 
@@ -169,7 +171,6 @@ class MartaAgent(BaseAgent):
         """Вернуть агента по ключу. Создаёт экземпляр при первом обращении."""
         if key not in self._agent_pool:
             # Импорт здесь, чтобы избежать циклических зависимостей на уровне модуля
-            from .kevin  import KevinAgent
             from .kasper import KasperAgent
             from .peter  import PeterAgent
             from .elina  import ElinaAgent
@@ -177,14 +178,13 @@ class MartaAgent(BaseAgent):
             from .max    import MaxAgent
 
             registry: dict[str, type[BaseAgent]] = {
-                "kevin":  KevinAgent,
                 "kasper": KasperAgent,
                 "peter":  PeterAgent,
                 "elina":  ElinaAgent,
                 "alex":   AlexAgent,
                 "max":    MaxAgent,
             }
-            if key in ("dan", "eva"):
+            if key in ("dan", "eva", "kevin"):
                 logger.warning(f"[Марта] Агент {key!r} заморожен — делегирование отклонено")
                 return None
             agent_cls = registry.get(key)
@@ -221,13 +221,14 @@ class MartaAgent(BaseAgent):
         "Ты планировщик задач. Определи нужна ли цепочка агентов.\n\n"
         "Доступные агенты:\n"
         "  kasper — исследование, поиск в интернете, анализ внешних данных\n"
-        "  kevin  — разработка: сайты, боты, скрипты, код, деплой, GitHub\n"
         "  peter  — аналитик магазина WB+Ozon: продажи, ДРР, ROAS, рентабельность, план поставок, заказ у поставщика, настройки срока доставки и буфера\n"
         "  elina  — тексты, посты, контент, копирайтинг\n"
         "  alex   — планирование, roadmap, задачи, Notion\n"
         "  max    — синхронизация данных магазина: отзывы, остатки, реклама WB/Ozon, товары\n\n"
-        "Дэн (дизайнер) временно отключён (заморожен) — НЕ включай его ни в одну цепочку,\n"
-        "даже если задача упоминает изображения/картинки для лендинга.\n\n"
+        "Дэн (дизайнер) и Кевин (разработчик — сайты, код, GitHub) временно отключены (заморожены) —\n"
+        "НЕ включай их ни в одну цепочку. Если запрос про создание сайта/лендинга/кода/PR — не пытайся\n"
+        "маршрутизировать на другого агента вместо них, верни clarification_needed с пояснением,\n"
+        "что разработка сейчас недоступна (Кевин заморожен).\n\n"
         "ПРАВИЛА ДЛЯ PETER (АНАЛИТИКА МАГАЗИНА):\n"
         "Peter — это аналитик НАШЕГО магазина на WB и Ozon. Он работает с реальными данными из БД.\n"
         "Всегда routing на peter (одиночный агент) для запросов:\n"
@@ -242,37 +243,23 @@ class MartaAgent(BaseAgent):
         "Каспер нужен только когда требуется реальный поиск ВНЕШНЕЙ информации:\n"
         "  - исследовать рынок / конкурентов в интернете\n"
         "  - найти внешние данные / статистику\n"
-        "  - изучить технологии перед разработкой\n"
-        "Каспер НЕ нужен для: аналитики нашего магазина, лендингов, кода, контента.\n\n"
-        "ПРАВИЛА ДЛЯ KEVIN:\n"
-        "Всегда включай kevin и ставь is_chain:true, needs_project_page:true если задача содержит:\n"
-        "  - создание сайта, лендинга, веб-интерфейса\n"
-        "  - написание бота, скрипта, приложения\n"
-        "  - любой код для деплоя или коммита в репо\n\n"
+        "Каспер НЕ нужен для: аналитики нашего магазина, контента.\n\n"
         "ПАРАЛЛЕЛЬНЫЕ ГРУППЫ:\n"
         "Добавляй поле 'group' (int) чтобы запустить агентов одновременно.\n"
         "Агенты с одинаковым group выполняются параллельно; следующий group стартует когда все готовы.\n"
-        "Пример: kasper(group:0) → elina(group:1) + kevin(group:1) → kevin(group:2 деплой)\n"
-        "Используй параллельность когда задачи независимы (тексты ≠ структура кода).\n\n"
+        "Используй параллельность когда задачи независимы.\n\n"
         "ТИПОВЫЕ ЦЕПОЧКИ:\n"
         "  Аналитика магазина / цели по обороту: [peter]\n"
-        "  Лендинг/сайт по готовому референсу или макету: [kevin]\n"
-        "  Лендинг с исследованием рынка: [kasper(group:0), kevin(group:1)]\n"
-        "  Лендинг: исследование → тексты → деплой: [kasper(0), elina(1), kevin(2)]\n"
-        "  Технический проект (бот, приложение): [kevin] или [kasper(0), kevin(1)]\n"
         "  Контентный проект: [elina] или [kasper(0), elina(1)]\n"
-        "  Бизнес-исследование внешнего рынка: [kasper(0), peter(1)]\n"
-        "  Полный проект (исследование + разработка): [kasper(0), kevin(1)]\n\n"
+        "  Бизнес-исследование внешнего рынка: [kasper(0), peter(1)]\n\n"
         "ПРАВИЛА ДЛЯ needs_project_page:\n"
-        "  true  — проект: сайт, бот, исследование рынка, продукт, приложение, контент-пакет\n"
+        "  true  — проект: исследование рынка, продукт, контент-пакет\n"
         "  false — разовый вопрос, справка, простая задача\n\n"
         "ПРАВИЛА ВЫБОРА АГЕНТА ДЛЯ is_chain:false:\n"
-        "  - сайт, лендинг, репозиторий, код, бот, деплой → agent: 'kevin'\n"
         "  - тексты, посты, контент → agent: 'elina'\n"
         "  - исследование, поиск данных → agent: 'kasper'\n"
         "  - бизнес-анализ, рынок → agent: 'peter'\n"
-        "  - планирование, roadmap → agent: 'alex'\n"
-        "ВАЖНО: для сайта/лендинга/кода НИКОГДА не указывай elina или других — только kevin.\n\n"
+        "  - планирование, roadmap → agent: 'alex'\n\n"
         "КОГДА НУЖНО УТОЧНЕНИЕ:\n"
         "Если запрос содержит write-операцию (изменить/обновить/удалить/поставить) без конкретики "
         "(не указан товар, цена, количество) — верни:\n"
@@ -289,7 +276,7 @@ class MartaAgent(BaseAgent):
             "Если нужна цепочка (2+ агентов) — верни JSON:\n"
             '{"is_chain": true, "needs_project_page": true, "steps": ['
             '{"agent": "kasper", "task": "исследуй конкурентов", "required": true}, '
-            '{"agent": "kevin", "task": "создай лендинг на основе исследования", "required": true}'
+            '{"agent": "elina", "task": "напиши тексты на основе исследования", "required": true}'
             "]}\n"
             "Если достаточно одного агента — верни:\n"
             '{"is_chain": false, "agent": "agent_key", "task": "..."}\n\n'
@@ -310,7 +297,7 @@ class MartaAgent(BaseAgent):
 
             # Защита от зомби-агентов: dan/eva заморожены (нет worker_loop в main.py),
             # задача, назначенная на них, зависла бы в очереди навсегда без таймаута.
-            _FROZEN_AGENTS = {"dan", "eva"}
+            _FROZEN_AGENTS = {"dan", "eva", "kevin"}
             if plan.get("is_chain"):
                 steps = plan.get("steps", [])
                 filtered = [s for s in steps if s.get("agent") not in _FROZEN_AGENTS]
@@ -1469,8 +1456,6 @@ class MartaAgent(BaseAgent):
             "ошибки и таймауты за сутки.\n\n"
             "🔍 **Каспер** — исследования и веб-поиск\n"
             "*«исследуй конкурентов», «найди статистику по рынку»*\n\n"
-            "👨‍💻 **Кевин** — разработка и GitHub\n"
-            "*«создай репозиторий», «напиши скрипт», «задеплой на Pages»*\n\n"
             "📊 **Питер** — аналитика маркетплейсов WB+Ozon\n"
             "*«отчёт по продажам», «ABC-анализ», «план поставок», «ДРР»*\n\n"
             "✍️ **Элина** — тексты и SEO-контент\n"
@@ -1501,10 +1486,7 @@ class MartaAgent(BaseAgent):
             InlineKeyboardButton("✍️ Контент",         callback_data="mmenu:content"),
         ],
         [
-            InlineKeyboardButton("👨‍💻 Разработка",     callback_data="mmenu:dev"),
             InlineKeyboardButton("🏛️ Тендеры",        callback_data="mmenu:tenders"),
-        ],
-        [
             InlineKeyboardButton("⚙️ Офис",           callback_data="mmenu:office"),
         ],
     ])
@@ -1544,9 +1526,6 @@ class MartaAgent(BaseAgent):
         "sync_returns": ("max", "__sync_returns__"),
         "sync_cards":   ("max", "__sync_cards__"),
         "sync_keywords":("max", "__sync_keywords__"),
-        # Кевин
-        "code":  ("kevin", "Реши задачу разработки"),
-        "plan":  ("kevin", "Составь план реализации фичи"),
         # Элина
         "write":       ("elina", "Напиши текст"),
         "post":        ("elina", "Напиши пост для маркетплейса или соцсетей"),
@@ -1656,14 +1635,6 @@ class MartaAgent(BaseAgent):
                 [InlineKeyboardButton("🔍 Исследование (Каспер)",      callback_data="mmenu_run:research")],
                 [InlineKeyboardButton("⏰ Напоминание (Алекс)",        callback_data="mmenu_run:remind")],
                 [InlineKeyboardButton("◀️ Назад",                      callback_data="mmenu:back")],
-            ],
-        ),
-        "dev": (
-            "👨‍💻 <b>Разработка — Кевин</b>\nВыбери действие:",
-            [
-                [InlineKeyboardButton("👨‍💻 Написать код / скрипт",   callback_data="mmenu_run:code")],
-                [InlineKeyboardButton("📋 Спланировать фичу",         callback_data="mmenu_run:plan")],
-                [InlineKeyboardButton("◀️ Назад",                     callback_data="mmenu:back")],
             ],
         ),
         "tenders": (
@@ -1883,8 +1854,6 @@ class MartaAgent(BaseAgent):
             BotCommand("margin", "📐 Проверить маржу товара"),
             BotCommand("apply_prices", "✅ Применить рекомендованные цены"),
             # ── Другие агенты ─────────────────────────────────────────────
-            BotCommand("code", "👨‍💻 Кевин: написать код"),
-            BotCommand("plan", "📋 Кевин: спланировать фичу"),
             BotCommand("write", "✍️ Элина: написать текст"),
             BotCommand("post", "📝 Элина: написать пост"),
             BotCommand("research", "🔍 Каспер: исследовать тему"),
@@ -2271,12 +2240,10 @@ class MartaAgent(BaseAgent):
     # ── Кевин ────────────────────────────────────────────────────────────────
 
     async def cmd_proxy_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        args = " ".join(context.args) if context.args else ""
-        await self._proxy_cmd(update, context, "kevin", f"Напиши код: {args}" if args else "Реши задачу разработки")
+        await update.message.reply_text("❄️ Кевин временно заморожен — команда недоступна.")
 
     async def cmd_proxy_plan(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        args = " ".join(context.args) if context.args else ""
-        await self._proxy_cmd(update, context, "kevin", f"Составь план реализации: {args}" if args else "Составь план реализации фичи")
+        await update.message.reply_text("❄️ Кевин временно заморожен — команда недоступна.")
 
     # ── Элина ────────────────────────────────────────────────────────────────
 
