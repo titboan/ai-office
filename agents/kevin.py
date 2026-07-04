@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import json
+import uuid
 
 from loguru import logger
-from telegram import Update
-from telegram.ext import CommandHandler, ContextTypes
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from config import config
 from tools import create_repo, create_file, create_branch, create_pull_request, enable_pages
 from utils.tg_rich import send_rich_or_fallback as _send_rich
 from .base_agent import BaseAgent
+
+# Критичные инструменты (ROADMAP Phase 9 — Approval Gates): "критичные (деплой, PR) —
+# только вручную". Кевин пишет и коммитит код автономно, но открытие реального PR
+# ждёт подтверждения кнопкой, а не выполняется молча внутри tool-use цикла.
+_CRITICAL_TOOLS = {"create_pr"}
+_PENDING_TTL = 1800  # 30 минут на подтверждение, потом состояние протухает
 
 
 KEVIN_SYSTEM = """Ты — Кевин, разработчик ИИ-офиса с доступом к GitHub.
@@ -191,30 +198,41 @@ class KevinAgent(BaseAgent):
         else:
             raise ValueError(f"Неизвестный инструмент: {tool_name}")
 
-    async def _execute_response(self, response) -> tuple[list[dict], str]:
-        """Выполнить tool_use блоки из ответа. Возвращает (tool_results, text)."""
+    async def _execute_response(self, content_blocks: list) -> tuple[list[dict], str]:
+        """Выполнить tool_use блоки. content_blocks — response.content живого цикла
+        (SDK-объекты) ИЛИ сериализованные dict-блоки, восстановленные из Redis после
+        подтверждения кнопкой (см. _handle_gate_callback) — поддерживаем оба варианта."""
         tool_results: list[dict] = []
         text = ""
-        for block in response.content:
-            if block.type == "text":
-                text = block.text
-            elif block.type == "tool_use":
+        for block in content_blocks:
+            b_type = block.type if hasattr(block, "type") else block.get("type")
+            if b_type == "text":
+                text = block.text if hasattr(block, "text") else block.get("text", "")
+            elif b_type == "tool_use":
+                name  = block.name  if hasattr(block, "name")  else block.get("name")
+                input_ = block.input if hasattr(block, "input") else block.get("input", {})
+                tool_use_id = block.id if hasattr(block, "id") else block.get("id")
                 try:
-                    result = await self._call_github_tool(block.name, block.input)
+                    result = await self._call_github_tool(name, input_)
                     tool_results.append({
                         "type": "tool_result",
-                        "tool_use_id": block.id,
+                        "tool_use_id": tool_use_id,
                         "content": result,
                     })
                 except Exception as e:
-                    logger.error(f"kevin_tool_error | tool={block.name} | error={e}")
+                    logger.error(f"kevin_tool_error | tool={name} | error={e}")
                     tool_results.append({
                         "type": "tool_result",
-                        "tool_use_id": block.id,
+                        "tool_use_id": tool_use_id,
                         "content": f"Ошибка: {e}",
                         "is_error": True,
                     })
         return tool_results, text
+
+    @staticmethod
+    def _serialize_blocks(content_blocks: list) -> list[dict]:
+        """SDK-блоки ответа Claude → plain dict, чтобы messages можно было сохранить в Redis (JSON)."""
+        return [b.model_dump() if hasattr(b, "model_dump") else b for b in content_blocks]
 
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
         """Написать код и выполнить GitHub операции через agentic tool_use loop."""
@@ -225,10 +243,16 @@ class KevinAgent(BaseAgent):
             f"GitHub username: {config.GITHUB_USERNAME}\n"
             f"Создай полноценный проект: репо, ветку feature/..., закоммить файлы, открой PR."
         )}]
+        return await self._run_tool_loop(messages, iteration_start=1)
+
+    async def _run_tool_loop(self, messages: list[dict], iteration_start: int) -> str:
+        """Тело agentic tool_use цикла. Вынесено из handle_task, чтобы можно было
+        возобновить цикл после подтверждения критичного действия кнопкой
+        (см. _handle_gate_callback) — тем же кодом, с той же точки."""
         final_text = ""
 
         try:
-            for iteration in range(1, 11):
+            for iteration in range(iteration_start, 11):
                 response = await self.claude.messages.create(
                     model=config.CLAUDE_MODEL,
                     max_tokens=16000,
@@ -251,11 +275,18 @@ class KevinAgent(BaseAgent):
                                 f"input={json.dumps(block.input, ensure_ascii=False)[:200]}"
                             )
 
-                    tool_results, text = await self._execute_response(response)
+                    critical_block = next(
+                        (b for b in response.content if b.type == "tool_use" and b.name in _CRITICAL_TOOLS),
+                        None,
+                    )
+                    if critical_block is not None:
+                        return await self._request_gate_confirmation(messages, response, iteration, critical_block)
+
+                    tool_results, text = await self._execute_response(response.content)
                     if text:
                         final_text = text
 
-                    messages.append({"role": "assistant", "content": response.content})
+                    messages.append({"role": "assistant", "content": self._serialize_blocks(response.content)})
                     messages.append({"role": "user", "content": tool_results})
                 else:
                     logger.warning(f"[Кевин] stop_reason={response.stop_reason!r} — выход из цикла")
@@ -265,8 +296,75 @@ class KevinAgent(BaseAgent):
             logger.error(f"[Кевин] Claude API error: {e}")
             return f"⚠️ Ошибка вызова Claude: {e}"
 
-        await self.post_to_group(f"💻 Кевин выполнил задачу: {task[:80]}")
+        await self.post_to_group(f"💻 Кевин выполнил задачу: {final_text[:80] if final_text else ''}")
         return final_text or "Задача выполнена."
+
+    async def _request_gate_confirmation(self, messages, response, iteration: int, critical_block) -> str:
+        """Критичный инструмент (сейчас: create_pr) запрошен Клодом — не выполняем молча,
+        сохраняем состояние цикла в Redis и ждём подтверждения кнопкой в Telegram."""
+        chat_id = getattr(self, "_current_chat_id", None)
+        key = uuid.uuid4().hex[:12]
+        state = {
+            "messages": messages,
+            "response_content": self._serialize_blocks(response.content),
+            "iteration": iteration,
+        }
+        await self._redis_set(f"kevin_pending:{key}", json.dumps(state, ensure_ascii=False), ttl=_PENDING_TTL)
+
+        repo  = critical_block.input.get("repo", "")
+        title = critical_block.input.get("title", "")
+        logger.info(f"[Кевин] critical_tool={critical_block.name} repo={repo!r} title={title!r} → ждём подтверждения")
+
+        if chat_id:
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Создать PR", callback_data=f"kevin_pr:confirm:{key}"),
+                InlineKeyboardButton("❌ Отменить",   callback_data=f"kevin_pr:cancel:{key}"),
+            ]])
+            try:
+                await self.app.bot.send_message(
+                    chat_id,
+                    f"🔀 Кевин хочет открыть Pull Request\n<b>{repo}</b> — {title}\nПодтвердить?",
+                    parse_mode="HTML",
+                    reply_markup=kb,
+                )
+            except Exception as e:
+                logger.error(f"[Кевин] не удалось отправить запрос подтверждения: {e}")
+
+        return f"⏳ Жду подтверждения создания PR: {title}"
+
+    async def _handle_gate_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        await query.answer()
+        _, action, key = query.data.split(":", 2)
+        redis_key = f"kevin_pending:{key}"
+
+        raw = await self._redis_get(redis_key)
+        if not raw:
+            await query.edit_message_text("⏳ Запрос устарел или уже обработан.")
+            return
+        await self._redis_set(redis_key, "", ttl=1)  # снимаем сразу — не обработать дважды
+
+        if action == "cancel":
+            await query.edit_message_text("❌ Создание PR отменено.")
+            return
+
+        await query.edit_message_text("⏳ Создаю PR…")
+        state = json.loads(raw)
+        messages = state["messages"]
+        content_blocks = state["response_content"]
+
+        tool_results, text = await self._execute_response(content_blocks)
+        messages.append({"role": "assistant", "content": content_blocks})
+        messages.append({"role": "user", "content": tool_results})
+
+        chat_id = query.message.chat_id
+        self._current_chat_id = chat_id
+        final_text = await self._run_tool_loop(messages, iteration_start=state["iteration"] + 1)
+
+        try:
+            await self.app.bot.send_message(chat_id, final_text or "Готово.")
+        except Exception as e:
+            logger.error(f"[Кевин] не удалось отправить результат после подтверждения PR: {e}")
 
     async def cmd_code(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -280,6 +378,7 @@ class KevinAgent(BaseAgent):
             )
             return
         await update.message.reply_text("👨‍💻 Пишу код и создаю PR…")
+        self._current_chat_id = update.effective_chat.id
         result = await self.handle_task(task, from_agent="команды /code")
         await _send_rich(self.bot_token, update.effective_chat.id, result)
 
@@ -303,3 +402,4 @@ class KevinAgent(BaseAgent):
 
     def _register_extra_handlers(self) -> None:
         self.app.add_handler(CommandHandler("code", self.cmd_code))
+        self.app.add_handler(CallbackQueryHandler(self._handle_gate_callback, pattern=r"^kevin_pr:"))
