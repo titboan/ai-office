@@ -16,6 +16,7 @@ export interface DayRevenue { date: string; wb: number; ozon: number }
 
 export interface NetMarginRow {
   product_name: string
+  wb_article: string | null; ozon_offer_id: string | null
   qty_wb: number; payout_wb: number; net_profit_wb: number; net_margin_pct_wb: number | null
   recommended_price_wb: number | null; at_target_wb: boolean
   qty_ozon: number; payout_ozon: number; net_profit_ozon: number; net_margin_pct_ozon: number | null
@@ -95,6 +96,24 @@ export async function fetchDashboard(days = 14): Promise<DashboardData> {
 
   const tokenParam = urlToken ? `&token=${encodeURIComponent(urlToken)}` : ''
   const res = await fetch(`${API_URL}/api/dashboard?days=${days}${tokenParam}`, { headers })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json()
+}
+
+// Пишущее действие — только настоящий Telegram initData, без ?token= (та ссылка read-only
+// для коллег, не должна давать право менять цену на маркетплейсе от имени владельца).
+export async function applyPrice(
+  marketplace: 'wb' | 'ozon', productId: string, newPrice: number
+): Promise<{ ok: boolean }> {
+  const tg = (window as any).Telegram?.WebApp
+  const res = await fetch(`${API_URL}/api/apply_price`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Telegram-Init-Data': tg?.initData ?? '',
+    },
+    body: JSON.stringify({ marketplace, product_id: productId, new_price: newPrice }),
+  })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   return res.json()
 }

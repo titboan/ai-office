@@ -907,11 +907,51 @@ async def run_all_async() -> None:
             return web.Response(status=500, text="Internal Error", headers=cors)
         return web.json_response({"chains": result_chains}, headers=cors)
 
+    async def _handle_apply_price(request: web.Request) -> web.Response:
+        """POST /api/apply_price — применить рекомендованную цену прямо с дашборда.
+
+        Только настоящий Telegram initData, без ?token= (та ссылка — read-only доступ для
+        коллег, она не должна давать право на реальную запись цены на маркетплейс от имени
+        владельца). Само применение — тот же MaxAgent._apply_price, что и кнопка "Применить"
+        в /reprice, поэтому поведение (какой API дёргается, что обновляется в БД) идентично.
+        """
+        cors = {"Access-Control-Allow-Origin": _CORS_ORIGIN}
+        if request.method == "OPTIONS":
+            return web.Response(headers={
+                **cors,
+                "Access-Control-Allow-Headers": "X-Telegram-Init-Data, Content-Type",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+            })
+        init_data = request.headers.get("X-Telegram-Init-Data", "")
+        parsed = _validate_init_data(init_data, config.MARTA_BOT_TOKEN)
+        if parsed is None:
+            return web.Response(status=401, text="Unauthorized", headers=cors)
+        try:
+            user = _json.loads(parsed.get("user", "{}"))
+            chat_id = int(user["id"])
+        except Exception:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if max_agent is None:
+            return web.Response(status=503, text="Max agent not running", headers=cors)
+        try:
+            body = await request.json()
+            mp = body.get("marketplace")
+            product_id = str(body.get("product_id", "")).strip()
+            new_price = int(body.get("new_price"))
+        except Exception:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if mp not in ("wb", "ozon") or not product_id or new_price <= 0:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        ok = await max_agent._apply_price(chat_id, mp, product_id, new_price)
+        return web.json_response({"ok": ok}, headers=cors)
+
     dash_app = web.Application()
     dash_app.router.add_get("/api/dashboard", _handle_dashboard)
     dash_app.router.add_route("OPTIONS", "/api/dashboard", _handle_dashboard)
     dash_app.router.add_get("/api/timeline", _handle_timeline)
     dash_app.router.add_route("OPTIONS", "/api/timeline", _handle_timeline)
+    dash_app.router.add_post("/api/apply_price", _handle_apply_price)
+    dash_app.router.add_route("OPTIONS", "/api/apply_price", _handle_apply_price)
     dash_app.router.add_get("/health", lambda r: web.Response(text="ok"))
     dash_runner = web.AppRunner(dash_app)
     await dash_runner.setup()

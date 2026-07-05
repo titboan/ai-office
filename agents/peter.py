@@ -363,7 +363,9 @@ class PeterAgent(BaseAgent):
                     SUM(f.quantity) FILTER (WHERE f.marketplace = 'ozon')::int          AS qty_ozon,
                     SUM(f.payout)   FILTER (WHERE f.marketplace = 'ozon')::numeric(12,2) AS payout_ozon,
                     COALESCE(MAX(c.cost) FILTER (WHERE c.marketplace = 'wb'), 0)::numeric(12,2)   AS cost_wb,
-                    COALESCE(MAX(c.cost) FILTER (WHERE c.marketplace = 'ozon'), 0)::numeric(12,2) AS cost_ozon
+                    COALESCE(MAX(c.cost) FILTER (WHERE c.marketplace = 'ozon'), 0)::numeric(12,2) AS cost_ozon,
+                    MAX(m.wb_article)   AS wb_article,
+                    MAX(m.ozon_offer_id) AS ozon_offer_id
                 FROM marketplace_financial_report f
                 LEFT JOIN product_mapping m
                        -- WB: sa_name (wb_article) или nm_id (wb_nm_id) — зависит от того, что пришло в API
@@ -443,6 +445,8 @@ class PeterAgent(BaseAgent):
 
                 net_margin.append({
                     "product_name": r["product_name"],
+                    "wb_article": r["wb_article"],
+                    "ozon_offer_id": r["ozon_offer_id"],
                     "qty_wb": qty_wb, "payout_wb": float(payout_wb),
                     "net_profit_wb": round(profit_wb, 2),
                     "net_margin_pct_wb": margin_pct_wb,
