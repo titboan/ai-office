@@ -1,6 +1,7 @@
 import { TrendRow } from '../api'
 import Card from '../components/Card'
-import { marketplaceLabel, trendColorClass } from '../theme'
+import MarketplaceBadge from '../components/MarketplaceBadge'
+import { trendColorClass } from '../theme'
 
 function pct(current: number, prev: number) {
   if (!prev) return null
@@ -21,7 +22,7 @@ export default function WowTrend({ data }: { data: TrendRow[] }) {
           const v = pct(row.week_current, row.week_prev)
           return (
             <div key={row.marketplace} className="flex-1 text-center">
-              <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">{marketplaceLabel(row.marketplace)}</div>
+              <div className="text-xs text-gray-500 dark:text-gray-400 mb-1 justify-center flex"><MarketplaceBadge marketplace={row.marketplace} /></div>
               <div className={`text-xl font-bold ${trendColorClass(v)}`}>{arrow(v)}</div>
               <div className="text-xs text-gray-400 dark:text-gray-500 mt-1">
                 {(row.week_current / 1000).toFixed(0)}к / {(row.week_prev / 1000).toFixed(0)}к ₽

@@ -1,3 +1,4 @@
+import { Workflow } from 'lucide-react'
 import { ChainRun, TimelineEvent } from '../api'
 import Card from '../components/Card'
 
@@ -47,7 +48,7 @@ function buildAgentSteps(events: TimelineEvent[]): Array<{ key: string; status: 
 
 export default function ChainTimeline({ chains }: { chains: ChainRun[] }) {
   return (
-    <Card title={<span className="text-gray-700 dark:text-gray-200">⚡ Последние цепочки</span>}>
+    <Card title={<span className="text-gray-700 dark:text-gray-200 flex items-center gap-1.5"><Workflow size={15} /> Последние цепочки</span>}>
       <div className="space-y-3">
       {chains.length === 0 && (
         <div className="text-sm text-gray-400 dark:text-gray-500">Нет данных за последние 7 дней</div>

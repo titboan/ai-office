@@ -1,3 +1,4 @@
+import { Layers } from 'lucide-react'
 import { AbcRow } from '../api'
 import Card from '../components/Card'
 
@@ -22,7 +23,7 @@ export default function AbcTable({ data }: { data: AbcRow[] }) {
 
   return (
     <Card
-      title={<span className="text-gray-700 dark:text-gray-200">🔤 ABC-анализ</span>}
+      title={<span className="text-gray-700 dark:text-gray-200 flex items-center gap-1.5"><Layers size={15} /> ABC-анализ</span>}
       headerExtra={
         <div className="flex gap-1 text-xs">
           <span className={`px-2 py-0.5 rounded-full font-medium ${GROUP_STYLE.A}`}>A: {countA}</span>

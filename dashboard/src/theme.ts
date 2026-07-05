@@ -3,8 +3,8 @@
 // при следующем изменении порога/цвета правим один раз здесь.
 
 export const MARKETPLACE = {
-  wb:   { label: '🟣 WB',   color: '#7c3aed' },
-  ozon: { label: '🔵 Ozon', color: '#2563eb' },
+  wb:   { label: 'WB',   color: '#7c3aed' },
+  ozon: { label: 'Ozon', color: '#2563eb' },
 } as const
 
 export type MarketplaceKey = keyof typeof MARKETPLACE

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { LayoutDashboard, AlertCircle } from 'lucide-react'
 import { fetchDashboard, fetchTimeline, DashboardData, TimelineData } from './api'
 import RevenueChart from './charts/RevenueChart'
 import TopProducts from './charts/TopProducts'
@@ -75,10 +76,13 @@ export default function App() {
   ] : []
 
   return (
-    <div className="min-h-screen p-3 space-y-3" style={{ background: 'var(--tg-theme-bg-color, #f5f5f5)' }}>
+    <div
+      className="min-h-screen p-3 space-y-3 md:max-w-3xl lg:max-w-5xl md:mx-auto"
+      style={{ background: 'var(--tg-theme-bg-color, #f5f5f5)' }}
+    >
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-base font-bold">📊 Дашборд</h1>
+        <h1 className="text-base font-bold flex items-center gap-1.5"><LayoutDashboard size={18} /> Дашборд</h1>
         <div className="flex gap-1">
           {([7, 14, 30] as Days[]).map(d => (
             <button
@@ -99,15 +103,15 @@ export default function App() {
       )}
 
       {error && (
-        <div className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-xl p-4 text-sm">
-          ❌ {error}
+        <div className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-xl p-4 text-sm flex items-center gap-1.5">
+          <AlertCircle size={16} className="shrink-0" /> {error}
         </div>
       )}
 
       {data && !loading && (
         <>
-          {/* KPI cards — 6 штук, 2 строки по 3 */}
-          <div className="grid grid-cols-3 gap-2">
+          {/* KPI cards — 6 штук: 2 строки по 3 на мобильном, 1 строка на десктопе */}
+          <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
             {kpiCards.map(({ label, value, color }) => (
               <div key={label} className="bg-white dark:bg-gray-800 rounded-xl p-3 shadow-sm text-center">
                 <div className="text-xs text-gray-500 dark:text-gray-400">{label}</div>
@@ -116,44 +120,48 @@ export default function App() {
             ))}
           </div>
 
-          {/* WoW тренд по маркетплейсам */}
-          <WowTrend data={data.trend} />
+          {/* На мобильном — один столбец (как раньше); от md — сетка в 2-3 колонки,
+              чтобы широкий экран не растягивал узкую телефонную вёрстку. */}
+          <div className="space-y-3 md:space-y-0 md:grid md:grid-cols-2 lg:grid-cols-3 md:gap-3 md:items-start">
+            {/* WoW тренд по маркетплейсам */}
+            <WowTrend data={data.trend} />
 
-          {/* Выручка по дням (линия заказов + область выкупов) */}
-          <RevenueChart data={data.revenue_by_day} sales={data.sales_by_day ?? []} />
+            {/* Выручка по дням (линия заказов + область выкупов) */}
+            <RevenueChart data={data.revenue_by_day} sales={data.sales_by_day ?? []} />
 
-          {/* Топ товаров */}
-          <TopProducts data={data.top_products} />
+            {/* Топ товаров */}
+            <TopProducts data={data.top_products} />
 
-          {/* ДРР по площадкам */}
-          <DrrGauge adv={data.adv} salesByDay={data.revenue_by_day ?? []} />
+            {/* ДРР по площадкам */}
+            <DrrGauge adv={data.adv} salesByDay={data.revenue_by_day ?? []} />
 
-          {/* Рентабельность (NET-маржа) */}
-          <MarginChart data={data.net_margin ?? []} />
+            {/* Рентабельность (NET-маржа) */}
+            <MarginChart data={data.net_margin ?? []} />
 
-          {/* NET маржа из реальных выплат */}
-          <NetMarginTable data={data.net_margin ?? []} />
+            {/* NET маржа из реальных выплат */}
+            <NetMarginTable data={data.net_margin ?? []} />
 
-          {/* Воронка конверсии */}
-          <FunnelChart data={data.funnel ?? []} />
+            {/* Воронка конверсии */}
+            <FunnelChart data={data.funnel ?? []} />
 
-          {/* CTR и ROAS по товарам */}
-          <CtrRoas data={data.product_metrics} />
+            {/* CTR и ROAS по товарам */}
+            <CtrRoas data={data.product_metrics} />
 
-          {/* Возвраты */}
-          <ReturnsTable data={data.returns_top ?? []} />
+            {/* Возвраты */}
+            <ReturnsTable data={data.returns_top ?? []} />
 
-          {/* Остатки */}
-          <StockTable data={data.stock_velocity} />
+            {/* Остатки */}
+            <StockTable data={data.stock_velocity} />
 
-          {/* ABC-анализ */}
-          <AbcTable data={data.abc_data ?? []} />
+            {/* ABC-анализ */}
+            <AbcTable data={data.abc_data ?? []} />
 
-          {/* MoM динамика */}
-          <MomChart data={data.mom_trends ?? []} />
+            {/* MoM динамика */}
+            <MomChart data={data.mom_trends ?? []} />
 
-          {/* Таймлайн цепочек агентов */}
-          {timeline && <ChainTimeline chains={timeline.chains} />}
+            {/* Таймлайн цепочек агентов */}
+            {timeline && <ChainTimeline chains={timeline.chains} />}
+          </div>
 
           <div className="text-center text-xs text-gray-400 dark:text-gray-500 pb-2">
             За {data.period_days} дней с {data.date_from}

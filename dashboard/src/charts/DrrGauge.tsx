@@ -1,6 +1,7 @@
 import { AdvRow, DayRevenue } from '../api'
 import Card from '../components/Card'
-import { MARKETPLACE, drrColorClass } from '../theme'
+import MarketplaceBadge from '../components/MarketplaceBadge'
+import { drrColorClass } from '../theme'
 
 function drr(buyouts: number, spend: number) {
   if (!buyouts) return null
@@ -20,9 +21,9 @@ export default function DrrGauge({ adv, salesByDay }: { adv: AdvRow[]; salesByDa
   return (
     <Card title="ДРР по площадкам">
       <div className="flex gap-4">
-        {[{ label: MARKETPLACE.wb.label, ...wb }, { label: MARKETPLACE.ozon.label, ...ozon }].map(({ label, buyouts, s, drr: d }) => (
-          <div key={label} className="flex-1 text-center">
-            <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">{label}</div>
+        {[{ marketplace: 'wb', ...wb }, { marketplace: 'ozon', ...ozon }].map(({ marketplace, buyouts, s, drr: d }) => (
+          <div key={marketplace} className="flex-1 text-center">
+            <div className="text-xs text-gray-500 dark:text-gray-400 mb-1 justify-center flex"><MarketplaceBadge marketplace={marketplace} /></div>
             <div className={`text-2xl font-bold ${drrColorClass(d)}`}>
               {d !== null ? `${d.toFixed(1)}%` : '—'}
             </div>

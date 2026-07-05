@@ -1,6 +1,7 @@
 import { StockVelocity } from '../api'
 import Card from '../components/Card'
-import { marketplaceLabel, stockBarClass, stockColorClass } from '../theme'
+import MarketplaceBadge from '../components/MarketplaceBadge'
+import { stockBarClass, stockColorClass } from '../theme'
 
 // Шкала прогресс-бара: 30 дней = полная полоса, 999 (нет продаж) — особый случай
 const SCALE_DAYS = 30
@@ -52,7 +53,7 @@ export default function StockTable({ data }: { data: StockVelocity[] }) {
                   key={mp.marketplace}
                   className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-gray-50 dark:bg-gray-900/40 text-gray-500 dark:text-gray-400"
                 >
-                  {marketplaceLabel(mp.marketplace)} · {mp.stock} шт
+                  <MarketplaceBadge marketplace={mp.marketplace} /> · {mp.stock} шт
                 </span>
               ))}
             </div>
