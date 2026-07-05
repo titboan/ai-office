@@ -1,11 +1,28 @@
 import { useState } from 'react'
-import { NetMarginRow, applyPrice } from '../api'
+import { NetMarginRow, AbcRow, applyPrice } from '../api'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
+import AbcBadge from '../components/AbcBadge'
 import { MARGIN_TARGET_PCT, marginColorClass as marginColor } from '../theme'
 import { useMainButtonAction } from '../hooks/useMainButtonAction'
 
 const fmt = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}к` : v.toLocaleString()
+
+// ABC-строки считаются по product_id (WB/Ozon раздельно), а NetMarginTable — по общему
+// названию товара. Один и тот же товар может встретиться в abc_data дважды (WB и Ozon
+// строка) — берём "лучшую" из групп (A важнее B важнее C), чтобы не смотреть отдельно
+// в две карточки дашборда в поисках "какой товар из группы A даёт минус".
+function bestAbcGroupByName(abcData: AbcRow[]): Record<string, 'A' | 'B' | 'C'> {
+  const rank = { A: 0, B: 1, C: 2 }
+  const result: Record<string, 'A' | 'B' | 'C'> = {}
+  for (const row of abcData) {
+    const name = row.name
+    if (!result[name] || rank[row.group] < rank[result[name]]) {
+      result[name] = row.group
+    }
+  }
+  return result
+}
 
 type Pending = { key: string; marketplace: 'wb' | 'ozon'; productId: string; price: number }
 type RowStatus = 'applied' | 'error'
@@ -47,9 +64,10 @@ function MarginCell({ pct, atTarget, recPrice, selectable, selected, applied, fa
   return <td className={`text-right py-1.5 ${marginColor(pct)}`}>{pct}%</td>
 }
 
-export default function NetMarginTable({ data }: { data: NetMarginRow[] }) {
+export default function NetMarginTable({ data, abcData = [] }: { data: NetMarginRow[]; abcData?: AbcRow[] }) {
   const [pending, setPending] = useState<Pending | null>(null)
   const [status, setStatus] = useState<Record<string, RowStatus>>({})
+  const abcGroupByName = bestAbcGroupByName(abcData)
 
   useMainButtonAction(
     pending,
@@ -75,7 +93,7 @@ export default function NetMarginTable({ data }: { data: NetMarginRow[] }) {
   }
   const rows = [...data].sort((a, b) => b.net_profit_total - a.net_profit_total)
   return (
-    <Card title="NET маржа (реальные выплаты)" subtitle={`Цель: ${MARGIN_TARGET_PCT}% · ✓ норма · % → цена₽ = рекомендация · нажми на цену чтобы применить`}>
+    <Card title="NET маржа (реальные выплаты)" subtitle={`Цель: ${MARGIN_TARGET_PCT}% · A/B/C = вклад в выручку · ✓ норма · % → цена₽ = рекомендация · нажми на цену чтобы применить`}>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
@@ -95,7 +113,12 @@ export default function NetMarginTable({ data }: { data: NetMarginRow[] }) {
               const keyOzon = `${i}-ozon`
               return (
                 <tr key={i} className="border-b border-gray-100 dark:border-gray-700">
-                  <td className="py-1.5 pr-2 font-medium">{r.product_name}</td>
+                  <td className="py-1.5 pr-2 font-medium">
+                    <span className="inline-flex items-center gap-1">
+                      {abcGroupByName[r.product_name] && <AbcBadge group={abcGroupByName[r.product_name]} />}
+                      {r.product_name}
+                    </span>
+                  </td>
                   <td className="text-right py-1.5">{r.qty_wb || '—'}</td>
                   <MarginCell
                     pct={r.qty_wb ? r.net_margin_pct_wb : null}

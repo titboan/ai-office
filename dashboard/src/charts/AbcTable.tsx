@@ -2,6 +2,7 @@ import { Layers } from 'lucide-react'
 import { AbcRow } from '../api'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
+import AbcBadge from '../components/AbcBadge'
 
 const GROUP_STYLE: Record<string, string> = {
   A: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
@@ -69,9 +70,7 @@ export default function AbcTable({ data }: { data: AbcRow[] }) {
                   {row.cumulative_pct}%
                 </td>
                 <td className="py-1.5 text-center">
-                  <span className={`px-1.5 py-0.5 rounded font-bold ${GROUP_STYLE[row.group]}`}>
-                    {row.group}
-                  </span>
+                  <AbcBadge group={row.group} />
                 </td>
               </tr>
             ))}

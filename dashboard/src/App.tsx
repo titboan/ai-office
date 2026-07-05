@@ -175,7 +175,7 @@ export default function App() {
             <MarginChart data={data.net_margin ?? []} />
 
             {/* NET маржа из реальных выплат */}
-            <NetMarginTable data={data.net_margin ?? []} />
+            <NetMarginTable data={data.net_margin ?? []} abcData={data.abc_data ?? []} />
 
             {/* Предложения по ставкам рекламы (ДРР) */}
             <BidSuggestions data={data.bid_suggestions ?? []} />
