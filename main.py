@@ -20,6 +20,7 @@ import os
 import queue as _thread_queue
 import signal
 import threading
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from urllib.parse import parse_qsl
 
@@ -119,11 +120,56 @@ def _unique_chats(shops: list[dict]) -> list[int]:
     return list({s["chat_id"] for s in shops})
 
 
-def _days_until_next_monday(now, hour: int) -> int:
-    d = (7 - now.weekday()) % 7
-    if d == 0 and now.hour >= hour:
-        d = 7
-    return d
+def _wait_interval(seconds: float):
+    """Фиксированный интервал (мониторинг отзывов/вопросов и т.п.)."""
+    return lambda: seconds
+
+
+def _wait_daily_utc(hour: int, minute: int = 0):
+    """Ближайшее наступление hour:minute UTC — сегодня, если ещё не прошло, иначе завтра."""
+    def _compute() -> float:
+        now = datetime.now(timezone.utc)
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        return (target - now).total_seconds()
+    return _compute
+
+
+def _wait_weekly_utc(weekday: int, hour: int, minute: int = 0):
+    """Ближайшее наступление hour:minute UTC в день недели weekday
+    (0=понедельник … 6=воскресенье, как datetime.weekday())."""
+    def _compute() -> float:
+        now = datetime.now(timezone.utc)
+        days_until = (weekday - now.weekday()) % 7
+        if days_until == 0 and (now.hour > hour or (now.hour == hour and now.minute >= minute)):
+            days_until = 7
+        target = (now + timedelta(days=days_until)).replace(
+            hour=hour, minute=minute, second=0, microsecond=0
+        )
+        return (target - now).total_seconds()
+    return _compute
+
+
+async def run_scheduled_loop(name: str, next_wait_seconds, task_fn, error_sleep: float = 60) -> None:
+    """Общий раннер фонового цикла — убирает копипаст try/sleep/except из ~18 циклов main.py.
+
+    next_wait_seconds — callable без аргументов, вызывается заново на каждой итерации
+    (время до "следующего понедельника" каждый раз разное). task_fn — корутина-функция
+    без аргументов с самой работой цикла. При ошибке — лог + пауза error_sleep, процесс
+    не падает (как было в каждом цикле по отдельности)."""
+    while True:
+        try:
+            wait_seconds = next_wait_seconds()
+            if wait_seconds > 0:
+                logger.info(f"[{name}] следующий запуск через {wait_seconds/3600:.1f} ч")
+                await asyncio.sleep(wait_seconds)
+            await task_fn()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"[{name}] критическая ошибка: {e}")
+            await asyncio.sleep(error_sleep)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -236,701 +282,461 @@ async def run_all_async() -> None:
     if marta_agent is not None and elina_agent is not None:
         marta_agent._elina_agent = elina_agent
 
-    async def _scheduled_reviews_loop():
+    async def _reviews_task():
         """Обработка всех отзывов каждые 15 минут."""
         from db import get_all_active_shops
 
-        _INTERVAL = 15 * 60
-
-        while True:
+        if max_agent is None:
+            return
+        shops = await get_all_active_shops()
+        unique_chats = _unique_chats(shops)
+        for chat_id in unique_chats:
             try:
-                await asyncio.sleep(_INTERVAL)
-
-                if max_agent is None:
-                    continue
-
-                shops = await get_all_active_shops()
-                unique_chats = _unique_chats(shops)
-                for chat_id in unique_chats:
-                    try:
-                        await max_agent.process_reviews(chat_id)
-                        report_loop_success(f"reviews:{chat_id}")
-                    except Exception as e:
-                        logger.error(f"[reviews_scheduler] chat={chat_id} error: {e}")
-                        await report_loop_failure(f"reviews:{chat_id}", e)
-            except asyncio.CancelledError:
-                break
+                await max_agent.process_reviews(chat_id)
+                report_loop_success(f"reviews:{chat_id}")
             except Exception as e:
-                logger.error(f"[reviews_scheduler] ошибка: {e}")
-                await asyncio.sleep(60)
+                logger.error(f"[reviews_scheduler] chat={chat_id} error: {e}")
+                await report_loop_failure(f"reviews:{chat_id}", e)
 
-    reviews_task = asyncio.create_task(_scheduled_reviews_loop())
+    reviews_task = asyncio.create_task(
+        run_scheduled_loop("reviews_scheduler", _wait_interval(15 * 60), _reviews_task)
+    )
 
-    async def _scheduled_adv_sync_loop():
-        """Синхронизация рекламной статистики WB + Ozon раз в сутки в 06:00 UTC."""
-        from datetime import datetime, timezone, timedelta
+    async def _adv_sync_task():
+        """Синхронизация рекламной статистики WB + Ozon раз в сутки в 03:00 UTC (06:00 МСК)."""
         from db import get_all_active_shops
 
-        while True:
+        if max_agent is None:
+            return
+        shops = await get_all_active_shops()
+        unique_chats = _unique_chats(shops)
+        for chat_id in unique_chats:
             try:
-                now = datetime.now(timezone.utc)
-                # Следующий запуск в 03:00 UTC (06:00 МСК) — до утренней сводки
-                target = now.replace(hour=3, minute=0, second=0, microsecond=0)
-                if target <= now:
-                    target += timedelta(days=1)
-                wait_seconds = (target - now).total_seconds()
-                logger.info(f"[adv_sync] следующий запуск через {wait_seconds/3600:.1f} ч")
-                await asyncio.sleep(wait_seconds)
-
-                if max_agent is None:
-                    continue
-
-                shops = await get_all_active_shops()
-                unique_chats = _unique_chats(shops)
-
-                for chat_id in unique_chats:
-                    try:
-                        await max_agent.sync_ad_stats(chat_id)
-                        logger.info(f"[adv_sync] chat_id={chat_id} завершено")
-                        await max_agent._check_drr_alerts(chat_id)
-                        report_loop_success(f"adv_sync:{chat_id}")
-                    except Exception as e:
-                        logger.error(f"[adv_sync] chat_id={chat_id} ошибка: {e}")
-                        await report_loop_failure(f"adv_sync:{chat_id}", e)
-
-            except asyncio.CancelledError:
-                break
+                await max_agent.sync_ad_stats(chat_id)
+                logger.info(f"[adv_sync] chat_id={chat_id} завершено")
+                await max_agent._check_drr_alerts(chat_id)
+                report_loop_success(f"adv_sync:{chat_id}")
             except Exception as e:
-                logger.error(f"[adv_sync] критическая ошибка: {e}")
-                await asyncio.sleep(60)
+                logger.error(f"[adv_sync] chat_id={chat_id} ошибка: {e}")
+                await report_loop_failure(f"adv_sync:{chat_id}", e)
 
-    asyncio.create_task(_scheduled_adv_sync_loop())
+    asyncio.create_task(
+        run_scheduled_loop("adv_sync", _wait_daily_utc(3, 0), _adv_sync_task)
+    )
 
-    async def _scheduled_fin_sync_loop():
+    async def _fin_sync_task():
         """Еженедельный финотчёт — воскресенье 01:30 UTC (04:30 МСК)."""
-        from datetime import datetime, timezone, timedelta
         from db import get_all_active_shops
 
-        while True:
+        if max_agent is None:
+            return
+        shops = await get_all_active_shops()
+        unique_chats = _unique_chats(shops)
+        for chat_id in unique_chats:
             try:
-                now = datetime.now(timezone.utc)
-                # weekday(): 0=пн … 6=вс
-                days_until_sunday = (6 - now.weekday()) % 7
-                if days_until_sunday == 0 and (now.hour > 1 or (now.hour == 1 and now.minute >= 30)):
-                    days_until_sunday = 7
-                target = (now + timedelta(days=days_until_sunday)).replace(
-                    hour=1, minute=30, second=0, microsecond=0
-                )
-                wait_seconds = (target - now).total_seconds()
-                logger.info(f"[fin_sync] следующий запуск через {wait_seconds/3600:.1f} ч (вс 01:30 UTC)")
-                await asyncio.sleep(wait_seconds)
-
-                if max_agent is None:
-                    continue
-
-                shops = await get_all_active_shops()
-                unique_chats = _unique_chats(shops)
-
-                for chat_id in unique_chats:
-                    try:
-                        await max_agent.sync_financial_report(chat_id, days=90)
-                        logger.info(f"[fin_sync] chat_id={chat_id} завершено")
-                        report_loop_success(f"fin_sync:{chat_id}")
-                    except Exception as e:
-                        logger.error(f"[fin_sync] chat_id={chat_id} ошибка: {e}")
-                        await report_loop_failure(f"fin_sync:{chat_id}", e)
-
-            except asyncio.CancelledError:
-                break
+                await max_agent.sync_financial_report(chat_id, days=90)
+                logger.info(f"[fin_sync] chat_id={chat_id} завершено")
+                report_loop_success(f"fin_sync:{chat_id}")
             except Exception as e:
-                logger.error(f"[fin_sync] критическая ошибка: {e}")
-                await asyncio.sleep(60)
+                logger.error(f"[fin_sync] chat_id={chat_id} ошибка: {e}")
+                await report_loop_failure(f"fin_sync:{chat_id}", e)
 
-    asyncio.create_task(_scheduled_fin_sync_loop())
+    # weekday(): 0=пн … 6=вс
+    asyncio.create_task(
+        run_scheduled_loop("fin_sync", _wait_weekly_utc(6, 1, 30), _fin_sync_task)
+    )
 
-    async def _scheduled_questions_loop():
+    async def _questions_task():
         """Мониторинг вопросов покупателей WB + Ozon каждые 15 минут."""
         from db import get_all_active_shops
 
-        _INTERVAL = 15 * 60  # 15 минут
-
-        while True:
+        if max_agent is None:
+            return
+        shops = await get_all_active_shops()
+        unique_chats = _unique_chats(shops)
+        logger.info(f"[questions_scheduler] проверка вопросов для {len(unique_chats)} пользователей")
+        for chat_id in unique_chats:
             try:
-                await asyncio.sleep(_INTERVAL)
-
-                if max_agent is None:
-                    continue
-
-                shops = await get_all_active_shops()
-                unique_chats = _unique_chats(shops)
-                logger.info(f"[questions_scheduler] проверка вопросов для {len(unique_chats)} пользователей")
-
-                for chat_id in unique_chats:
-                    try:
-                        results = await max_agent.process_questions(chat_id)
-                        found = sum(s.get("found", 0) for s in results.values())
-                        if found:
-                            logger.info(f"[questions_scheduler] chat={chat_id}: {found} новых вопросов")
-                        report_loop_success(f"questions:{chat_id}")
-                    except Exception as e:
-                        logger.error(f"[questions_scheduler] chat={chat_id} error: {e}")
-                        await report_loop_failure(f"questions:{chat_id}", e)
-
-            except asyncio.CancelledError:
-                break
+                results = await max_agent.process_questions(chat_id)
+                found = sum(s.get("found", 0) for s in results.values())
+                if found:
+                    logger.info(f"[questions_scheduler] chat={chat_id}: {found} новых вопросов")
+                report_loop_success(f"questions:{chat_id}")
             except Exception as e:
-                logger.error(f"[questions_scheduler] ошибка: {e}")
-                await asyncio.sleep(60)
+                logger.error(f"[questions_scheduler] chat={chat_id} error: {e}")
+                await report_loop_failure(f"questions:{chat_id}", e)
 
-    asyncio.create_task(_scheduled_questions_loop())
+    asyncio.create_task(
+        run_scheduled_loop("questions_scheduler", _wait_interval(15 * 60), _questions_task)
+    )
 
-    async def _scheduled_orders_sync_loop():
+    async def _orders_sync_task():
         """Синхронизация заказов, продаж и остатков WB + Ozon каждый час."""
         from db import get_all_active_shops
 
-        _INTERVAL = 60 * 60  # 1 час
-
-        while True:
+        if max_agent is None:
+            return
+        shops = await get_all_active_shops()
+        unique_chats = _unique_chats(shops)
+        logger.info(f"[orders_sync] синхронизация для {len(unique_chats)} пользователей")
+        for chat_id in unique_chats:
             try:
-                await asyncio.sleep(_INTERVAL)
-
-                if max_agent is None:
-                    continue
-
-                shops = await get_all_active_shops()
-                unique_chats = _unique_chats(shops)
-                logger.info(f"[orders_sync] синхронизация для {len(unique_chats)} пользователей")
-
-                for chat_id in unique_chats:
-                    try:
-                        await max_agent.sync_marketplace_data(chat_id)
-                        logger.info(f"[orders_sync] chat_id={chat_id} завершено")
-                        report_loop_success(f"orders_sync:{chat_id}")
-                    except Exception as e:
-                        logger.error(f"[orders_sync] chat_id={chat_id} ошибка: {e}")
-                        await report_loop_failure(f"orders_sync:{chat_id}", e)
-
-            except asyncio.CancelledError:
-                break
+                await max_agent.sync_marketplace_data(chat_id)
+                logger.info(f"[orders_sync] chat_id={chat_id} завершено")
+                report_loop_success(f"orders_sync:{chat_id}")
             except Exception as e:
-                logger.error(f"[orders_sync] критическая ошибка: {e}")
-                await asyncio.sleep(60)
+                logger.error(f"[orders_sync] chat_id={chat_id} ошибка: {e}")
+                await report_loop_failure(f"orders_sync:{chat_id}", e)
 
-    asyncio.create_task(_scheduled_orders_sync_loop())
+    asyncio.create_task(
+        run_scheduled_loop("orders_sync", _wait_interval(60 * 60), _orders_sync_task)
+    )
 
-    async def _weekly_audit_loop():
+    async def _weekly_audit_task():
         """Еженедельный аудит магазина — понедельник 07:00 UTC (10:00 МСК)."""
-        from datetime import datetime, timezone, timedelta
         from db import get_all_active_shops
 
-        while True:
+        if peter_agent is None:
+            return
+        shops = await get_all_active_shops()
+        unique_chats = _unique_chats(shops)
+        for chat_id in unique_chats:
             try:
-                now = datetime.now(timezone.utc)
-                # Следующий понедельник 07:00 UTC
-                days_until_monday = _days_until_next_monday(now, hour=7)
-                target = (now + timedelta(days=days_until_monday)).replace(
-                    hour=7, minute=0, second=0, microsecond=0
-                )
-                wait_seconds = (target - now).total_seconds()
-                logger.info(f"[weekly_audit] следующий запуск через {wait_seconds/3600:.1f} ч (пн 10:00 МСК)")
-                await asyncio.sleep(wait_seconds)
-
-                if peter_agent is None:
-                    continue
-
-                shops = await get_all_active_shops()
-                unique_chats = _unique_chats(shops)
-
-                for chat_id in unique_chats:
-                    try:
-                        await peter_agent.run_weekly_audit(chat_id)
-                        logger.info(f"[weekly_audit] chat_id={chat_id} завершено")
-                        report_loop_success(f"weekly_audit:{chat_id}")
-                    except Exception as e:
-                        logger.error(f"[weekly_audit] chat_id={chat_id} ошибка: {e}")
-                        await report_loop_failure(f"weekly_audit:{chat_id}", e)
-
-            except asyncio.CancelledError:
-                break
+                await peter_agent.run_weekly_audit(chat_id)
+                logger.info(f"[weekly_audit] chat_id={chat_id} завершено")
+                report_loop_success(f"weekly_audit:{chat_id}")
             except Exception as e:
-                logger.error(f"[weekly_audit] критическая ошибка: {e}")
-                await asyncio.sleep(60)
+                logger.error(f"[weekly_audit] chat_id={chat_id} ошибка: {e}")
+                await report_loop_failure(f"weekly_audit:{chat_id}", e)
 
-    asyncio.create_task(_weekly_audit_loop())
+    asyncio.create_task(
+        run_scheduled_loop("weekly_audit", _wait_weekly_utc(0, 7, 0), _weekly_audit_task)
+    )
 
-    async def _daily_snapshot_loop():
+    async def _daily_snapshot_task():
         """Ежедневно в 01:00 UTC фиксирует выручку вчера и текущие остатки."""
-        from datetime import datetime, timezone, timedelta, date as _date
         from db import get_all_active_shops, upsert_daily_snapshot, upsert_stock_history, get_pool
 
-        while True:
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+        yesterday_start = datetime(yesterday.year, yesterday.month, yesterday.day, tzinfo=timezone.utc)
+        yesterday_end   = yesterday_start + timedelta(days=1)
+
+        pool = await get_pool()
+        shops = await get_all_active_shops()
+        unique_chats = _unique_chats(shops)
+
+        for chat_id in unique_chats:
+            # Снимок выручки за вчера
             try:
-                now = datetime.now(timezone.utc)
-                target = now.replace(hour=1, minute=0, second=0, microsecond=0)
-                if target <= now:
-                    target += timedelta(days=1)
-                wait_seconds = (target - now).total_seconds()
-                logger.info(f"[snapshot] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
-                await asyncio.sleep(wait_seconds)
-
-                yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
-                yesterday_start = datetime(yesterday.year, yesterday.month, yesterday.day, tzinfo=timezone.utc)
-                yesterday_end   = yesterday_start + timedelta(days=1)
-
-                pool = await get_pool()
-                shops = await get_all_active_shops()
-                unique_chats = _unique_chats(shops)
-
-                for chat_id in unique_chats:
-                    # Снимок выручки за вчера
-                    try:
-                        async with pool.acquire() as conn:
-                            rows = await conn.fetch("""
-                                SELECT marketplace,
-                                       SUM(seller_price * quantity)::numeric(12,2) AS revenue,
-                                       COUNT(*) AS orders_count,
-                                       AVG(seller_price)::numeric(10,2)            AS avg_price
-                                FROM marketplace_orders
-                                WHERE chat_id = $1
-                                  AND order_date >= $2 AND order_date < $3
-                                GROUP BY marketplace
-                            """, chat_id, yesterday_start, yesterday_end)
-                        for r in rows:
-                            await upsert_daily_snapshot(
-                                snapshot_date=yesterday,
-                                chat_id=chat_id,
-                                marketplace=r["marketplace"],
-                                revenue=float(r["revenue"] or 0),
-                                orders_count=int(r["orders_count"] or 0),
-                                avg_price=float(r["avg_price"] or 0),
-                            )
-                        logger.info(f"[snapshot] chat={chat_id} revenue snapshot: {len(rows)} строк за {yesterday}")
-                        report_loop_success(f"snapshot_revenue:{chat_id}")
-                    except Exception as e:
-                        logger.error(f"[snapshot] revenue chat={chat_id}: {e}")
-                        await report_loop_failure(f"snapshot_revenue:{chat_id}", e)
-
-                    # Снимок остатков (текущие → история)
-                    try:
-                        async with pool.acquire() as conn:
-                            stocks = await conn.fetch("""
-                                SELECT marketplace, product_id, warehouse_name, stock
-                                FROM marketplace_stocks
-                                WHERE chat_id = $1
-                            """, chat_id)
-                        for s in stocks:
-                            await upsert_stock_history(
-                                snapshot_date=yesterday,
-                                chat_id=chat_id,
-                                marketplace=s["marketplace"],
-                                product_id=s["product_id"],
-                                warehouse_name=s["warehouse_name"] or "",
-                                stock=s["stock"],
-                            )
-                        logger.info(f"[snapshot] chat={chat_id} stock history: {len(stocks)} позиций за {yesterday}")
-                        report_loop_success(f"snapshot_stocks:{chat_id}")
-                    except Exception as e:
-                        logger.error(f"[snapshot] stocks chat={chat_id}: {e}")
-                        await report_loop_failure(f"snapshot_stocks:{chat_id}", e)
-
-                    # Алерт остатков после ежедневного снимка
-                    if max_agent is not None:
-                        try:
-                            await max_agent._check_stock_alerts(chat_id)
-                            report_loop_success(f"snapshot_alerts:{chat_id}")
-                        except Exception as e:
-                            logger.error(f"[snapshot] stock_alerts chat={chat_id}: {e}")
-                            await report_loop_failure(f"snapshot_alerts:{chat_id}", e)
-
-            except asyncio.CancelledError:
-                break
+                async with pool.acquire() as conn:
+                    rows = await conn.fetch("""
+                        SELECT marketplace,
+                               SUM(seller_price * quantity)::numeric(12,2) AS revenue,
+                               COUNT(*) AS orders_count,
+                               AVG(seller_price)::numeric(10,2)            AS avg_price
+                        FROM marketplace_orders
+                        WHERE chat_id = $1
+                          AND order_date >= $2 AND order_date < $3
+                        GROUP BY marketplace
+                    """, chat_id, yesterday_start, yesterday_end)
+                for r in rows:
+                    await upsert_daily_snapshot(
+                        snapshot_date=yesterday,
+                        chat_id=chat_id,
+                        marketplace=r["marketplace"],
+                        revenue=float(r["revenue"] or 0),
+                        orders_count=int(r["orders_count"] or 0),
+                        avg_price=float(r["avg_price"] or 0),
+                    )
+                logger.info(f"[snapshot] chat={chat_id} revenue snapshot: {len(rows)} строк за {yesterday}")
+                report_loop_success(f"snapshot_revenue:{chat_id}")
             except Exception as e:
-                logger.error(f"[snapshot] ошибка: {e}")
-                await asyncio.sleep(60)
+                logger.error(f"[snapshot] revenue chat={chat_id}: {e}")
+                await report_loop_failure(f"snapshot_revenue:{chat_id}", e)
 
-    asyncio.create_task(_daily_snapshot_loop())
+            # Снимок остатков (текущие → история)
+            try:
+                async with pool.acquire() as conn:
+                    stocks = await conn.fetch("""
+                        SELECT marketplace, product_id, warehouse_name, stock
+                        FROM marketplace_stocks
+                        WHERE chat_id = $1
+                    """, chat_id)
+                for s in stocks:
+                    await upsert_stock_history(
+                        snapshot_date=yesterday,
+                        chat_id=chat_id,
+                        marketplace=s["marketplace"],
+                        product_id=s["product_id"],
+                        warehouse_name=s["warehouse_name"] or "",
+                        stock=s["stock"],
+                    )
+                logger.info(f"[snapshot] chat={chat_id} stock history: {len(stocks)} позиций за {yesterday}")
+                report_loop_success(f"snapshot_stocks:{chat_id}")
+            except Exception as e:
+                logger.error(f"[snapshot] stocks chat={chat_id}: {e}")
+                await report_loop_failure(f"snapshot_stocks:{chat_id}", e)
+
+            # Алерт остатков после ежедневного снимка
+            if max_agent is not None:
+                try:
+                    await max_agent._check_stock_alerts(chat_id)
+                    report_loop_success(f"snapshot_alerts:{chat_id}")
+                except Exception as e:
+                    logger.error(f"[snapshot] stock_alerts chat={chat_id}: {e}")
+                    await report_loop_failure(f"snapshot_alerts:{chat_id}", e)
+
+    asyncio.create_task(
+        run_scheduled_loop("snapshot", _wait_daily_utc(1, 0), _daily_snapshot_task)
+    )
 
     tina_agent = next((a for a in started if isinstance(a, TinaAgent)), None)
 
-    async def _tender_digest_loop():
-        """Ежедневно в 05:00 UTC (08:00 МСК) — тендерный дайджест."""
-        from datetime import datetime, timezone, timedelta
+    async def _tender_digest_task():
+        """Ежедневно в config.TENDER_SCAN_HOUR_UTC (08:00 МСК по умолчанию) — тендерный дайджест."""
         from db import get_all_active_shops
 
-        while True:
+        if tina_agent is None:
+            return
+        shops = await get_all_active_shops()
+        unique_chats = _unique_chats(shops)
+        if not unique_chats:
+            logger.info("[tender_scheduler] нет активных пользователей — пропускаем")
+            return
+        logger.info(f"[tender_scheduler] запуск дайджеста для {len(unique_chats)} пользователей")
+        for user_chat_id in unique_chats:
             try:
-                now    = datetime.now(timezone.utc)
-                target = now.replace(hour=config.TENDER_SCAN_HOUR_UTC, minute=0, second=0, microsecond=0)
-                if target <= now:
-                    target += timedelta(days=1)
-                wait_seconds = (target - now).total_seconds()
-                logger.info(f"[tender_scheduler] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
-                await asyncio.sleep(wait_seconds)
-
-                if tina_agent is None:
-                    continue
-
-                shops = await get_all_active_shops()
-                unique_chats = _unique_chats(shops)
-                if not unique_chats:
-                    logger.info("[tender_scheduler] нет активных пользователей — пропускаем")
-                    continue
-
-                logger.info(f"[tender_scheduler] запуск дайджеста для {len(unique_chats)} пользователей")
-                for user_chat_id in unique_chats:
-                    try:
-                        await tina_agent.send_daily_digest(user_chat_id)
-                        report_loop_success(f"tender_digest:{user_chat_id}")
-                    except Exception as e:
-                        logger.error(f"[tender_scheduler] user={user_chat_id} error: {e}")
-                        await report_loop_failure(f"tender_digest:{user_chat_id}", e)
-            except asyncio.CancelledError:
-                break
+                await tina_agent.send_daily_digest(user_chat_id)
+                report_loop_success(f"tender_digest:{user_chat_id}")
             except Exception as e:
-                logger.error(f"[tender_scheduler] ошибка: {e}")
-                await asyncio.sleep(60)
+                logger.error(f"[tender_scheduler] user={user_chat_id} error: {e}")
+                await report_loop_failure(f"tender_digest:{user_chat_id}", e)
 
-    asyncio.create_task(_tender_digest_loop())
+    asyncio.create_task(
+        run_scheduled_loop("tender_scheduler", _wait_daily_utc(config.TENDER_SCAN_HOUR_UTC, 0), _tender_digest_task)
+    )
 
-    async def _stock_alerts_loop():
+    async def _stock_alerts_task():
         """Ежедневно в STOCK_ALERT_HOUR_UTC — алерты по остаткам < STOCK_ALERT_DAYS_THRESHOLD дней."""
-        from datetime import datetime, timezone, timedelta
         from db import get_all_active_shops
 
-        while True:
+        if max_agent is None:
+            return
+        shops = await get_all_active_shops()
+        unique_chats = _unique_chats(shops)
+        for chat_id in unique_chats:
             try:
-                now    = datetime.now(timezone.utc)
-                hour   = getattr(config, "STOCK_ALERT_HOUR_UTC", 10)
-                target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
-                if target <= now:
-                    target += timedelta(days=1)
-                wait_seconds = (target - now).total_seconds()
-                logger.info(f"[stock_alerts] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
-                await asyncio.sleep(wait_seconds)
-
-                if max_agent is None:
-                    continue
-
-                shops = await get_all_active_shops()
-                unique_chats = _unique_chats(shops)
-                for chat_id in unique_chats:
-                    try:
-                        await max_agent._check_stock_alerts(chat_id, deduplicate=True)
-                        report_loop_success(f"stock_alerts:{chat_id}")
-                    except Exception as e:
-                        logger.error(f"[stock_alerts] chat_id={chat_id} ошибка: {e}")
-                        await report_loop_failure(f"stock_alerts:{chat_id}", e)
-
-            except asyncio.CancelledError:
-                break
+                await max_agent._check_stock_alerts(chat_id, deduplicate=True)
+                report_loop_success(f"stock_alerts:{chat_id}")
             except Exception as e:
-                logger.error(f"[stock_alerts] критическая ошибка: {e}")
-                await asyncio.sleep(60)
+                logger.error(f"[stock_alerts] chat_id={chat_id} ошибка: {e}")
+                await report_loop_failure(f"stock_alerts:{chat_id}", e)
 
-    asyncio.create_task(_stock_alerts_loop())
+    asyncio.create_task(
+        run_scheduled_loop(
+            "stock_alerts",
+            _wait_daily_utc(getattr(config, "STOCK_ALERT_HOUR_UTC", 10), 0),
+            _stock_alerts_task,
+        )
+    )
 
-    async def _promotions_weekly_loop():
+    async def _promotions_weekly_task():
         """Еженедельно в понедельник 09:00 МСК (06:00 UTC) — сводка акций WB/Ozon."""
-        from datetime import datetime, timezone, timedelta
         from db import get_all_active_shops
 
-        while True:
+        if max_agent is None:
+            return
+        shops = await get_all_active_shops()
+        unique_chats = _unique_chats(shops)
+        for chat_id in unique_chats:
             try:
-                now  = datetime.now(timezone.utc)
-                # Следующий понедельник 06:00 UTC
-                days_until_monday = _days_until_next_monday(now, hour=6)
-                target = (now + timedelta(days=days_until_monday)).replace(
-                    hour=6, minute=0, second=0, microsecond=0
-                )
-                wait_seconds = (target - now).total_seconds()
-                logger.info(f"[promotions_weekly] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
-                await asyncio.sleep(wait_seconds)
-
-                if max_agent is None:
-                    continue
-
-                shops = await get_all_active_shops()
-                unique_chats = _unique_chats(shops)
-                for chat_id in unique_chats:
-                    try:
-                        await max_agent._send_promotions_summary(chat_id)
-                        report_loop_success(f"promotions_weekly:{chat_id}")
-                    except Exception as e:
-                        logger.error(f"[promotions_weekly] chat_id={chat_id} ошибка: {e}")
-                        await report_loop_failure(f"promotions_weekly:{chat_id}", e)
-
-            except asyncio.CancelledError:
-                break
+                await max_agent._send_promotions_summary(chat_id)
+                report_loop_success(f"promotions_weekly:{chat_id}")
             except Exception as e:
-                logger.error(f"[promotions_weekly] критическая ошибка: {e}")
-                await asyncio.sleep(300)
+                logger.error(f"[promotions_weekly] chat_id={chat_id} ошибка: {e}")
+                await report_loop_failure(f"promotions_weekly:{chat_id}", e)
 
-    asyncio.create_task(_promotions_weekly_loop())
+    asyncio.create_task(
+        run_scheduled_loop(
+            "promotions_weekly", _wait_weekly_utc(0, 6, 0), _promotions_weekly_task, error_sleep=300
+        )
+    )
 
-    async def _competitor_monitor_loop():
+    async def _competitor_monitor_task():
         """Еженедельно в понедельник COMPETITOR_SCAN_HOUR_UTC — снапшот цен конкурентов WB."""
-        from datetime import datetime, timezone, timedelta
-        from db import upsert_competitor_snapshot
+        from db import upsert_competitor_snapshot, get_top_keywords_for_competitors
 
-        while True:
-            try:
-                now  = datetime.now(timezone.utc)
-                hour = getattr(config, "COMPETITOR_SCAN_HOUR_UTC", 6)
-                # следующий понедельник в нужный час
-                days_until_monday = _days_until_next_monday(now, hour=hour)
-                target = (now + timedelta(days=days_until_monday)).replace(
-                    hour=hour, minute=0, second=0, microsecond=0
-                )
-                wait_seconds = (target - now).total_seconds()
-                logger.info(f"[competitor_monitor] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
-                await asyncio.sleep(wait_seconds)
+        try:
+            keywords = await get_top_keywords_for_competitors(limit=10)
+            if not keywords:
+                # fallback — захардкоженные ключи из конфига
+                keywords = getattr(config, "COMPETITOR_KEYWORDS", [])
+            if not keywords:
+                logger.info("[competitor_monitor] нет ключевых слов — пропускаем")
+                return
 
-                from db import get_top_keywords_for_competitors
-                keywords = await get_top_keywords_for_competitors(limit=10)
-                if not keywords:
-                    # fallback — захардкоженные ключи из конфига
-                    keywords = getattr(config, "COMPETITOR_KEYWORDS", [])
-                if not keywords:
-                    logger.info("[competitor_monitor] нет ключевых слов — пропускаем")
-                    continue
+            logger.info(f"[competitor_monitor] ключи ({len(keywords)}): {keywords[:3]}…")
 
-                logger.info(f"[competitor_monitor] ключи ({len(keywords)}): {keywords[:3]}…")
+            from tools.marketplace import WBClient
+            from datetime import date
+            client = WBClient("")   # публичный API — токен не нужен
+            today  = date.today()
+            all_rows: list[dict] = []
 
-                from tools.marketplace import WBClient
-                from datetime import date
-                client = WBClient("")   # публичный API — токен не нужен
-                today  = date.today()
-                all_rows: list[dict] = []
+            for kw in keywords:
+                products = await client.get_competitor_prices(kw)
+                for p in products:
+                    all_rows.append({**p, "keyword": kw, "marketplace": "wb", "snapshot_date": today})
+                await asyncio.sleep(3)   # пауза между запросами
 
-                for kw in keywords:
-                    products = await client.get_competitor_prices(kw)
-                    for p in products:
-                        all_rows.append({**p, "keyword": kw, "marketplace": "wb", "snapshot_date": today})
-                    await asyncio.sleep(3)   # пауза между запросами
+            if all_rows:
+                await upsert_competitor_snapshot(all_rows)
+                logger.info(f"[competitor_monitor] сохранено {len(all_rows)} строк по {len(keywords)} запросам")
+            report_loop_success("competitor_monitor")
+        except Exception as e:
+            logger.error(f"[competitor_monitor] ошибка: {e}")
+            await report_loop_failure("competitor_monitor", e)
+            raise
 
-                if all_rows:
-                    await upsert_competitor_snapshot(all_rows)
-                    logger.info(f"[competitor_monitor] сохранено {len(all_rows)} строк по {len(keywords)} запросам")
-                report_loop_success("competitor_monitor")
+    asyncio.create_task(
+        run_scheduled_loop(
+            "competitor_monitor",
+            _wait_weekly_utc(0, getattr(config, "COMPETITOR_SCAN_HOUR_UTC", 6), 0),
+            _competitor_monitor_task,
+            error_sleep=300,
+        )
+    )
 
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"[competitor_monitor] ошибка: {e}")
-                await report_loop_failure("competitor_monitor", e)
-                await asyncio.sleep(300)
-
-    asyncio.create_task(_competitor_monitor_loop())
-
-    async def _daily_digest_loop():
+    async def _daily_digest_task():
         """Ежедневный дайджест от Питера — каждый день в 18:00 UTC (21:00 МСК)."""
-        from datetime import datetime, timezone, timedelta
         from db import get_all_active_shops
 
-        while True:
+        if peter_agent is None:
+            logger.warning("[daily_digest] Питер не найден, пропускаем")
+            return
+        shops = await get_all_active_shops()
+        unique_chats = _unique_chats(shops)
+        for chat_id in unique_chats:
             try:
-                now  = datetime.now(timezone.utc)
-                hour = getattr(config, "DAILY_DIGEST_HOUR_UTC", 18)
-                target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
-                if target <= now:
-                    target += timedelta(days=1)
-                wait_seconds = (target - now).total_seconds()
-                logger.info(f"[daily_digest] следующий запуск через {wait_seconds/3600:.1f}ч ({target.isoformat()})")
-                await asyncio.sleep(wait_seconds)
-
-                if peter_agent is None:
-                    logger.warning("[daily_digest] Питер не найден, пропускаем")
-                    continue
-
-                shops = await get_all_active_shops()
-                unique_chats = _unique_chats(shops)
-
-                for chat_id in unique_chats:
-                    try:
-                        await peter_agent.run_daily_digest(chat_id)
-                        logger.info(f"[daily_digest] chat_id={chat_id} завершено")
-                        report_loop_success(f"daily_digest:{chat_id}")
-                    except Exception as e:
-                        logger.error(f"[daily_digest] chat_id={chat_id} ошибка: {e}")
-                        await report_loop_failure(f"daily_digest:{chat_id}", e)
-
-            except asyncio.CancelledError:
-                break
+                await peter_agent.run_daily_digest(chat_id)
+                logger.info(f"[daily_digest] chat_id={chat_id} завершено")
+                report_loop_success(f"daily_digest:{chat_id}")
             except Exception as e:
-                logger.error(f"[daily_digest] критическая ошибка: {e}")
-                await asyncio.sleep(60)
+                logger.error(f"[daily_digest] chat_id={chat_id} ошибка: {e}")
+                await report_loop_failure(f"daily_digest:{chat_id}", e)
 
-    asyncio.create_task(_daily_digest_loop())
+    asyncio.create_task(
+        run_scheduled_loop(
+            "daily_digest", _wait_daily_utc(getattr(config, "DAILY_DIGEST_HOUR_UTC", 18), 0), _daily_digest_task
+        )
+    )
     logger.info("[main] Daily digest task запущен (каждый день 18:00 UTC = 21:00 МСК)")
 
-    async def _marta_digest_loop():
+    async def _marta_digest_task():
         """Дайджест задач от Марты — каждый день в 18:05 UTC (21:05 МСК)."""
-        from datetime import datetime, timezone, timedelta
         from db import get_all_active_shops
 
-        while True:
+        if marta_agent is None:
+            return
+        shops = await get_all_active_shops()
+        for chat_id in _unique_chats(shops):
             try:
-                now = datetime.now(timezone.utc)
-                target = now.replace(hour=18, minute=5, second=0, microsecond=0)
-                if target <= now:
-                    target += timedelta(days=1)
-                await asyncio.sleep((target - now).total_seconds())
-
-                if marta_agent is None:
-                    continue
-                shops = await get_all_active_shops()
-                for chat_id in _unique_chats(shops):
-                    try:
-                        await marta_agent.send_daily_digest(chat_id)
-                        logger.info(f"[marta_digest] chat_id={chat_id} отправлено")
-                        report_loop_success(f"marta_digest:{chat_id}")
-                    except Exception as e:
-                        logger.error(f"[marta_digest] chat_id={chat_id} ошибка: {e}")
-                        await report_loop_failure(f"marta_digest:{chat_id}", e)
-            except asyncio.CancelledError:
-                break
+                await marta_agent.send_daily_digest(chat_id)
+                logger.info(f"[marta_digest] chat_id={chat_id} отправлено")
+                report_loop_success(f"marta_digest:{chat_id}")
             except Exception as e:
-                logger.error(f"[marta_digest] критическая ошибка: {e}")
-                await asyncio.sleep(60)
+                logger.error(f"[marta_digest] chat_id={chat_id} ошибка: {e}")
+                await report_loop_failure(f"marta_digest:{chat_id}", e)
 
-    asyncio.create_task(_marta_digest_loop())
+    asyncio.create_task(
+        run_scheduled_loop("marta_digest", _wait_daily_utc(18, 5), _marta_digest_task)
+    )
     logger.info("[main] Marta digest task запущен (18:05 UTC = 21:05 МСК)")
 
-    async def _funnel_sync_loop():
+    async def _funnel_sync_task():
         """Воронка конверсии — ежедневно в 02:30 UTC."""
-        from datetime import datetime, timezone, timedelta
         from db import get_all_active_shops
 
-        while True:
+        if max_agent is None:
+            return
+        shops = await get_all_active_shops()
+        for chat_id in _unique_chats(shops):
             try:
-                now = datetime.now(timezone.utc)
-                target = now.replace(hour=2, minute=30, second=0, microsecond=0)
-                if target <= now:
-                    target += timedelta(days=1)
-                await asyncio.sleep((target - now).total_seconds())
-
-                if max_agent is None:
-                    continue
-                shops = await get_all_active_shops()
-                for chat_id in _unique_chats(shops):
-                    try:
-                        await max_agent.sync_funnel(chat_id)
-                        logger.info(f"[funnel_sync] chat_id={chat_id} завершено")
-                        report_loop_success(f"funnel_sync:{chat_id}")
-                    except Exception as e:
-                        logger.error(f"[funnel_sync] chat_id={chat_id} ошибка: {e}")
-                        await report_loop_failure(f"funnel_sync:{chat_id}", e)
-            except asyncio.CancelledError:
-                break
+                await max_agent.sync_funnel(chat_id)
+                logger.info(f"[funnel_sync] chat_id={chat_id} завершено")
+                report_loop_success(f"funnel_sync:{chat_id}")
             except Exception as e:
-                logger.error(f"[funnel_sync] критическая ошибка: {e}")
-                await asyncio.sleep(60)
+                logger.error(f"[funnel_sync] chat_id={chat_id} ошибка: {e}")
+                await report_loop_failure(f"funnel_sync:{chat_id}", e)
 
-    asyncio.create_task(_funnel_sync_loop())
+    asyncio.create_task(
+        run_scheduled_loop("funnel_sync", _wait_daily_utc(2, 30), _funnel_sync_task)
+    )
     logger.info("[main] Funnel sync task запущен (ежедневно 02:30 UTC)")
 
-    async def _returns_sync_loop():
+    async def _returns_sync_task():
         """Аналитика возвратов — еженедельно в субботу 02:00 UTC."""
-        from datetime import datetime, timezone, timedelta
         from db import get_all_active_shops
 
-        while True:
+        if max_agent is None:
+            return
+        shops = await get_all_active_shops()
+        for chat_id in _unique_chats(shops):
             try:
-                now = datetime.now(timezone.utc)
-                # weekday(): 5 = суббота
-                days_until_saturday = (5 - now.weekday()) % 7
-                if days_until_saturday == 0 and now.hour >= 2:
-                    days_until_saturday = 7
-                target = (now + timedelta(days=days_until_saturday)).replace(
-                    hour=2, minute=0, second=0, microsecond=0
-                )
-                await asyncio.sleep((target - now).total_seconds())
-
-                if max_agent is None:
-                    continue
-                shops = await get_all_active_shops()
-                for chat_id in _unique_chats(shops):
-                    try:
-                        await max_agent.sync_returns(chat_id)
-                        logger.info(f"[returns_sync] chat_id={chat_id} завершено")
-                        report_loop_success(f"returns_sync:{chat_id}")
-                    except Exception as e:
-                        logger.error(f"[returns_sync] chat_id={chat_id} ошибка: {e}")
-                        await report_loop_failure(f"returns_sync:{chat_id}", e)
-            except asyncio.CancelledError:
-                break
+                await max_agent.sync_returns(chat_id)
+                logger.info(f"[returns_sync] chat_id={chat_id} завершено")
+                report_loop_success(f"returns_sync:{chat_id}")
             except Exception as e:
-                logger.error(f"[returns_sync] критическая ошибка: {e}")
-                await asyncio.sleep(60)
+                logger.error(f"[returns_sync] chat_id={chat_id} ошибка: {e}")
+                await report_loop_failure(f"returns_sync:{chat_id}", e)
 
-    asyncio.create_task(_returns_sync_loop())
+    # weekday(): 5 = суббота
+    asyncio.create_task(
+        run_scheduled_loop("returns_sync", _wait_weekly_utc(5, 2, 0), _returns_sync_task)
+    )
     logger.info("[main] Returns sync task запущен (еженедельно сб 02:00 UTC)")
 
-    async def _kpi_sync_loop():
+    async def _kpi_sync_task():
         """KPI продавца (рейтинг, штрафы) — ежедневно в 02:00 UTC."""
-        from datetime import datetime, timezone, timedelta
         from db import get_all_active_shops
 
-        while True:
+        if max_agent is None:
+            return
+        shops = await get_all_active_shops()
+        for chat_id in _unique_chats(shops):
             try:
-                now = datetime.now(timezone.utc)
-                target = now.replace(hour=2, minute=0, second=0, microsecond=0)
-                if target <= now:
-                    target += timedelta(days=1)
-                await asyncio.sleep((target - now).total_seconds())
-
-                if max_agent is None:
-                    continue
-                shops = await get_all_active_shops()
-                for chat_id in _unique_chats(shops):
-                    try:
-                        await max_agent.sync_shop_kpi(chat_id)
-                        logger.info(f"[kpi_sync] chat_id={chat_id} завершено")
-                        report_loop_success(f"kpi_sync:{chat_id}")
-                    except Exception as e:
-                        logger.error(f"[kpi_sync] chat_id={chat_id} ошибка: {e}")
-                        await report_loop_failure(f"kpi_sync:{chat_id}", e)
-            except asyncio.CancelledError:
-                break
+                await max_agent.sync_shop_kpi(chat_id)
+                logger.info(f"[kpi_sync] chat_id={chat_id} завершено")
+                report_loop_success(f"kpi_sync:{chat_id}")
             except Exception as e:
-                logger.error(f"[kpi_sync] критическая ошибка: {e}")
-                await asyncio.sleep(60)
+                logger.error(f"[kpi_sync] chat_id={chat_id} ошибка: {e}")
+                await report_loop_failure(f"kpi_sync:{chat_id}", e)
 
-    asyncio.create_task(_kpi_sync_loop())
+    asyncio.create_task(
+        run_scheduled_loop("kpi_sync", _wait_daily_utc(2, 0), _kpi_sync_task)
+    )
     logger.info("[main] KPI sync task запущен (ежедневно 02:00 UTC)")
 
-    async def _auto_bid_loop():
+    async def _auto_bid_task():
         """Авто-анализ ставок — ежедневно в 03:30 UTC (после синка рекламы в 03:00)."""
-        from datetime import datetime, timezone, timedelta
         from db import get_all_active_shops
 
-        while True:
+        if max_agent is None:
+            return
+        shops = await get_all_active_shops()
+        for chat_id in _unique_chats(shops):
             try:
-                now = datetime.now(timezone.utc)
-                target = now.replace(hour=3, minute=30, second=0, microsecond=0)
-                if target <= now:
-                    target += timedelta(days=1)
-                await asyncio.sleep((target - now).total_seconds())
-
-                if max_agent is None:
-                    continue
-                shops = await get_all_active_shops()
-                for chat_id in _unique_chats(shops):
-                    try:
-                        sent = await max_agent.auto_bid_suggest(chat_id)
-                        if sent:
-                            logger.info(f"[auto_bid] chat_id={chat_id} отправлено {sent} предложений")
-                        report_loop_success(f"auto_bid:{chat_id}")
-                    except Exception as e:
-                        logger.error(f"[auto_bid] chat_id={chat_id} ошибка: {e}")
-                        await report_loop_failure(f"auto_bid:{chat_id}", e)
-            except asyncio.CancelledError:
-                break
+                sent = await max_agent.auto_bid_suggest(chat_id)
+                if sent:
+                    logger.info(f"[auto_bid] chat_id={chat_id} отправлено {sent} предложений")
+                report_loop_success(f"auto_bid:{chat_id}")
             except Exception as e:
-                logger.error(f"[auto_bid] критическая ошибка: {e}")
-                await asyncio.sleep(60)
+                logger.error(f"[auto_bid] chat_id={chat_id} ошибка: {e}")
+                await report_loop_failure(f"auto_bid:{chat_id}", e)
 
-    asyncio.create_task(_auto_bid_loop())
+    asyncio.create_task(
+        run_scheduled_loop("auto_bid", _wait_daily_utc(3, 30), _auto_bid_task)
+    )
     logger.info("[main] Auto bid task запущен (ежедневно 03:30 UTC)")
 
     # ── Dashboard API (aiohttp) ───────────────────────────────────────────────

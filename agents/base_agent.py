@@ -851,6 +851,66 @@ class BaseAgent(ABC):
     #  Chain — продвижение цепочки агентов                                #
     # ------------------------------------------------------------------ #
 
+    _CHAIN_AGENT_EMOJI = {
+        "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
+        "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
+        "dan": "🎨", "tina": "📋", "digest": "📰",
+    }
+    _CHAIN_AGENT_NAME = {
+        "kasper": "Каспер", "kevin": "Кевин", "peter": "Питер",
+        "elina": "Элина", "alex": "Алекс", "marta": "Марта",
+        "dan": "Дэн", "tina": "Тина", "digest": "Дайджест",
+    }
+
+    @classmethod
+    def _format_chain_completion_message(
+        cls, chain_results: list[dict]
+    ) -> tuple[str, "InlineKeyboardMarkup | None"]:
+        """Собрать финальное сообщение цепочки: резюме по каждому агенту + ссылка на
+        сайт/репозиторий, если Кевин создал GitHub Pages/репо. Вынесено из _advance_chain
+        отдельно — это чистое форматирование, не оркестрация, и его можно тестировать
+        без БД/Redis/Telegram."""
+        import re as _re
+
+        github_pages_url = None
+        github_repo_url = None
+        for r in chain_results:
+            r_result = (r.get("result") or "")
+            pages_match = _re.search(r'https://[\w\-]+\.github\.io/[\w\-]+(?:/[\w\-]*)*', r_result)
+            repo_match  = _re.search(r'https://github\.com/[\w\-]+/[\w\-]+', r_result)
+            if pages_match:
+                github_pages_url = pages_match.group(0).rstrip(')/,. ')
+            if repo_match:
+                github_repo_url = repo_match.group(0).rstrip(')/,. ')
+
+        result_lines = ""
+        for r in chain_results:
+            agent_k = r.get("assigned_agent", "")
+            r_result = (r.get("result") or "").strip()
+            emoji = cls._CHAIN_AGENT_EMOJI.get(agent_k, "🤖")
+            name  = cls._CHAIN_AGENT_NAME.get(agent_k, agent_k)
+            plain = _re.sub(r"<[^>]+>", "", r_result)
+            excerpt = plain[:200].strip()
+            if len(plain) > 200:
+                excerpt += "…"
+            if excerpt:
+                result_lines += f"{emoji} **{name}:** {excerpt}\n\n"
+
+        final_msg = "🎉 **Команда завершила работу!**\n\n"
+        if result_lines:
+            final_msg += result_lines
+        if github_pages_url:
+            final_msg += f'🌐 [Открыть сайт]({github_pages_url})\n'
+        elif github_repo_url:
+            final_msg += f'📦 [Репозиторий]({github_repo_url})\n'
+
+        buttons = []
+        if github_pages_url:
+            buttons.append(InlineKeyboardButton("🌐 Открыть сайт", url=github_pages_url))
+        keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
+
+        return final_msg, keyboard
+
     async def _advance_chain(self, completed_task) -> None:
         """После завершения задачи — запустить следующий шаг цепочки.
 
@@ -909,58 +969,8 @@ class BaseAgent(ABC):
             logger.info(f"chain_done | chain_id={chain_id[:8]} | total={chain_total}")
 
             if chat_id:
-                import re as _re
-
                 chain_results = await get_chain_results(None, chain_id)
-
-                github_pages_url = None
-                github_repo_url = None
-                for r in chain_results:
-                    r_result = (r.get("result") or "")
-                    pages_match = _re.search(r'https://[\w\-]+\.github\.io/[\w\-]+(?:/[\w\-]*)*', r_result)
-                    repo_match  = _re.search(r'https://github\.com/[\w\-]+/[\w\-]+', r_result)
-                    if pages_match:
-                        github_pages_url = pages_match.group(0).rstrip(')/,. ')
-                    if repo_match:
-                        github_repo_url = repo_match.group(0).rstrip(')/,. ')
-
-                _AGENT_EMOJI = {
-                    "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
-                    "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
-                    "dan": "🎨", "tina": "📋", "digest": "📰",
-                }
-                _AGENT_NAME = {
-                    "kasper": "Каспер", "kevin": "Кевин", "peter": "Питер",
-                    "elina": "Элина", "alex": "Алекс", "marta": "Марта",
-                    "dan": "Дэн", "tina": "Тина", "digest": "Дайджест",
-                }
-
-                result_lines = ""
-                if chain_results:
-                    for r in chain_results:
-                        agent_k = r.get("assigned_agent", "")
-                        r_result = (r.get("result") or "").strip()
-                        emoji = _AGENT_EMOJI.get(agent_k, "🤖")
-                        name  = _AGENT_NAME.get(agent_k, agent_k)
-                        excerpt = _re.sub(r"<[^>]+>", "", r_result)[:200].strip()
-                        if len(_re.sub(r"<[^>]+>", "", r_result)) > 200:
-                            excerpt += "…"
-                        if excerpt:
-                            result_lines += f"{emoji} **{name}:** {excerpt}\n\n"
-
-                final_msg = "🎉 **Команда завершила работу!**\n\n"
-                if result_lines:
-                    final_msg += result_lines
-                if github_pages_url:
-                    final_msg += f'🌐 [Открыть сайт]({github_pages_url})\n'
-                elif github_repo_url:
-                    final_msg += f'📦 [Репозиторий]({github_repo_url})\n'
-
-                buttons = []
-                if github_pages_url:
-                    buttons.append(InlineKeyboardButton("🌐 Открыть сайт", url=github_pages_url))
-                keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
-
+                final_msg, keyboard = self._format_chain_completion_message(chain_results)
                 await self._notify_user(chat_id, final_msg, reply_markup=keyboard, bot_token=_chain_reply_token)
             return
 
