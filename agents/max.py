@@ -262,6 +262,28 @@ def _get_ozon_cluster(warehouse_name: str) -> str:
             return cluster
     return "Прочие"
 
+def clamp_wb_cpm(current_cpm: float, direction: str, delta_pct: float) -> int:
+    """Новый CPM WB по проценту, зажатый в [50, config.WB_MAX_CPM_RUB].
+
+    Потолок — страховка от аномального значения независимо от того, как
+    посчитан delta_pct (баг в анализе ДРР, сбой API и т.п.), применяется
+    и в превью предложения, и непосредственно перед записью в API.
+    """
+    ceiling = getattr(config, "WB_MAX_CPM_RUB", 3000)
+    if direction == "down":
+        new_cpm = int(current_cpm * (1 - delta_pct / 100))
+    else:
+        new_cpm = int(current_cpm * (1 + delta_pct / 100))
+    return max(50, min(ceiling, new_cpm))
+
+
+def clamp_ozon_bid(current_bid: float, direction: str, delta_pct: float) -> float:
+    """Новая ставка Ozon per-SKU по проценту, зажатая в [1.0, config.OZON_MAX_BID_RUB]."""
+    ceiling = getattr(config, "OZON_MAX_BID_RUB", 500)
+    multiplier = (1 - delta_pct / 100) if direction == "down" else (1 + delta_pct / 100)
+    return max(1.0, min(ceiling, round(current_bid * multiplier, 2)))
+
+
 # Клавиатура с двумя постоянными кнопками действий
 def _static_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура без pending-кнопки (fallback когда chat_id недоступен)."""
@@ -5391,11 +5413,25 @@ class MaxAgent(BaseAgent):
                 else:
                     # Корректировка ставок per-SKU
                     arrow = "📉 Снизить" if d == "down" else "📈 Поднять"
+                    price_line = ""
+                    try:
+                        from tools.marketplace import OzonPerformanceClient
+                        oz_client = OzonPerformanceClient(
+                            ozon_shop["ozon_client_id"], ozon_shop["ozon_perf_secret"], await self._get_redis()
+                        )
+                        cur_bids = [b["bid"] for b in (await oz_client.get_campaign_bids(cid)) if b.get("bid")]
+                        if cur_bids:
+                            avg_cur = sum(cur_bids) / len(cur_bids)
+                            avg_new = sum(clamp_ozon_bid(b, d, dp) for b in cur_bids) / len(cur_bids)
+                            price_line = f"Средняя ставка: {avg_cur:.0f} ₽ → <b>{avg_new:.0f} ₽</b> ({len(cur_bids)} SKU)\n"
+                    except Exception:
+                        pass
                     text = (
                         f"{mp_label} <b>{s['name']}</b>\n"
                         f"ДРР за 7д: <b>{s['drr']:.0f}%</b>  "
                         f"(расход {s['spend_7d']:,.0f}₽ / выручка {s['revenue_7d']:,.0f}₽)\n\n"
                         f"💡 {arrow} ставки на <b>{dp}%</b> по всем SKU\n"
+                        f"{price_line}"
                         f"Причина: {s['reason']}"
                     )
                     keyboard = InlineKeyboardMarkup([[
@@ -5405,11 +5441,23 @@ class MaxAgent(BaseAgent):
             else:
                 # WB: корректировка ставок
                 arrow = "📉 Снизить" if d == "down" else "📈 Поднять"
+                price_line = ""
+                try:
+                    from tools.marketplace import WBClient
+                    wb_shop = next((sh for sh in shops if sh["marketplace"] == "wb"), None)
+                    if wb_shop:
+                        info = await WBClient(wb_shop["api_token"]).get_campaign_cpm(cid)
+                        if info and info.get("cpm"):
+                            new_cpm = clamp_wb_cpm(info["cpm"], d, dp)
+                            price_line = f"CPM: {info['cpm']} ₽ → <b>{new_cpm} ₽</b>\n"
+                except Exception:
+                    pass
                 text = (
                     f"{mp_label} <b>{s['name']}</b>\n"
                     f"ДРР за 7д: <b>{s['drr']:.0f}%</b>  "
                     f"(расход {s['spend_7d']:,.0f}₽ / выручка {s['revenue_7d']:,.0f}₽)\n\n"
                     f"💡 {arrow} ставку на <b>{dp}%</b>\n"
+                    f"{price_line}"
                     f"Причина: {s['reason']}"
                 )
                 keyboard = InlineKeyboardMarkup([[
@@ -5636,9 +5684,8 @@ class MaxAgent(BaseAgent):
             )
             return
 
-        multiplier = (1 - delta_pct / 100) if direction == "down" else (1 + delta_pct / 100)
-        new_bids   = [
-            {"product_id": b["product_id"], "bid": max(1.0, round(b["bid"] * multiplier, 2))}
+        new_bids = [
+            {"product_id": b["product_id"], "bid": clamp_ozon_bid(b["bid"], direction, delta_pct)}
             for b in bids
         ]
         ok = await client.update_campaign_bids(campaign_id, new_bids)
@@ -6084,10 +6131,7 @@ class MaxAgent(BaseAgent):
             return
 
         current_cpm = info["cpm"]
-        if direction == "down":
-            new_cpm = max(50, int(current_cpm * (1 - delta_pct / 100)))
-        else:
-            new_cpm = int(current_cpm * (1 + delta_pct / 100))
+        new_cpm = clamp_wb_cpm(current_cpm, direction, delta_pct)
 
         ok = await wb.update_campaign_cpm(
             campaign_id, info["type"], info["subject_id"], new_cpm

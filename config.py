@@ -139,6 +139,11 @@ config.DRR_MIN_SPEND_FOR_ACTION    = 200 # ₽ минимальный расхо
 config.OZON_CAMPAIGN_INITIAL_BID   = 30  # ₽ начальная ставка per-SKU для новых кампаний
 config.OZON_CAMPAIGN_DEFAULT_BUDGET = 500 # ₽/день бюджет по умолчанию для новой кампании
 
+# Потолки безопасности для авто-корректировки ставок — независимая страховка от
+# аномального значения (баг в расчёте delta_pct, сбой API), не бизнес-правило
+config.WB_MAX_CPM_RUB   = 3000  # ₽ верхняя граница CPM WB при авто-корректировке
+config.OZON_MAX_BID_RUB = 500   # ₽ верхняя граница ставки Ozon per-SKU при авто-корректировке
+
 # Мониторинг цен конкурентов (WB публичный поиск, еженедельно)
 config.COMPETITOR_SCAN_HOUR_UTC = 6  # 06:00 UTC = 09:00 МСК, каждый понедельник
 config.COMPETITOR_KEYWORDS = [       # ниша DoggyDog — ключи для снапшота топ-100 WB
