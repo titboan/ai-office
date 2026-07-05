@@ -950,6 +950,14 @@ async def run_all_async() -> None:
             return web.Response(status=400, text="Bad Request", headers=cors)
         if mp not in ("wb", "ozon") or not product_id or new_price <= 0:
             return web.Response(status=400, text="Bad Request", headers=cors)
+
+        # Тот же лок, что и у кнопки "Применить" в /reprice (reprice_apply:{mp}:{product_id}) —
+        # защищает от двойного клика/сетевого ретрая, и от гонки между дашбордом и Telegram
+        # одновременно (общий Redis-ключ).
+        lock = f"reprice_apply:{mp}:{product_id}"
+        if not await max_agent._redis_acquire_lock(lock, "1", ttl=60):
+            return web.json_response({"ok": False, "error": "already_applying"}, status=409, headers=cors)
+
         ok = await max_agent._apply_price(chat_id, mp, product_id, new_price)
         return web.json_response({"ok": ok}, headers=cors)
 
@@ -989,11 +997,18 @@ async def run_all_async() -> None:
             return web.Response(status=400, text="Bad Request", headers=cors)
         if mp not in ("wb", "ozon") or not campaign_id or direction not in ("up", "down"):
             return web.Response(status=400, text="Bad Request", headers=cors)
+        if mp == "ozon" and not shop_id:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+
+        # Тот же лок, что и в _handle_bid_callback/_handle_ozbid_callback (bid_apply:{mp}:{campaign_id})
+        # — защищает от двойного клика и от гонки между дашбордом и Telegram одновременно.
+        lock = f"bid_apply:{mp}:{campaign_id}"
+        if not await max_agent._redis_acquire_lock(lock, "1", ttl=60):
+            return web.json_response({"ok": False, "error": "already_applying"}, status=409, headers=cors)
+
         if mp == "wb":
             result = await max_agent._apply_wb_bid_raw(chat_id, campaign_id, direction, delta_pct)
         else:
-            if not shop_id:
-                return web.Response(status=400, text="Bad Request", headers=cors)
             result = await max_agent._apply_ozon_bid_raw(chat_id, str(shop_id), campaign_id, direction, delta_pct)
         return web.json_response(result, headers=cors)
 

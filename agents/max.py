@@ -5664,6 +5664,11 @@ class MaxAgent(BaseAgent):
         except ValueError:
             delta_pct = 0
 
+        lock = f"bid_apply:ozon:{campaign_id}"
+        if not await self._redis_acquire_lock(lock, "1", ttl=60):
+            await query.answer("Уже применяется…", show_alert=False)
+            return
+
         from db import get_marketplace_shops
         from tools.marketplace import OzonPerformanceClient
 
@@ -6108,6 +6113,12 @@ class MaxAgent(BaseAgent):
             return
 
         delta_pct = int(delta_str)
+
+        lock = f"bid_apply:wb:{campaign_id}"
+        if not await self._redis_acquire_lock(lock, "1", ttl=60):
+            await query.answer("Уже применяется…", show_alert=False)
+            return
+
         from db import get_marketplace_shops
         from tools.marketplace import WBClient
         shops = await get_marketplace_shops(chat_id)
