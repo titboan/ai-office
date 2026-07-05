@@ -186,6 +186,14 @@ async def _create_schema() -> None:
                 UNIQUE (marketplace, order_id)
             );
         """)
+        # UNIQUE(marketplace, order_id) не начинается с chat_id — не помогает запросам
+        # дашборда/Питера вида "WHERE chat_id = $1 AND sale_date >= $2" (полное сканирование
+        # таблицы при росте истории). marketplace_financial_report/product_adv_stats/
+        # marketplace_stocks уже покрыты — их UNIQUE начинается с chat_id.
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_marketplace_sales_chat_date
+                ON marketplace_sales (chat_id, sale_date);
+        """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS marketplace_orders (
                 id           BIGSERIAL PRIMARY KEY,
@@ -200,6 +208,13 @@ async def _create_schema() -> None:
                 created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
                 UNIQUE (marketplace, order_id)
             );
+        """)
+        # Та же причина, что и у marketplace_sales выше — UNIQUE(marketplace, order_id) не
+        # покрывает запросы по chat_id + order_date (net_margin avg_price, revenue_by_day,
+        # bid-suggestions orders CTE и т.д. — самые частые запросы дашборда).
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_marketplace_orders_chat_date
+                ON marketplace_orders (chat_id, order_date);
         """)
         await conn.execute("""
             ALTER TABLE marketplace_orders

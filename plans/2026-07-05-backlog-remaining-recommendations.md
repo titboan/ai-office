@@ -167,9 +167,16 @@
   не задан) — не ограничиваем, а не падаем: fallback-словарь агента не переживает рестарт
   процесса и не годится для счётчика между инстансами. Не критично при одном пользователе
   сейчас, но дёшево сделать заранее — до того как появится кто-то ещё с доступом к ссылке.
-- [ ] Индексы в БД на `marketplace_orders`/`marketplace_financial_report`/`product_adv_stats`/
-  `marketplace_stocks` (сейчас в схеме всего 6 индексов, ни одного на эти таблицы — а Питер и
-  дашборд сканируют их по `chat_id + дата` при каждом запросе)
+- [x] **Индексы в БД — уточнение находки и фикс.** При реализации выяснилось, что находка была
+  верна только частично: `marketplace_financial_report`/`product_adv_stats`/`marketplace_stocks`
+  уже покрыты — их `UNIQUE(chat_id, ...)` начинается с `chat_id`, а составной уникальный
+  constraint в Postgres — это и есть btree-индекс. Реальный пробел — только
+  `marketplace_orders` и `marketplace_sales`: их `UNIQUE(marketplace, order_id)` не начинается
+  с `chat_id`, поэтому самые частые запросы дашборда/Питера (`WHERE chat_id = $1 AND
+  order_date/sale_date >= $2`) шли полным сканированием таблицы. `db.py`:
+  `idx_marketplace_orders_chat_date`/`idx_marketplace_sales_chat_date` — `(chat_id, дата)`,
+  `CREATE INDEX IF NOT EXISTS` создаётся при следующем деплое автоматически (`init_db()`
+  на старте). `py_compile`, `import db`, тесты 32/32 без изменений.
 - [ ] Кэш/параллелизация живых WB/Ozon Performance API вызовов в
   `_collect_bid_suggestions_for_dashboard` (Фаза 4) — сейчас последовательный цикл, при
   нескольких предложениях заметно замедляет `GET /api/dashboard`
