@@ -17,7 +17,7 @@ from config import config
 from utils.tg_format import bold, escape
 from utils.tg_rich import send_rich_or_fallback as _send_rich
 from utils.mp_format import mp_label as _mp_label, mp_emoji as _mp_emoji
-from .base_agent import BaseAgent
+from .base_agent import BaseAgent, with_company_context
 
 _UTC = timezone.utc
 
@@ -4508,7 +4508,7 @@ class MaxAgent(BaseAgent):
 
         # System prompt
         from datetime import date
-        system = (
+        system = with_company_context(
             "Ты — Макс, ИИ-ассистент по управлению отзывами на маркетплейсах Wildberries и Ozon.\n"
             "Ты работаешь в команде продавца. Отвечай по-русски, кратко и по делу.\n"
             "Можешь получать данные об отзывах через инструменты.\n"

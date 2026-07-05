@@ -19,7 +19,7 @@ from db import (
 from task_queue import create_reminder
 from tools.ntfy import send_push
 from utils.tg_rich import send_rich_or_fallback as _send_rich
-from .base_agent import BaseAgent
+from .base_agent import BaseAgent, with_company_context
 
 
 _PRIORITY_LABELS = {"low": "🟢 Низкий", "medium": "🟡 Средний", "high": "🔴 Высокий", "urgent": "🚨 Срочно"}
@@ -214,7 +214,7 @@ class AlexAgent(BaseAgent):
 
     async def _run_with_tools(self, user_message: str, chat_id: int) -> str:
         today = date.today().isoformat()
-        system = f"{ALEX_SYSTEM}\n\nТекущая дата: {today}"
+        system = with_company_context(f"{ALEX_SYSTEM}\n\nТекущая дата: {today}")
         messages = [{"role": "user", "content": user_message}]
 
         for _ in range(5):

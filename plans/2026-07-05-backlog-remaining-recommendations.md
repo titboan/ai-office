@@ -88,8 +88,20 @@
   и непосредственно перед записью в API в `_handle_bid_callback`/`_handle_ozbid_callback` —
   один источник правды, превью не может разойтись с тем, что реально применится. Тесты:
   `tests/test_bid_clamp.py` (8 тестов: процент вниз/вверх, пол, потолок для обоих маркетплейсов).
-- [ ] Persistent company context — профиль компании в system prompt всех агентов (не только
-  через `config.COMPANY_CONTEXT`, единообразно)
+- [x] **Persistent company context — единообразно во всех system-промптах, не только в
+  основном tool_use цикле.** Проверка показала: `config.COMPANY_CONTEXT` реально доходил
+  только туда, где агент вызывал `self._effective_system` (базовый tool_use цикл
+  `base_agent.py` + Тина) — но 12+ прямых вызовов `claude.messages.create` с собственным
+  `system=` (Питер: `cmd_report`/`cmd_audit`/`cmd_drr`/`cmd_funnel`/`cmd_supply`/
+  `_order_analysis`/`cmd_seo_audit`/`run_daily_digest` и спец-промпты
+  `PETER_AUDIT_PROMPT`/`PETER_DRR_PROMPT`/`PETER_ABC_PROMPT`; Кевин, Дэн, Марта
+  chain planner, Алекс, Макс — обработка отзывов) молча работали без контекста компании.
+  `agents/base_agent.py`: новая функция `with_company_context(system_prompt)` — вынесена
+  из `_effective_system` (теперь `_effective_system` = `with_company_context(self.system_prompt)`),
+  переиспользуется везде, где system-промпт не равен `self.system_prompt` дословно.
+  Все 12 точек вызова в `peter.py`, плюс по одной в `kevin.py`, `dan.py`, `marta.py`,
+  `alex.py`, `max.py` — теперь получают контекст компании. `py_compile` + полный набор
+  тестов (32/32) прошли без изменений в тестах — рефакторинг чисто аддитивный.
 - [ ] Полный автономный цикл задача → план → код → тесты → PR → деплой (зависит от разморозки
   Кевина или другого агента-разработчика — сейчас неактуально, Кевин заморожен)
 

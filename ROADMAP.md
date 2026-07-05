@@ -308,7 +308,9 @@ CTR < 1% (дайджест Питера)
 
 ### ⚪ Phase 9 — AI Operating System
 
-- [ ] Persistent company context — профиль компании в system prompt всех агентов
+- [x] Persistent company context — `config.COMPANY_CONTEXT` теперь единообразно доходит
+  до всех system-промптов через `with_company_context()` (`agents/base_agent.py`), не только
+  через основной tool_use цикл — см. `plans/2026-07-05-backlog-remaining-recommendations.md`
 - [ ] Механизм уточнений — агент задаёт вопрос, ждёт ответа, продолжает
 - [ ] Approval Gates по уровням риска: безопасные действия (чтение, анализ) — авто; рискованные (цены, ставки) — с кнопкой; критичные (деплой, PR) — только вручную
 - [ ] Autonomous workflow: задача → план → код → тесты → PR → деплой

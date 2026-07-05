@@ -10,7 +10,7 @@ from config import config
 from utils.tg_rich import send_rich_or_fallback as _send_rich
 from utils.mp_format import mp_emoji as _mp_emoji, split_by_marketplace
 from task_queue import create_task as enqueue_task
-from .base_agent import BaseAgent
+from .base_agent import BaseAgent, with_company_context
 
 _UTC = timezone.utc
 
@@ -1003,7 +1003,7 @@ class PeterAgent(BaseAgent):
             resp = await client.messages.create(
                 model=config.CLAUDE_MODEL,
                 max_tokens=config.MAX_TOKENS,
-                system=PETER_SYSTEM,
+                system=self._effective_system,
                 messages=[{"role": "user", "content": prompt}],
             )
             answer = resp.content[0].text
@@ -1157,7 +1157,7 @@ class PeterAgent(BaseAgent):
             resp = await client.messages.create(
                 model=config.CLAUDE_MODEL,
                 max_tokens=4096,
-                system=PETER_SYSTEM,
+                system=self._effective_system,
                 messages=[{"role": "user", "content": prompt}],
             )
             answer = resp.content[0].text
@@ -1222,7 +1222,7 @@ class PeterAgent(BaseAgent):
             resp = await client.messages.create(
                 model=config.CLAUDE_MODEL,
                 max_tokens=4096,
-                system=PETER_AUDIT_PROMPT,
+                system=with_company_context(PETER_AUDIT_PROMPT),
                 messages=[{"role": "user", "content": prompt}],
             )
             answer = resp.content[0].text
@@ -1290,7 +1290,7 @@ class PeterAgent(BaseAgent):
             resp = await client.messages.create(
                 model=config.CLAUDE_MODEL,
                 max_tokens=2048,
-                system=PETER_DRR_PROMPT,
+                system=with_company_context(PETER_DRR_PROMPT),
                 messages=[{"role": "user", "content": prompt}],
             )
             answer = resp.content[0].text
@@ -1356,7 +1356,7 @@ class PeterAgent(BaseAgent):
             resp = await client.messages.create(
                 model=config.CLAUDE_MODEL,
                 max_tokens=2048,
-                system=PETER_DRR_PROMPT,
+                system=with_company_context(PETER_DRR_PROMPT),
                 messages=[{"role": "user", "content": prompt}],
             )
             answer = resp.content[0].text
@@ -1458,7 +1458,7 @@ class PeterAgent(BaseAgent):
             resp = await client.messages.create(
                 model=config.CLAUDE_MODEL,
                 max_tokens=2048,
-                system=PETER_SYSTEM,
+                system=self._effective_system,
                 messages=[{"role": "user", "content": prompt}],
             )
             answer = resp.content[0].text
@@ -2013,7 +2013,7 @@ cluster_dr для Ozon — из аналитики Ozon /v1/analytics/data (ес
             resp = await client.messages.create(
                 model=config.CLAUDE_MODEL,
                 max_tokens=8000,
-                system=PETER_SYSTEM,
+                system=self._effective_system,
                 messages=[{"role": "user", "content": prompt}],
             )
             answer = resp.content[0].text
@@ -2232,7 +2232,7 @@ cluster_dr для Ozon — из аналитики Ozon /v1/analytics/data (ес
             resp = await client.messages.create(
                 model=config.CLAUDE_MODEL,
                 max_tokens=3000,
-                system=PETER_SYSTEM,
+                system=self._effective_system,
                 messages=[{"role": "user", "content": prompt}],
             )
             return resp.content[0].text
@@ -2399,7 +2399,7 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
             resp = await client.messages.create(
                 model=config.CLAUDE_MODEL,
                 max_tokens=2048,
-                system=PETER_SYSTEM,
+                system=self._effective_system,
                 messages=[{"role": "user", "content": prompt}],
             )
             answer = resp.content[0].text
@@ -2597,7 +2597,7 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
             resp = await client.messages.create(
                 model=config.CLAUDE_MODEL,
                 max_tokens=2048,
-                system=PETER_AUDIT_PROMPT,
+                system=with_company_context(PETER_AUDIT_PROMPT),
                 messages=[{"role": "user", "content": prompt}],
             )
             answer = resp.content[0].text
@@ -2708,7 +2708,7 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
             resp = await client.messages.create(
                 model=config.CLAUDE_MODEL,
                 max_tokens=1000,
-                system=PETER_SYSTEM,
+                system=self._effective_system,
                 messages=[{"role": "user", "content": prompt}],
             )
             answer = resp.content[0].text
@@ -2759,7 +2759,7 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
             resp = await client.messages.create(
                 model=config.CLAUDE_MODEL,
                 max_tokens=2048,
-                system=PETER_ABC_PROMPT,
+                system=with_company_context(PETER_ABC_PROMPT),
                 messages=[{"role": "user", "content": prompt}],
             )
             answer = resp.content[0].text

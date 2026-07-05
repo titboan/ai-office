@@ -17,7 +17,7 @@ from db import save_project, find_project, list_projects
 from utils.tg_format import clean_agent_output as _clean_output
 from utils.tg_rich import send_rich_or_fallback as _send_rich
 from task_queue import create_task as enqueue_task, get_active_tasks, get_recent_tasks, enqueue_chain_task
-from .base_agent import BaseAgent, _AGENT_NAMES
+from .base_agent import BaseAgent, _AGENT_NAMES, with_company_context
 
 _HEAVY_SYNC_PAYLOADS = {
     "__sync__", "__sync_adv__", "__sync_fin__",
@@ -287,7 +287,7 @@ class MartaAgent(BaseAgent):
             response = await self.claude.messages.create(
                 model=config.CLAUDE_OPUS_MODEL,
                 max_tokens=2000,
-                system=self._CHAIN_PLANNER_SYSTEM,
+                system=with_company_context(self._CHAIN_PLANNER_SYSTEM),
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = response.content[0].text.strip()

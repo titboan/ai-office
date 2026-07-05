@@ -100,6 +100,17 @@ def _build_context(prev_results: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
+def with_company_context(system_prompt: str) -> str:
+    """Добавить config.COMPANY_CONTEXT к произвольному system-промпту.
+
+    Единая точка для всех прямых вызовов claude.messages.create в агентах —
+    без неё специализированные промпты (аудит, ДРР, chain planner и т.п.)
+    молча не получали контекст компании, в отличие от основного tool_use цикла.
+    """
+    ctx = getattr(config, "COMPANY_CONTEXT", "")
+    return f"{system_prompt}\n\n{ctx}" if ctx else system_prompt
+
+
 def _normalize_plan_steps(steps: list[dict]) -> list[dict]:
     """Добавить поле 'group' если его нет. Обратная совместимость: индекс = группа.
 
@@ -127,10 +138,7 @@ class BaseAgent(ABC):
 
     @property
     def _effective_system(self) -> str:
-        ctx = getattr(config, "COMPANY_CONTEXT", "")
-        if ctx:
-            return self.system_prompt + "\n\n" + ctx
-        return self.system_prompt
+        return with_company_context(self.system_prompt)
 
     def __init__(self, bot_token: str) -> None:
         self.bot_token = bot_token

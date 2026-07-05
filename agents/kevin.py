@@ -256,7 +256,7 @@ class KevinAgent(BaseAgent):
                 response = await self.claude.messages.create(
                     model=config.CLAUDE_MODEL,
                     max_tokens=16000,
-                    system=KEVIN_SYSTEM,
+                    system=self._effective_system,
                     messages=messages,
                     tools=GITHUB_TOOLS,
                 )

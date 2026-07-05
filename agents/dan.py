@@ -217,7 +217,7 @@ class DanAgent(BaseAgent):
                 response = await self.claude.messages.create(
                     model=config.CLAUDE_MODEL,
                     max_tokens=4000,
-                    system=DAN_SYSTEM,
+                    system=self._effective_system,
                     messages=messages,
                     tools=DESIGN_TOOLS,
                 )
