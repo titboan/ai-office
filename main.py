@@ -742,6 +742,25 @@ async def run_all_async() -> None:
     # ── Dashboard API (aiohttp) ───────────────────────────────────────────────
     _CORS_ORIGIN = config.DASHBOARD_URL or "*"
 
+    async def _rate_limited(chat_id: int, endpoint: str, limit: int, window_sec: int) -> bool:
+        """True — лимит превышен, запрос нужно отклонить. Fixed-window счётчик в Redis
+        (INCR + EXPIRE на первом попадании), отдельный ключ на chat_id+endpoint. Без Redis
+        (REDIS_URL не задан) не ограничиваем — fallback-dict агента не переживает рестарт
+        процесса и не годится для счётчика."""
+        if max_agent is None:
+            return False
+        redis = await max_agent._get_redis()
+        if redis is None:
+            return False
+        key = f"ratelimit:{endpoint}:{chat_id}"
+        try:
+            count = await redis.incr(key)
+            if count == 1:
+                await redis.expire(key, window_sec)
+            return count > limit
+        except Exception:
+            return False
+
     async def _handle_dashboard(request: web.Request) -> web.Response:
         cors = {"Access-Control-Allow-Origin": _CORS_ORIGIN}
         if request.method == "OPTIONS":
@@ -766,6 +785,8 @@ async def run_all_async() -> None:
                 chat_id = int(user["id"])
             except Exception:
                 return web.Response(status=400, text="Bad Request", headers=cors)
+        if await _rate_limited(chat_id, "dashboard", limit=30, window_sec=60):
+            return web.Response(status=429, text="Too Many Requests", headers=cors)
         if peter_agent is None:
             return web.Response(status=503, text="Peter agent not running", headers=cors)
         try:
@@ -849,6 +870,8 @@ async def run_all_async() -> None:
                 chat_id = int(user["id"])
             except Exception:
                 return web.Response(status=400, text="Bad Request", headers=cors)
+        if await _rate_limited(chat_id, "timeline", limit=30, window_sec=60):
+            return web.Response(status=429, text="Too Many Requests", headers=cors)
         try:
             from db import get_pool
             pool = await get_pool()
@@ -939,6 +962,8 @@ async def run_all_async() -> None:
             chat_id = int(user["id"])
         except Exception:
             return web.Response(status=400, text="Bad Request", headers=cors)
+        if await _rate_limited(chat_id, "apply_price", limit=10, window_sec=60):
+            return web.Response(status=429, text="Too Many Requests", headers=cors)
         if max_agent is None:
             return web.Response(status=503, text="Max agent not running", headers=cors)
         try:
@@ -984,6 +1009,8 @@ async def run_all_async() -> None:
             chat_id = int(user["id"])
         except Exception:
             return web.Response(status=400, text="Bad Request", headers=cors)
+        if await _rate_limited(chat_id, "apply_bid", limit=10, window_sec=60):
+            return web.Response(status=429, text="Too Many Requests", headers=cors)
         if max_agent is None:
             return web.Response(status=503, text="Max agent not running", headers=cors)
         try:
