@@ -1,5 +1,6 @@
 import { TrendRow } from '../api'
 import Card from '../components/Card'
+import EmptyState from '../components/EmptyState'
 import MarketplaceBadge from '../components/MarketplaceBadge'
 import { trendColorClass } from '../theme'
 
@@ -14,7 +15,9 @@ function arrow(v: number | null) {
 }
 
 export default function WowTrend({ data }: { data: TrendRow[] }) {
-  if (!data.length) return null
+  if (!data.length) {
+    return <Card title="Тренд (неделя к неделе)"><EmptyState /></Card>
+  }
   return (
     <Card title="Тренд (неделя к неделе)">
       <div className="flex gap-4">

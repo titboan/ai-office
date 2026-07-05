@@ -1,6 +1,7 @@
 import { Layers } from 'lucide-react'
 import { AbcRow } from '../api'
 import Card from '../components/Card'
+import EmptyState from '../components/EmptyState'
 
 const GROUP_STYLE: Record<string, string> = {
   A: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
@@ -15,7 +16,13 @@ const GROUP_ROW: Record<string, string> = {
 }
 
 export default function AbcTable({ data }: { data: AbcRow[] }) {
-  if (!data || data.length === 0) return null
+  if (!data || data.length === 0) {
+    return (
+      <Card title={<span className="text-gray-700 dark:text-gray-200 flex items-center gap-1.5"><Layers size={15} /> ABC-анализ</span>}>
+        <EmptyState />
+      </Card>
+    )
+  }
 
   const countA = data.filter(r => r.group === 'A').length
   const countB = data.filter(r => r.group === 'B').length

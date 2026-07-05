@@ -1,6 +1,7 @@
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, ReferenceLine } from 'recharts'
 import { NetMarginRow } from '../api'
 import Card from '../components/Card'
+import EmptyState from '../components/EmptyState'
 import { TOOLTIP_STYLE, marginColorHex } from '../theme'
 
 export default function MarginChart({ data }: { data: NetMarginRow[] }) {
@@ -9,9 +10,15 @@ export default function MarginChart({ data }: { data: NetMarginRow[] }) {
     .sort((a, b) => (b.net_margin_pct_total ?? 0) - (a.net_margin_pct_total ?? 0))
     .slice(0, 12)
 
-  if (!combined.length) return null
-
   const fmt = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}к` : String(v)
+
+  if (!combined.length) {
+    return (
+      <Card title="Рентабельность по товарам (%)" subtitle="NET-маржа: выплата МП − себестоимость − налог, по обеим площадкам">
+        <EmptyState />
+      </Card>
+    )
+  }
 
   return (
     <Card title="Рентабельность по товарам (%)" subtitle="NET-маржа: выплата МП − себестоимость − налог, по обеим площадкам">

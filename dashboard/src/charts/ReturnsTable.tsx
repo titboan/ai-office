@@ -1,5 +1,6 @@
 import { ReturnRow } from '../api'
 import Card from '../components/Card'
+import EmptyState from '../components/EmptyState'
 
 function rateColor(rate: number) {
   const pct = rate * 100
@@ -11,7 +12,9 @@ function rateColor(rate: number) {
 const fmt = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}к` : v.toLocaleString()
 
 export default function ReturnsTable({ data }: { data: ReturnRow[] }) {
-  if (!data.length) return null
+  if (!data.length) {
+    return <Card title="Топ возвратов"><EmptyState /></Card>
+  }
   const rows = data.slice(0, 8)
   return (
     <Card title="Топ возвратов">

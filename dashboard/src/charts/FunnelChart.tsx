@@ -1,10 +1,18 @@
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, Legend } from 'recharts'
 import { FunnelRow } from '../api'
 import Card from '../components/Card'
-import { MARKETPLACE, TOOLTIP_STYLE } from '../theme'
+import EmptyState from '../components/EmptyState'
+import { useIsDarkMode } from '../hooks/useIsDarkMode'
+import { marketplaceChartColor, TOOLTIP_STYLE } from '../theme'
 
 export default function FunnelChart({ data }: { data: FunnelRow[] }) {
-  if (!data.length) return null
+  const isDark = useIsDarkMode()
+  const wbColor = marketplaceChartColor('wb', isDark)
+  const ozonColor = marketplaceChartColor('ozon', isDark)
+
+  if (!data.length) {
+    return <Card title="Воронка конверсии" subtitle="Просмотры → Корзина → Заказ"><EmptyState /></Card>
+  }
   const top = data.slice(0, 8)
   return (
     <Card title="Воронка конверсии" subtitle="Просмотры → Корзина → Заказ">
@@ -15,10 +23,10 @@ export default function FunnelChart({ data }: { data: FunnelRow[] }) {
           <YAxis tick={{ fontSize: 10, fill: 'currentColor' }} unit="%" width={32} />
           <Tooltip formatter={(v: number) => [`${v}%`]} contentStyle={TOOLTIP_STYLE} />
           <Legend iconSize={10} wrapperStyle={{ fontSize: 10 }} />
-          <ReferenceLine y={2} stroke={MARKETPLACE.wb.color} strokeDasharray="3 3" label={{ value: '2%', fontSize: 9, fill: MARKETPLACE.wb.color }} />
-          <ReferenceLine y={10} stroke={MARKETPLACE.ozon.color} strokeDasharray="3 3" label={{ value: '10%', fontSize: 9, fill: MARKETPLACE.ozon.color }} />
-          <Bar dataKey="view_to_cart_pct" name="Просм.→Корзина" fill={MARKETPLACE.wb.color} />
-          <Bar dataKey="cart_to_order_pct" name="Корзина→Заказ" fill={MARKETPLACE.ozon.color} />
+          <ReferenceLine y={2} stroke={wbColor} strokeDasharray="3 3" label={{ value: '2%', fontSize: 9, fill: wbColor }} />
+          <ReferenceLine y={10} stroke={ozonColor} strokeDasharray="3 3" label={{ value: '10%', fontSize: 9, fill: ozonColor }} />
+          <Bar dataKey="view_to_cart_pct" name="Просм.→Корзина" fill={wbColor} />
+          <Bar dataKey="cart_to_order_pct" name="Корзина→Заказ" fill={ozonColor} />
         </BarChart>
       </ResponsiveContainer>
     </Card>

@@ -1,10 +1,14 @@
-import { Workflow } from 'lucide-react'
+import {
+  Workflow, Users, Code2, Search, BarChart3, PenLine, Calendar,
+  ShoppingCart, Palette, Newspaper, Landmark, Bot, LucideIcon,
+} from 'lucide-react'
 import { ChainRun, TimelineEvent } from '../api'
 import Card from '../components/Card'
 
-const AGENT_EMOJI: Record<string, string> = {
-  marta: '👩‍💼', kevin: '👨‍💻', kasper: '🔍', peter: '📊',
-  elina: '✍️', alex: '🗓️', max: '🛒', dan: '🎨', eva: '📰', tina: '🏛️',
+const AGENT_ICON: Record<string, LucideIcon> = {
+  marta: Users, kevin: Code2, kasper: Search, peter: BarChart3,
+  elina: PenLine, alex: Calendar, max: ShoppingCart, dan: Palette,
+  eva: Newspaper, tina: Landmark,
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -76,24 +80,27 @@ export default function ChainTimeline({ chains }: { chains: ChainRun[] }) {
             {/* Agent pipeline */}
             {agents.length > 0 && (
               <div className="flex items-center gap-1 flex-wrap">
-                {agents.map(({ key, status }, i) => (
-                  <div key={`${key}-${i}`} className="flex items-center gap-1">
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded-full ${
-                        status === 'completed'
-                          ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                          : status === 'failed'
-                          ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
-                          : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-                      }`}
-                    >
-                      {AGENT_EMOJI[key] ?? '🤖'} {key}
-                    </span>
-                    {i < agents.length - 1 && (
-                      <span className="text-gray-300 dark:text-gray-600 text-xs">→</span>
-                    )}
-                  </div>
-                ))}
+                {agents.map(({ key, status }, i) => {
+                  const AgentIcon = AGENT_ICON[key] ?? Bot
+                  return (
+                    <div key={`${key}-${i}`} className="flex items-center gap-1">
+                      <span
+                        className={`text-xs px-2 py-0.5 rounded-full inline-flex items-center gap-1 ${
+                          status === 'completed'
+                            ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                            : status === 'failed'
+                            ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                            : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                        }`}
+                      >
+                        <AgentIcon size={11} /> {key}
+                      </span>
+                      {i < agents.length - 1 && (
+                        <span className="text-gray-300 dark:text-gray-600 text-xs">→</span>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             )}
           </div>

@@ -1,5 +1,6 @@
 import { StockVelocity } from '../api'
 import Card from '../components/Card'
+import EmptyState from '../components/EmptyState'
 import MarketplaceBadge from '../components/MarketplaceBadge'
 import { stockBarClass, stockColorClass } from '../theme'
 
@@ -59,9 +60,7 @@ export default function StockTable({ data }: { data: StockVelocity[] }) {
             </div>
           </div>
         ))}
-        {rows.length === 0 && (
-          <div className="py-4 text-center text-xs text-gray-400 dark:text-gray-500">Нет данных</div>
-        )}
+        {rows.length === 0 && <EmptyState />}
       </div>
     </Card>
   )

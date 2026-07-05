@@ -1,7 +1,8 @@
 import { ComposedChart, Area, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import { DayRevenue } from '../api'
 import Card from '../components/Card'
-import { MARKETPLACE, TOOLTIP_STYLE } from '../theme'
+import { useIsDarkMode } from '../hooks/useIsDarkMode'
+import { marketplaceChartColor, TOOLTIP_STYLE } from '../theme'
 
 interface Props {
   data: DayRevenue[]
@@ -17,6 +18,9 @@ const fmtDate = (iso: string) => {
 }
 
 export default function RevenueChart({ data, sales }: Props) {
+  const isDark = useIsDarkMode()
+  const wbColor = marketplaceChartColor('wb', isDark)
+  const ozonColor = marketplaceChartColor('ozon', isDark)
   const salesMap = new Map(sales.map(s => [s.date, s]))
   const merged = data.map(r => ({
     date: r.date,
@@ -38,10 +42,10 @@ export default function RevenueChart({ data, sales }: Props) {
             contentStyle={TOOLTIP_STYLE}
           />
           <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
-          <Line type="monotone" dataKey="wb" name="WB заказы" stroke={MARKETPLACE.wb.color} dot={false} strokeWidth={2} />
-          <Area type="monotone" dataKey="wb_s" name="WB выкупы" fill={MARKETPLACE.wb.color} stroke="none" fillOpacity={0.18} legendType="none" />
-          <Line type="monotone" dataKey="ozon" name="Ozon заказы" stroke={MARKETPLACE.ozon.color} dot={false} strokeWidth={2} />
-          <Area type="monotone" dataKey="ozon_s" name="Ozon выкупы" fill={MARKETPLACE.ozon.color} stroke="none" fillOpacity={0.18} legendType="none" />
+          <Line type="monotone" dataKey="wb" name="WB заказы" stroke={wbColor} dot={false} strokeWidth={2} />
+          <Area type="monotone" dataKey="wb_s" name="WB выкупы" fill={wbColor} stroke="none" fillOpacity={0.18} legendType="none" />
+          <Line type="monotone" dataKey="ozon" name="Ozon заказы" stroke={ozonColor} dot={false} strokeWidth={2} />
+          <Area type="monotone" dataKey="ozon_s" name="Ozon выкупы" fill={ozonColor} stroke="none" fillOpacity={0.18} legendType="none" />
         </ComposedChart>
       </ResponsiveContainer>
     </Card>

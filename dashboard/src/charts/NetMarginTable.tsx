@@ -1,5 +1,6 @@
 import { NetMarginRow } from '../api'
 import Card from '../components/Card'
+import EmptyState from '../components/EmptyState'
 import { MARGIN_TARGET_PCT, marginColorClass as marginColor } from '../theme'
 
 const fmt = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}к` : v.toLocaleString()
@@ -26,7 +27,13 @@ function MarginCell({ pct, atTarget, recPrice }: {
 }
 
 export default function NetMarginTable({ data }: { data: NetMarginRow[] }) {
-  if (!data.length) return null
+  if (!data.length) {
+    return (
+      <Card title="NET маржа (реальные выплаты)" subtitle={`Цель: ${MARGIN_TARGET_PCT}% · ✓ норма · % → цена₽ = рекомендация`}>
+        <EmptyState />
+      </Card>
+    )
+  }
   const rows = [...data].sort((a, b) => b.net_profit_total - a.net_profit_total)
   return (
     <Card title="NET маржа (реальные выплаты)" subtitle={`Цель: ${MARGIN_TARGET_PCT}% · ✓ норма · % → цена₽ = рекомендация`}>

@@ -3,14 +3,24 @@
 // при следующем изменении порога/цвета правим один раз здесь.
 
 export const MARKETPLACE = {
-  wb:   { label: 'WB',   color: '#7c3aed' },
-  ozon: { label: 'Ozon', color: '#2563eb' },
+  // color — для светлой темы; colorDark — светлее и контрастнее на тёмном фоне
+  // (иначе линии/области графиков остаются на тех же hex и выглядят тускло в dark mode)
+  wb:   { label: 'WB',   color: '#7c3aed', colorDark: '#a78bfa' },
+  ozon: { label: 'Ozon', color: '#2563eb', colorDark: '#60a5fa' },
 } as const
 
 export type MarketplaceKey = keyof typeof MARKETPLACE
 
 export const marketplaceLabel = (mp: string) => MARKETPLACE[mp as MarketplaceKey]?.label ?? mp
 export const marketplaceColor = (mp: string) => MARKETPLACE[mp as MarketplaceKey]?.color ?? '#6b7280'
+
+// Цвет площадки для графиков (Recharts не умеет читать Tailwind dark: классы) —
+// используется вместе с useIsDarkMode().
+export function marketplaceChartColor(mp: string, isDark: boolean): string {
+  const m = MARKETPLACE[mp as MarketplaceKey]
+  if (!m) return '#6b7280'
+  return isDark ? m.colorDark : m.color
+}
 
 // Recharts contentStyle — привязан к CSS-переменным тултипа из index.css
 export const TOOLTIP_STYLE = {

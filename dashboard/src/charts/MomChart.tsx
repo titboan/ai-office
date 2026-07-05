@@ -1,12 +1,18 @@
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { MomRow } from '../api'
 import Card from '../components/Card'
-import { MARKETPLACE, TOOLTIP_STYLE } from '../theme'
+import EmptyState from '../components/EmptyState'
+import { useIsDarkMode } from '../hooks/useIsDarkMode'
+import { marketplaceChartColor, TOOLTIP_STYLE } from '../theme'
 
 const fmt = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}к` : String(v)
 
 export default function MomChart({ data }: { data: MomRow[] }) {
-  if (data.length < 2) return null
+  const isDark = useIsDarkMode()
+
+  if (data.length < 2) {
+    return <Card title="Динамика по месяцам"><EmptyState message="Нужно минимум 2 месяца данных для динамики" /></Card>
+  }
   const rows = data.map(r => ({
     ...r,
     label: r.month ? r.month.slice(0, 7) : '',
@@ -18,7 +24,7 @@ export default function MomChart({ data }: { data: MomRow[] }) {
           <XAxis dataKey="label" tick={{ fontSize: 10, fill: 'currentColor' }} />
           <YAxis tick={{ fontSize: 10, fill: 'currentColor' }} tickFormatter={fmt} width={36} />
           <Tooltip formatter={(v: number) => [`${v.toLocaleString()} ₽`]} contentStyle={TOOLTIP_STYLE} />
-          <Bar dataKey="revenue" name="Выручка" fill={MARKETPLACE.wb.color} radius={[4, 4, 0, 0]} />
+          <Bar dataKey="revenue" name="Выручка" fill={marketplaceChartColor('wb', isDark)} radius={[4, 4, 0, 0]} />
         </BarChart>
       </ResponsiveContainer>
     </Card>

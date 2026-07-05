@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { LayoutDashboard, AlertCircle } from 'lucide-react'
+import { LayoutDashboard, AlertCircle, Sun, Moon } from 'lucide-react'
 import { fetchDashboard, fetchTimeline, DashboardData, TimelineData } from './api'
 import RevenueChart from './charts/RevenueChart'
 import TopProducts from './charts/TopProducts'
@@ -14,8 +14,24 @@ import ReturnsTable from './charts/ReturnsTable'
 import MomChart from './charts/MomChart'
 import AbcTable from './charts/AbcTable'
 import ChainTimeline from './charts/ChainTimeline'
+import CardSkeleton from './components/CardSkeleton'
 
 type Days = 7 | 14 | 30
+type Theme = 'light' | 'dark'
+
+const THEME_STORAGE_KEY = 'dashboard-theme'
+
+// Порядок: сохранённый вручную выбор → тема Telegram → системная тема браузера.
+// Без сохранённого выбора дашборд вне Telegram (по прямой ссылке) раньше всегда
+// был светлым — теперь учитывает prefers-color-scheme.
+function getInitialTheme(): Theme {
+  const saved = localStorage.getItem(THEME_STORAGE_KEY)
+  if (saved === 'light' || saved === 'dark') return saved
+  const tg = (window as any).Telegram?.WebApp
+  if (tg?.colorScheme === 'dark') return 'dark'
+  if (window.matchMedia?.('(prefers-color-scheme: dark)').matches) return 'dark'
+  return 'light'
+}
 
 export default function App() {
   const [data, setData] = useState<DashboardData | null>(null)
@@ -23,15 +39,18 @@ export default function App() {
   const [days, setDays] = useState<Days>(14)
   const [loading, setLoading] = useState(true)
   const [timeline, setTimeline] = useState<TimelineData | null>(null)
+  const [theme, setTheme] = useState<Theme>(getInitialTheme)
 
   useEffect(() => {
     const tg = (window as any).Telegram?.WebApp
     tg?.ready()
     tg?.expand()
-    if (tg?.colorScheme === 'dark') {
-      document.documentElement.classList.add('dark')
-    }
   }, [])
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark')
+    localStorage.setItem(THEME_STORAGE_KEY, theme)
+  }, [theme])
 
   useEffect(() => {
     fetchTimeline().then(setTimeline).catch(() => {})
@@ -83,7 +102,7 @@ export default function App() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-base font-bold flex items-center gap-1.5"><LayoutDashboard size={18} /> Дашборд</h1>
-        <div className="flex gap-1">
+        <div className="flex gap-1 items-center">
           {([7, 14, 30] as Days[]).map(d => (
             <button
               key={d}
@@ -95,11 +114,27 @@ export default function App() {
               {d}д
             </button>
           ))}
+          <button
+            onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+            aria-label="Переключить тему"
+            className="p-1.5 rounded bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300"
+          >
+            {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+          </button>
         </div>
       </div>
 
       {loading && (
-        <div className="text-center py-12 text-gray-400 dark:text-gray-500 text-sm">Загружаю данные…</div>
+        <>
+          <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="bg-white dark:bg-gray-800 rounded-xl p-3 shadow-sm animate-pulse h-14" />
+            ))}
+          </div>
+          <div className="space-y-3 md:space-y-0 md:grid md:grid-cols-2 lg:grid-cols-3 md:gap-3 md:items-start">
+            {Array.from({ length: 11 }).map((_, i) => <CardSkeleton key={i} />)}
+          </div>
+        </>
       )}
 
       {error && (
@@ -115,7 +150,7 @@ export default function App() {
             {kpiCards.map(({ label, value, color }) => (
               <div key={label} className="bg-white dark:bg-gray-800 rounded-xl p-3 shadow-sm text-center">
                 <div className="text-xs text-gray-500 dark:text-gray-400">{label}</div>
-                <div className={`text-lg font-bold mt-0.5 ${color || 'text-gray-800 dark:text-gray-100'}`}>{value}</div>
+                <div className={`text-xl font-bold mt-0.5 tracking-tight ${color || 'text-gray-800 dark:text-gray-100'}`}>{value}</div>
               </div>
             ))}
           </div>
