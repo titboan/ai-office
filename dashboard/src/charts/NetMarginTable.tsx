@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { NetMarginRow, applyPrice } from '../api'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
 import { MARGIN_TARGET_PCT, marginColorClass as marginColor } from '../theme'
+import { useMainButtonAction } from '../hooks/useMainButtonAction'
 
 const fmt = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}к` : v.toLocaleString()
 
@@ -50,41 +51,20 @@ export default function NetMarginTable({ data }: { data: NetMarginRow[] }) {
   const [pending, setPending] = useState<Pending | null>(null)
   const [status, setStatus] = useState<Record<string, RowStatus>>({})
 
-  useEffect(() => {
-    const tg = (window as any).Telegram?.WebApp
-    const mainButton = tg?.MainButton
-    if (!mainButton) return
-    if (!pending) {
-      mainButton.hide()
-      return
-    }
-    const label = pending.marketplace === 'wb' ? 'WB' : 'Ozon'
-    mainButton.setText(`Применить цену ${label}: ${pending.price.toLocaleString()} ₽`)
-    mainButton.show()
-
-    const onClick = async () => {
-      mainButton.showProgress()
+  useMainButtonAction(
+    pending,
+    p => `Применить цену ${p.marketplace === 'wb' ? 'WB' : 'Ozon'}: ${p.price.toLocaleString()} ₽`,
+    async p => {
       try {
-        const res = await applyPrice(pending.marketplace, pending.productId, pending.price)
-        setStatus(s => ({ ...s, [pending.key]: res.ok ? 'applied' : 'error' }))
+        const res = await applyPrice(p.marketplace, p.productId, p.price)
+        setStatus(s => ({ ...s, [p.key]: res.ok ? 'applied' : 'error' }))
       } catch {
-        setStatus(s => ({ ...s, [pending.key]: 'error' }))
+        setStatus(s => ({ ...s, [p.key]: 'error' }))
       } finally {
-        mainButton.hideProgress()
         setPending(null)
       }
-    }
-    mainButton.onClick(onClick)
-    return () => {
-      mainButton.offClick(onClick)
-    }
-  }, [pending])
-
-  // Скрыть MainButton при уходе со страницы/размонтировании карточки
-  useEffect(() => () => {
-    const mainButton = (window as any).Telegram?.WebApp?.MainButton
-    mainButton?.hide()
-  }, [])
+    },
+  )
 
   if (!data.length) {
     return (

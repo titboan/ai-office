@@ -6151,6 +6151,87 @@ class MaxAgent(BaseAgent):
                 parse_mode="HTML",
             )
 
+    async def _collect_bid_suggestions_for_dashboard(self, chat_id: int) -> list[dict]:
+        """bid_adjust предложения с реальными ₽ для дашборда — та же выборка, что в
+        auto_bid_suggest, но без рекомендации "поставить на паузу" (это отдельное действие
+        camp:pause, не корректировка ставки — на дашборде показываем только bid_adjust).
+        """
+        suggestions = await self._collect_bid_suggestions(chat_id)
+        if not suggestions:
+            return []
+
+        from db import get_marketplace_shops
+        shops = await get_marketplace_shops(chat_id)
+        wb_shop = next((s for s in shops if s["marketplace"] == "wb"), None)
+        ozon_shop = next((s for s in shops if s["marketplace"] == "ozon"), None)
+
+        result = []
+        for s in suggestions[:8]:
+            mp, cid, d, dp = s["marketplace"], s["campaign_id"], s["direction"], s["delta_pct"]
+            if mp == "ozon" and d == "down" and dp == 0:
+                continue
+            row = {**s, "shop_id": None, "current_value": None, "new_value": None}
+            try:
+                if mp == "wb" and wb_shop:
+                    from tools.marketplace import WBClient
+                    info = await WBClient(wb_shop["api_token"]).get_campaign_cpm(cid)
+                    if info and info.get("cpm"):
+                        row["current_value"] = info["cpm"]
+                        row["new_value"] = clamp_wb_cpm(info["cpm"], d, dp)
+                elif mp == "ozon" and ozon_shop:
+                    from tools.marketplace import OzonPerformanceClient
+                    client = OzonPerformanceClient(
+                        ozon_shop["ozon_client_id"], ozon_shop["ozon_perf_secret"], await self._get_redis()
+                    )
+                    bids = [b["bid"] for b in (await client.get_campaign_bids(cid)) if b.get("bid")]
+                    if bids:
+                        row["shop_id"] = str(ozon_shop["id"])
+                        row["current_value"] = round(sum(bids) / len(bids))
+                        row["new_value"] = round(sum(clamp_ozon_bid(b, d, dp) for b in bids) / len(bids))
+            except Exception:
+                pass
+            result.append(row)
+        return result
+
+    async def _apply_wb_bid_raw(self, chat_id: int, campaign_id: str, direction: str, delta_pct: int) -> dict:
+        """Применяет корректировку CPM WB для дашборда. Не переиспользует _handle_bid_callback
+        напрямую (там завязка на Telegram query) — но ту же самую clamp_wb_cpm."""
+        from db import get_marketplace_shops
+        from tools.marketplace import WBClient
+        shops = await get_marketplace_shops(chat_id)
+        wb_shop = next((s for s in shops if s["marketplace"] == "wb"), None)
+        if not wb_shop:
+            return {"ok": False}
+        wb = WBClient(wb_shop["api_token"])
+        info = await wb.get_campaign_cpm(campaign_id)
+        if not info or not info.get("cpm"):
+            return {"ok": False}
+        current_cpm = info["cpm"]
+        new_cpm = clamp_wb_cpm(current_cpm, direction, delta_pct)
+        ok = await wb.update_campaign_cpm(campaign_id, info["type"], info["subject_id"], new_cpm)
+        return {"ok": ok, "current": current_cpm, "new": new_cpm}
+
+    async def _apply_ozon_bid_raw(
+        self, chat_id: int, shop_id: str, campaign_id: str, direction: str, delta_pct: int
+    ) -> dict:
+        """Применяет корректировку ставок Ozon per-SKU для дашборда, та же clamp_ozon_bid,
+        что и _handle_ozbid_callback."""
+        from db import get_marketplace_shops
+        from tools.marketplace import OzonPerformanceClient
+        shops = await get_marketplace_shops(chat_id)
+        shop = next((s for s in shops if str(s["id"]) == str(shop_id)), None)
+        if not shop or not shop.get("ozon_client_id"):
+            return {"ok": False}
+        client = OzonPerformanceClient(shop["ozon_client_id"], shop["ozon_perf_secret"], await self._get_redis())
+        bids = await client.get_campaign_bids(campaign_id)
+        if not bids:
+            return {"ok": False}
+        avg_cur = sum(b["bid"] for b in bids) / len(bids)
+        new_bids = [{"product_id": b["product_id"], "bid": clamp_ozon_bid(b["bid"], direction, delta_pct)} for b in bids]
+        avg_new = sum(b["bid"] for b in new_bids) / len(new_bids)
+        ok = await client.update_campaign_bids(campaign_id, new_bids)
+        return {"ok": ok, "current": round(avg_cur), "new": round(avg_new), "count": len(bids)}
+
     _MENU_SUBMENUS: dict[str, tuple[str, list]] = {
         "sync": ("🔄 Синхронизация", [
             [InlineKeyboardButton("🔄 Полный синк — данные и остатки", callback_data="menu_cmd:sync")],

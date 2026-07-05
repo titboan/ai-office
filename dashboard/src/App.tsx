@@ -9,6 +9,7 @@ import StockTable from './charts/StockTable'
 import WowTrend from './charts/WowTrend'
 import MarginChart from './charts/MarginChart'
 import NetMarginTable from './charts/NetMarginTable'
+import BidSuggestions from './charts/BidSuggestions'
 import FunnelChart from './charts/FunnelChart'
 import ReturnsTable from './charts/ReturnsTable'
 import MomChart from './charts/MomChart'
@@ -132,7 +133,7 @@ export default function App() {
             ))}
           </div>
           <div className="space-y-3 md:space-y-0 md:grid md:grid-cols-2 lg:grid-cols-3 md:gap-3 md:items-start">
-            {Array.from({ length: 11 }).map((_, i) => <CardSkeleton key={i} />)}
+            {Array.from({ length: 12 }).map((_, i) => <CardSkeleton key={i} />)}
           </div>
         </>
       )}
@@ -175,6 +176,9 @@ export default function App() {
 
             {/* NET маржа из реальных выплат */}
             <NetMarginTable data={data.net_margin ?? []} />
+
+            {/* Предложения по ставкам рекламы (ДРР) */}
+            <BidSuggestions data={data.bid_suggestions ?? []} />
 
             {/* Воронка конверсии */}
             <FunnelChart data={data.funnel ?? []} />

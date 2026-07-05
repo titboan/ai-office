@@ -45,6 +45,16 @@ export interface FunnelRow {
   view_to_cart_pct: number; cart_to_order_pct: number
 }
 
+export interface BidSuggestionRow {
+  marketplace: 'wb' | 'ozon'
+  campaign_id: string
+  shop_id: string | null   // нужен только для Ozon (per-SKU ставки конкретного магазина)
+  name: string
+  spend_7d: number; revenue_7d: number; drr: number
+  direction: 'up' | 'down'; delta_pct: number; reason: string
+  current_value: number | null; new_value: number | null
+}
+
 export interface DashboardData {
   period_days: number
   date_from: string
@@ -64,6 +74,7 @@ export interface DashboardData {
   kw_top: KwRow[]
   funnel: FunnelRow[]
   abc_data: AbcRow[]
+  bid_suggestions: BidSuggestionRow[]
 }
 
 export interface TimelineEvent {
@@ -113,6 +124,27 @@ export async function applyPrice(
       'X-Telegram-Init-Data': tg?.initData ?? '',
     },
     body: JSON.stringify({ marketplace, product_id: productId, new_price: newPrice }),
+  })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json()
+}
+
+// Тот же принцип, что и applyPrice — только настоящий Telegram initData.
+// shopId нужен только для Ozon (per-SKU ставки конкретного магазина), для WB — null.
+export async function applyBid(
+  marketplace: 'wb' | 'ozon', campaignId: string, direction: 'up' | 'down', deltaPct: number,
+  shopId: string | null
+): Promise<{ ok: boolean; current?: number; new?: number }> {
+  const tg = (window as any).Telegram?.WebApp
+  const res = await fetch(`${API_URL}/api/apply_bid`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Telegram-Init-Data': tg?.initData ?? '',
+    },
+    body: JSON.stringify({
+      marketplace, campaign_id: campaignId, direction, delta_pct: deltaPct, shop_id: shopId,
+    }),
   })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   return res.json()

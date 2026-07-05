@@ -816,6 +816,14 @@ async def run_all_async() -> None:
         except Exception as e:
             logger.error(f"[dashboard] data error: {e}", exc_info=True)
             return web.Response(status=500, text="Internal Error", headers=cors)
+
+        data["bid_suggestions"] = []
+        if max_agent is not None:
+            try:
+                data["bid_suggestions"] = await max_agent._collect_bid_suggestions_for_dashboard(chat_id)
+            except Exception as e:
+                logger.error(f"[dashboard] bid_suggestions error: {e}")
+
         return web.json_response(_to_json_safe({**data, **adv}), headers=cors)
 
     async def _handle_timeline(request: web.Request) -> web.Response:
@@ -945,6 +953,50 @@ async def run_all_async() -> None:
         ok = await max_agent._apply_price(chat_id, mp, product_id, new_price)
         return web.json_response({"ok": ok}, headers=cors)
 
+    async def _handle_apply_bid(request: web.Request) -> web.Response:
+        """POST /api/apply_bid — применить корректировку рекламной ставки прямо с дашборда.
+
+        Тот же принцип, что и apply_price: только настоящий Telegram initData, без ?token=.
+        WB — MaxAgent._apply_wb_bid_raw (CPM кампании), Ozon — _apply_ozon_bid_raw
+        (per-SKU ставки, нужен shop_id — в WB он не нужен, магазин находится по chat_id).
+        """
+        cors = {"Access-Control-Allow-Origin": _CORS_ORIGIN}
+        if request.method == "OPTIONS":
+            return web.Response(headers={
+                **cors,
+                "Access-Control-Allow-Headers": "X-Telegram-Init-Data, Content-Type",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+            })
+        init_data = request.headers.get("X-Telegram-Init-Data", "")
+        parsed = _validate_init_data(init_data, config.MARTA_BOT_TOKEN)
+        if parsed is None:
+            return web.Response(status=401, text="Unauthorized", headers=cors)
+        try:
+            user = _json.loads(parsed.get("user", "{}"))
+            chat_id = int(user["id"])
+        except Exception:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if max_agent is None:
+            return web.Response(status=503, text="Max agent not running", headers=cors)
+        try:
+            body = await request.json()
+            mp = body.get("marketplace")
+            campaign_id = str(body.get("campaign_id", "")).strip()
+            direction = body.get("direction")
+            delta_pct = int(body.get("delta_pct"))
+            shop_id = body.get("shop_id")
+        except Exception:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if mp not in ("wb", "ozon") or not campaign_id or direction not in ("up", "down"):
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if mp == "wb":
+            result = await max_agent._apply_wb_bid_raw(chat_id, campaign_id, direction, delta_pct)
+        else:
+            if not shop_id:
+                return web.Response(status=400, text="Bad Request", headers=cors)
+            result = await max_agent._apply_ozon_bid_raw(chat_id, str(shop_id), campaign_id, direction, delta_pct)
+        return web.json_response(result, headers=cors)
+
     dash_app = web.Application()
     dash_app.router.add_get("/api/dashboard", _handle_dashboard)
     dash_app.router.add_route("OPTIONS", "/api/dashboard", _handle_dashboard)
@@ -952,6 +1004,8 @@ async def run_all_async() -> None:
     dash_app.router.add_route("OPTIONS", "/api/timeline", _handle_timeline)
     dash_app.router.add_post("/api/apply_price", _handle_apply_price)
     dash_app.router.add_route("OPTIONS", "/api/apply_price", _handle_apply_price)
+    dash_app.router.add_post("/api/apply_bid", _handle_apply_bid)
+    dash_app.router.add_route("OPTIONS", "/api/apply_bid", _handle_apply_bid)
     dash_app.router.add_get("/health", lambda r: web.Response(text="ok"))
     dash_runner = web.AppRunner(dash_app)
     await dash_runner.setup()
