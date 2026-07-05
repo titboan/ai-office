@@ -5697,6 +5697,7 @@ class MaxAgent(BaseAgent):
 
         arrow = "📉 Снижены" if direction == "down" else "📈 Повышены"
         if ok:
+            await self._invalidate_dashboard_bid_cache(chat_id)
             result = f"✅ Ставки {arrow} на {delta_pct}% ({len(new_bids)} SKU)"
             logger.info(f"[Макс/ozbid] chat={chat_id} campaign={campaign_id} {direction} {delta_pct}% ok")
         else:
@@ -6148,6 +6149,7 @@ class MaxAgent(BaseAgent):
             campaign_id, info["type"], info["subject_id"], new_cpm
         )
         if ok:
+            await self._invalidate_dashboard_bid_cache(chat_id)
             await query.edit_message_text(
                 query.message.text
                 + f"\n\n✅ Ставка изменена: {current_cpm} → <b>{new_cpm} ₽</b>",
@@ -6162,13 +6164,33 @@ class MaxAgent(BaseAgent):
                 parse_mode="HTML",
             )
 
+    async def _invalidate_dashboard_bid_cache(self, chat_id: int) -> None:
+        """Сбросить кэш bid_suggestions дашборда — вызывается после успешного применения
+        ставки (с любой из двух поверхностей, Telegram или дашборд), чтобы не показывать
+        устаревшее предложение по только что изменённой кампании."""
+        await self._redis_set(f"dashboard_bid_suggestions:{chat_id}", "", ttl=1)
+
     async def _collect_bid_suggestions_for_dashboard(self, chat_id: int) -> list[dict]:
         """bid_adjust предложения с реальными ₽ для дашборда — та же выборка, что в
         auto_bid_suggest, но без рекомендации "поставить на паузу" (это отдельное действие
         camp:pause, не корректировка ставки — на дашборде показываем только bid_adjust).
+
+        Кэш на 120 сек в Redis: без него каждая загрузка GET /api/dashboard делает до 8
+        последовательных живых запросов к WB/Ozon Performance API (текущий CPM/ставка на
+        кампанию) — заметно тормозит дашборд при частых обновлениях страницы. Инвалидируется
+        сразу при успешном применении ставки (_invalidate_dashboard_bid_cache).
         """
+        cache_key = f"dashboard_bid_suggestions:{chat_id}"
+        cached = await self._redis_get(cache_key)
+        if cached:
+            try:
+                return json.loads(cached)
+            except Exception:
+                pass
+
         suggestions = await self._collect_bid_suggestions(chat_id)
         if not suggestions:
+            await self._redis_set(cache_key, "[]", ttl=120)
             return []
 
         from db import get_marketplace_shops
@@ -6202,6 +6224,7 @@ class MaxAgent(BaseAgent):
             except Exception:
                 pass
             result.append(row)
+        await self._redis_set(cache_key, json.dumps(result), ttl=120)
         return result
 
     async def _apply_wb_bid_raw(self, chat_id: int, campaign_id: str, direction: str, delta_pct: int) -> dict:
@@ -6220,6 +6243,8 @@ class MaxAgent(BaseAgent):
         current_cpm = info["cpm"]
         new_cpm = clamp_wb_cpm(current_cpm, direction, delta_pct)
         ok = await wb.update_campaign_cpm(campaign_id, info["type"], info["subject_id"], new_cpm)
+        if ok:
+            await self._invalidate_dashboard_bid_cache(chat_id)
         return {"ok": ok, "current": current_cpm, "new": new_cpm}
 
     async def _apply_ozon_bid_raw(
@@ -6241,6 +6266,8 @@ class MaxAgent(BaseAgent):
         new_bids = [{"product_id": b["product_id"], "bid": clamp_ozon_bid(b["bid"], direction, delta_pct)} for b in bids]
         avg_new = sum(b["bid"] for b in new_bids) / len(new_bids)
         ok = await client.update_campaign_bids(campaign_id, new_bids)
+        if ok:
+            await self._invalidate_dashboard_bid_cache(chat_id)
         return {"ok": ok, "current": round(avg_cur), "new": round(avg_new), "count": len(bids)}
 
     _MENU_SUBMENUS: dict[str, tuple[str, list]] = {
