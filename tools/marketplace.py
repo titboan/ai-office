@@ -1363,10 +1363,11 @@ class WBClient:
         logger.info(f"[WB.get_questions] {len(results)} вопросов (is_answered={is_answered})")
         return results
 
-    async def answer_question(self, question_id: str, text: str) -> bool:
+    async def answer_question(self, question_id: str, text: str, product_id: str | None = None) -> bool:
         """Отправить ответ на вопрос покупателя WB.
         PATCH /api/v1/questions, body: {"id", "answer": {"text"}, "state": "wbRu"}
-        Источник: eslazarev/wildberries-sdk specs/09-communications.yaml"""
+        Источник: eslazarev/wildberries-sdk specs/09-communications.yaml
+        product_id не используется WB (нужен только Ozon), принимается для единого интерфейса."""
         _Q_BASE = "https://feedbacks-api.wildberries.ru"
         url = f"{_Q_BASE}/api/v1/questions"
         headers = {"Authorization": self._token, "Content-Type": "application/json"}
@@ -1593,17 +1594,24 @@ class OzonClient:
             logger.warning(f"[Ozon.check_connection] exception: {e}")
             return False
 
-    async def get_questions(self, page_size: int = 100) -> list[dict]:
-        """Неотвеченные вопросы покупателей Ozon через /v1/question/list."""
+    async def get_questions(self) -> list[dict]:
+        """Неотвеченные вопросы покупателей Ozon через /v1/question/list.
+        Доступно только с подпиской Premium Plus (как и отзывы).
+        Формат запроса подтверждён по questions-answers.ts:
+        github.com/salacoste/ozon-daytona-seller-api — filter.status + курсорная пагинация last_id,
+        НЕ page/page_size."""
         results = []
-        page = 1
+        last_id = ""
         async with aiohttp.ClientSession() as session:
             while True:
+                body: dict = {"filter": {"status": "UNPROCESSED"}}
+                if last_id:
+                    body["last_id"] = last_id
                 data = await _request(
                     session, "POST",
                     f"{self._BASE}/v1/question/list",
                     headers=self._headers(),
-                    json={"page": page, "page_size": page_size, "status": "not_answered"},
+                    json=body,
                     label="Ozon.get_questions",
                 )
                 if not data:
@@ -1613,24 +1621,30 @@ class OzonClient:
                     results.append({
                         "question_id":   str(item.get("id", "")),
                         "product_id":    str(item.get("sku", "") or ""),
-                        "product_name":  item.get("product_name", ""),
-                        "question_text": item.get("question_text", "") or item.get("question", ""),
-                        "created_at":    item.get("published_at", "") or item.get("created_at", ""),
+                        "product_name":  "",
+                        "question_text": item.get("text", ""),
+                        "created_at":    item.get("published_at", ""),
                     })
-                if len(items) < page_size:
+                last_id = data.get("last_id") or ""
+                if not last_id or not items:
                     break
-                page += 1
         logger.info(f"[Ozon.get_questions] {len(results)} неотвеченных вопросов")
         return results
 
-    async def answer_question(self, question_id: str, text: str) -> bool:
-        """Ответить на вопрос покупателя Ozon через /v1/question/answer/create."""
+    async def answer_question(self, question_id: str, text: str, product_id: str | None = None) -> bool:
+        """Ответить на вопрос покупателя Ozon через /v1/question/answer/create.
+        sku обязателен в теле запроса (без него Ozon отклоняет запрос)."""
+        try:
+            sku = int(product_id)
+        except (TypeError, ValueError):
+            logger.error(f"[Ozon.answer_question({question_id[:8]})] некорректный sku={product_id!r} — отправка невозможна")
+            return False
         async with aiohttp.ClientSession() as session:
             data = await _request(
                 session, "POST",
                 f"{self._BASE}/v1/question/answer/create",
                 headers=self._headers(),
-                json={"question_id": question_id, "text": text},
+                json={"question_id": question_id, "sku": sku, "text": text},
                 label=f"Ozon.answer_question({question_id[:8]})",
             )
         return data is not None

@@ -98,6 +98,12 @@ description: >
   - Агрегируется по (offer_id, week_start_monday)
   - revenue ≈ payout + commission + logistics (приближение, точной выручки нет)
 - Отзывы: ❌ Premium Plus/Pro
+- Вопросы и ответы (Q&A): требует Premium Plus (как отзывы) — если подписки нет, `/v1/question/list` вернёт PermissionDenied
+  - Список: POST `/v1/question/list`, body `{"filter": {"status": "UNPROCESSED"}, "last_id": "..."}` — курсорная пагинация через `last_id`, НЕ `page`/`page_size`
+  - `status` в фильтре: `NEW` / `VIEWED` / `PROCESSED` / `UNPROCESSED` / `ALL`
+  - Текст вопроса — поле `text` (НЕ `question_text`), дата — `published_at`; `product_name` в ответе не приходит, только `sku` + `product_url`
+  - Ответ: POST `/v1/question/answer/create`, body `{"question_id", "sku": <int>, "text"}` — `sku` обязателен, без него Ozon отклоняет запрос
+  - Источник: github.com/salacoste/ozon-daytona-seller-api `src/types/{requests,responses}/questions-answers.ts`
 
 ## Ozon Performance API (OAuth, обязателен с апр 2026)
 

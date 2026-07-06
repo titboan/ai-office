@@ -3206,14 +3206,21 @@ class MaxAgent(BaseAgent):
                 return
             mp, question_id = parts[1], parts[2]
             owner_chat_id = int(parts[3]) if len(parts) == 4 else chat_id
-            from db import get_marketplace_shops, update_question_status
+            from db import get_marketplace_shops, update_question_status, get_pool
             shop = next(
                 (s for s in await get_marketplace_shops(owner_chat_id) if s["marketplace"] == mp),
                 None,
             )
             if shop:
                 from tools.marketplace import make_client
-                ok = await make_client(shop).answer_question(question_id, reply_text)
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    _prow = await conn.fetchrow(
+                        "SELECT product_id FROM marketplace_questions WHERE marketplace=$1 AND question_id=$2",
+                        mp, question_id,
+                    )
+                product_id = _prow["product_id"] if _prow else None
+                ok = await make_client(shop).answer_question(question_id, reply_text, product_id)
                 if ok:
                     from datetime import datetime as _dt2
                     await update_question_status(
@@ -3297,12 +3304,12 @@ class MaxAgent(BaseAgent):
                 # Вопрос мог быть уже помечен answered/skipped, но WB до сих пор отдаёт его
                 async with pool.acquire() as _conn:
                     _qrow = await _conn.fetchrow(
-                        "SELECT generated_answer FROM marketplace_questions "
+                        "SELECT generated_answer, product_id FROM marketplace_questions "
                         "WHERE marketplace=$1 AND question_id=$2",
                         mp, question_id,
                     )
                 if _qrow:
-                    q = {"generated_answer": _qrow["generated_answer"]}
+                    q = {"generated_answer": _qrow["generated_answer"], "product_id": _qrow["product_id"]}
                     logger.info(f"[Макс/retry] q={question_id[:8]} не в pending — берём answer из БД напрямую")
             answer_text = (q or {}).get("generated_answer", "")
             if answer_text:
@@ -3312,7 +3319,9 @@ class MaxAgent(BaseAgent):
                 )
                 if shop:
                     from tools.marketplace import make_client
-                    ok = await make_client(shop).answer_question(question_id, answer_text)
+                    ok = await make_client(shop).answer_question(
+                        question_id, answer_text, (q or {}).get("product_id")
+                    )
                     if ok:
                         from datetime import datetime as _dt
                         await update_question_status(
