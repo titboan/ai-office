@@ -99,14 +99,21 @@ async def send_rich_or_fallback(
     markdown: str,
     reply_markup_dict: dict | None = None,
     reply_to_message_id: int | None = None,
-) -> None:
-    """Send Rich Message; on error fall back to sendMessage with HTML, then plain text."""
+) -> bool:
+    """Send Rich Message; on error fall back to sendMessage with HTML, then plain text.
+
+    Возвращает True только если каждый чанк реально доставлен хотя бы одним
+    из трёх способов — вызывающая сторона (например, ретрай логика уведомлений
+    о вопросах покупателей) полагается на этот результат, чтобы не считать
+    сообщение отправленным, если оно тихо не дошло ни одним из способов.
+    """
     if not markdown:
-        return
+        return False
     chunks = [
         markdown[i : i + RICH_MESSAGE_CHUNK_SIZE]
         for i in range(0, len(markdown), RICH_MESSAGE_CHUNK_SIZE)
     ]
+    all_ok = True
     for i, chunk in enumerate(chunks):
         is_last = i == len(chunks) - 1
         markup = reply_markup_dict if is_last else None
@@ -117,7 +124,9 @@ async def send_rich_or_fallback(
             reply_to_message_id=reply_id,
         )
         if not success:
-            await _html_fallback(bot_token, chat_id, chunk, markup, reply_id)
+            success = await _html_fallback(bot_token, chat_id, chunk, markup, reply_id)
+        all_ok = all_ok and success
+    return all_ok
 
 
 async def _html_fallback(
@@ -126,10 +135,11 @@ async def _html_fallback(
     chunk: str,
     reply_markup_dict: dict | None,
     reply_to_message_id: int | None,
-) -> None:
+) -> bool:
     html = gfm_to_html_fallback(chunk)
     html_chunks = [html[j : j + 4096] for j in range(0, max(len(html), 1), 4096)]
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    all_ok = True
     for j, hchunk in enumerate(html_chunks):
         h_is_last = j == len(html_chunks) - 1
         payload: dict = {"chat_id": chat_id, "text": hchunk, "parse_mode": "HTML"}
@@ -141,17 +151,26 @@ async def _html_fallback(
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload) as resp:
                     data = await resp.json()
-                    if not data.get("ok"):
-                        logger.warning(
-                            f"HTML fallback failed: {data.get('description')}, trying plain"
-                        )
-                        plain: dict = {
-                            "chat_id": chat_id,
-                            "text": re.sub(r"<[^>]+>", "", hchunk),
-                        }
-                        if reply_markup_dict and h_is_last:
-                            plain["reply_markup"] = reply_markup_dict
-                        async with session.post(url, json=plain) as _:
-                            pass
+                    if data.get("ok"):
+                        continue
+                    logger.warning(
+                        f"HTML fallback failed: {data.get('description')}, trying plain"
+                    )
+                    plain: dict = {
+                        "chat_id": chat_id,
+                        "text": re.sub(r"<[^>]+>", "", hchunk),
+                    }
+                    if reply_markup_dict and h_is_last:
+                        plain["reply_markup"] = reply_markup_dict
+                    async with session.post(url, json=plain) as plain_resp:
+                        plain_data = await plain_resp.json()
+                        if not plain_data.get("ok"):
+                            logger.error(
+                                f"send_rich_or_fallback plain fallback failed: "
+                                f"{plain_data.get('description')}"
+                            )
+                            all_ok = False
         except Exception as e:
             logger.error(f"send_rich_or_fallback HTML fallback exception: {e}")
+            all_ok = False
+    return all_ok

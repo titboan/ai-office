@@ -852,8 +852,7 @@ class BaseAgent(ABC):
         text = _clean_output(text)
         markup_dict = reply_markup.to_dict() if reply_markup else None
         try:
-            await _send_rich(token, chat_id, text, reply_markup_dict=markup_dict)
-            return True
+            return await _send_rich(token, chat_id, text, reply_markup_dict=markup_dict)
         except Exception as e:
             logger.warning(f"[{self.name}] _notify_user ошибка (chat={chat_id}): {e}")
             return False
