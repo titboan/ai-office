@@ -1296,11 +1296,18 @@ class MaxAgent(BaseAgent):
                             )
                             if pending_q:
                                 q["question_text"] = pending_q.get("question_text") or q.get("question_text", "")
-                                await self._notify_pending_question(
+                                sent = await self._notify_pending_question(
                                     chat_id, shop, q, pending_q.get("generated_answer", "")
                                 )
-                                await self._redis_set(notif_key, "1", ttl=7200)
-                                stats["pending"] += 1
+                                if sent:
+                                    await self._redis_set(notif_key, "1", ttl=7200)
+                                    stats["pending"] += 1
+                                else:
+                                    logger.error(
+                                        f"[Макс/questions] {mp} q={q['question_id'][:8]} "
+                                        f"не удалось доставить повторное уведомление — попробуем снова через 15 мин"
+                                    )
+                                    stats["errors"] += 1
                         continue
 
                     stats["found"] += 1
@@ -1319,9 +1326,16 @@ class MaxAgent(BaseAgent):
                         status="pending_approval",
                         generated_answer=answer,
                     )
-                    await self._notify_pending_question(chat_id, shop, q, answer)
-                    await self._redis_set(notif_key, "1", ttl=7200)
-                    stats["pending"] += 1
+                    sent = await self._notify_pending_question(chat_id, shop, q, answer)
+                    if sent:
+                        await self._redis_set(notif_key, "1", ttl=7200)
+                        stats["pending"] += 1
+                    else:
+                        logger.error(
+                            f"[Макс/questions] {mp} q={q['question_id'][:8]} "
+                            f"не удалось доставить уведомление о новом вопросе — попробуем снова через 15 мин"
+                        )
+                        stats["errors"] += 1
                 except Exception as e:
                     logger.error(f"[Макс/questions] обработка вопроса {q.get('question_id', '?')[:8]}: {e}")
                     stats["errors"] += 1
@@ -1332,7 +1346,10 @@ class MaxAgent(BaseAgent):
 
     async def _notify_pending_question(
         self, chat_id: int, shop: dict, q: dict, generated_answer: str
-    ) -> None:
+    ) -> bool:
+        """Уведомляет пользователя о новом вопросе. Возвращает True, если основное
+        уведомление реально доставлено — вызывающая сторона использует это, чтобы
+        не помечать вопрос как "уведомлён" при тихом сбое отправки в Telegram."""
         mp = shop["marketplace"]
         mp_label = _MP_LABELS.get(mp, mp)
         text = (
@@ -1348,11 +1365,12 @@ class MaxAgent(BaseAgent):
         ]])
         # Основной канал — через Марту в личный чат пользователя
         marta_token = getattr(getattr(self, '_marta_agent', None), 'bot_token', None)
-        await self._notify_user(chat_id, text, reply_markup=keyboard,
-                                bot_token=marta_token or self.bot_token)
+        sent = await self._notify_user(chat_id, text, reply_markup=keyboard,
+                                        bot_token=marta_token or self.bot_token)
         # Дополнительно — в группу партнёров если задана
         if config.PARTNERS_GROUP_ID:
             await self._notify_user(config.PARTNERS_GROUP_ID, text, reply_markup=keyboard)
+        return sent
 
     async def cmd_questions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/questions — показать и повторно отправить все неотвеченные вопросы из БД."""

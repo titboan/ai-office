@@ -839,21 +839,24 @@ class BaseAgent(ABC):
                 await asyncio.sleep(5)
         logger.info(f"[{self.name}] Worker loop остановлен")
 
-    async def _notify_user(self, chat_id: int, text: str, reply_markup=None, bot_token: str | None = None) -> None:
+    async def _notify_user(self, chat_id: int, text: str, reply_markup=None, bot_token: str | None = None) -> bool:
         """Отправить сообщение пользователю через Rich Messages (Bot API 10.1).
 
         bot_token — если передан, использует этот токен (для ответа через Марту).
         Fallback: sendRichMessage → sendMessage HTML → plain text.
+        Возвращает True, если сообщение реально отправлено (для ретраев вызывающей стороной).
         """
         token = bot_token or self.bot_token
         if not token:
-            return
+            return False
         text = _clean_output(text)
         markup_dict = reply_markup.to_dict() if reply_markup else None
         try:
             await _send_rich(token, chat_id, text, reply_markup_dict=markup_dict)
+            return True
         except Exception as e:
             logger.warning(f"[{self.name}] _notify_user ошибка (chat={chat_id}): {e}")
+            return False
 
     # ------------------------------------------------------------------ #
     #  Chain — продвижение цепочки агентов                                #
