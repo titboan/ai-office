@@ -2459,7 +2459,11 @@ class OzonClient:
         return results
 
     async def get_funnel_stats(self, date_from: str, date_to: str) -> list[dict]:
-        """Воронка конверсии карточки Ozon через /v1/analytics/data с метриками показов и корзины."""
+        """Воронка конверсии карточки Ozon через /v1/analytics/data.
+
+        hits_view/conv_tocart доступны только с подпиской Premium — без неё
+        Ozon вернёт ошибку по этим метрикам, revenue/ordered_units доступны всем.
+        """
         import json as _json
         url = f"{self._BASE}/v1/analytics/data"
         results = []
@@ -2469,7 +2473,7 @@ class OzonClient:
                 "date_from": date_from,
                 "date_to":   date_to,
                 "dimension": ["sku"],
-                "metrics":   ["views", "conv_tocart", "ordered_units", "avg_search_position"],
+                "metrics":   ["hits_view", "conv_tocart", "ordered_units"],
                 "limit":     1000,
                 "offset":    offset,
             }
@@ -2498,11 +2502,10 @@ class OzonClient:
             rows = (data.get("result") or {}).get("data") or []
             for row in rows:
                 dims    = row.get("dimensions") or [{}]
-                metrics = row.get("metrics") or [0, 0, 0, None]
+                metrics = row.get("metrics") or [0, 0, 0]
                 views      = int(metrics[0] or 0)
                 conv_tocart = float(metrics[1] or 0)
                 orders     = int(metrics[2] or 0)
-                avg_pos    = float(metrics[3]) if len(metrics) > 3 and metrics[3] is not None else None
                 add_to_cart = round(views * conv_tocart / 100) if views > 0 else 0
                 results.append({
                     "product_id":         str((dims[0] if dims else {}).get("id", "")),
@@ -2511,7 +2514,7 @@ class OzonClient:
                     "add_to_cart":        add_to_cart,
                     "orders_count":       orders,
                     "buyouts":            0,
-                    "avg_position":       avg_pos,
+                    "avg_position":       None,
                     "conv_view_to_cart":  round(conv_tocart, 2),
                     "conv_cart_to_order": round(orders / add_to_cart * 100, 2) if add_to_cart > 0 else 0,
                 })
