@@ -98,7 +98,11 @@ description: >
   - Агрегируется по (offer_id, week_start_monday)
   - revenue ≈ payout + commission + logistics (приближение, точной выручки нет)
 - Отзывы: ❌ Premium Plus/Pro
-- Вопросы и ответы (Q&A): требует Premium Plus (как отзывы) — если подписки нет, `/v1/question/list` вернёт PermissionDenied
+- Вопросы и ответы (Q&A): ❌ тоже требует Premium Plus — это ОДНА и та же подписка (24 990 ₽/мес),
+  «работа с отзывами и вопросами через Seller API» идёт в ней единым пунктом, отдельной доп. услуги
+  для вопросов нет. Premium Lite (4 990 ₽) и Premium (9 990 ₽) доступа к API отзывов/вопросов не дают —
+  только к личному кабинету (там вопросы видны и без API, как на скриншоте пользователя).
+  Если подписки Premium Plus нет, `/v1/question/list` вернёт PermissionDenied — это ожидаемо, не баг.
   - Список: POST `/v1/question/list`, body `{"filter": {"status": "UNPROCESSED"}, "last_id": "..."}` — курсорная пагинация через `last_id`, НЕ `page`/`page_size`
   - `status` в фильтре: `NEW` / `VIEWED` / `PROCESSED` / `UNPROCESSED` / `ALL`
   - Текст вопроса — поле `text` (НЕ `question_text`), дата — `published_at`; `product_name` в ответе не приходит, только `sku` + `product_url`
