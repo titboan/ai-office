@@ -1130,8 +1130,19 @@ class BaseAgent(ABC):
         Единственный владелец (config.OWNER_CHAT_ID) может писать ботам компании.
         Без этого любой человек, узнавший username бота, тратит Claude API за наш счёт.
         Если OWNER_CHAT_ID не настроен (0) — ограничение не включается (dev-режим).
+
+        Группа партнёров (config.PARTNERS_GROUP_ID) исключена: там участники
+        (например, менеджер по рекламе) обращаются к боту через "Макс"/@упоминание,
+        и это должно решаться триггер-логикой _handle_group_message, а не глушиться
+        здесь с публичным "Доступ ограничен" на каждое их сообщение.
         """
         if not config.OWNER_CHAT_ID:
+            return
+        chat = update.effective_chat
+        if (
+            chat and config.PARTNERS_GROUP_ID
+            and chat.id == config.PARTNERS_GROUP_ID
+        ):
             return
         user = update.effective_user
         if user and user.id != config.OWNER_CHAT_ID:
