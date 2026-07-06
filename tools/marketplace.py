@@ -999,59 +999,72 @@ class WBClient:
         return results
 
     async def get_funnel_stats(self, date_from: str, date_to: str) -> list[dict]:
-        """Воронка конверсии карточки WB через /api/v1/analytics/nm-report/grouped."""
+        """Воронка конверсии карточки WB через /api/v1/analytics/nm-report/grouped.
+
+        Без подписки Jam WB отдаёт максимум 7 дней за один запрос, поэтому
+        весь диапазон бьётся на куски по 7 дней.
+        """
         import json as _json
+        from datetime import date as _date
         url = "https://seller-analytics-api.wildberries.ru/api/v1/analytics/nm-report/grouped"
         headers = {"Authorization": self._token, "Content-Type": "application/json"}
-        body = {
-            "period": {"begin": date_from, "end": date_to},
-            "timezone": "Europe/Moscow",
-            "aggregationLevel": "day",
-        }
+
+        chunk_from = _date.fromisoformat(date_from)
+        chunk_to_limit = _date.fromisoformat(date_to)
         results = []
-        page = 1
-        while True:
-            body["page"] = page
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, json=body, timeout=_TIMEOUT) as resp:
-                    raw = await resp.text()
-                    if resp.status == 429:
-                        await asyncio.sleep(60)
+        while chunk_from <= chunk_to_limit:
+            chunk_to = min(chunk_from + timedelta(days=6), chunk_to_limit)
+            body = {
+                "period": {
+                    "begin": f"{chunk_from.isoformat()} 00:00:00",
+                    "end":   f"{chunk_to.isoformat()} 23:59:59",
+                },
+                "timezone": "Europe/Moscow",
+                "aggregationLevel": "day",
+            }
+            page = 1
+            while True:
+                body["page"] = page
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, headers=headers, json=body, timeout=_TIMEOUT) as resp:
+                        raw = await resp.text()
+                        if resp.status == 429:
+                            await asyncio.sleep(60)
+                            continue
+                        if resp.status != 200:
+                            raise RuntimeError(f"WB nm-report/grouped HTTP {resp.status}: {raw[:300]}")
+                        data = _json.loads(raw)
+                nm_ids = (data.get("data") or {}).get("nmIDs") or []
+                if not nm_ids:
+                    break
+                for item in nm_ids:
+                    nm_id = str(item.get("nmID", ""))
+                    if not nm_id:
                         continue
-                    if resp.status != 200:
-                        logger.error(f"[WB.get_funnel_stats] HTTP {resp.status}: {raw[:200]}")
-                        break
-                    data = _json.loads(raw)
-            nm_ids = (data.get("data") or {}).get("nmIDs") or []
-            if not nm_ids:
-                break
-            for item in nm_ids:
-                nm_id = str(item.get("nmID", ""))
-                if not nm_id:
-                    continue
-                for day in (item.get("history") or []):
-                    views      = int(day.get("openCardCount", 0) or 0)
-                    cart       = int(day.get("addToCartCount", 0) or 0)
-                    orders     = int(day.get("ordersCount", 0) or 0)
-                    buyouts    = int(day.get("buyoutsCount", 0) or 0)
-                    v2c        = float(day.get("addToCartPercent", 0) or 0)
-                    c2o        = float(day.get("cartToOrderPercent", 0) or 0)
-                    position   = day.get("avgOrdersCountPerDay")
-                    results.append({
-                        "product_id":         nm_id,
-                        "stat_date":          day.get("dt", date_from),
-                        "views":              views,
-                        "add_to_cart":        cart,
-                        "orders_count":       orders,
-                        "buyouts":            buyouts,
-                        "avg_position":       float(position) if position is not None else None,
-                        "conv_view_to_cart":  round(v2c, 2),
-                        "conv_cart_to_order": round(c2o, 2),
-                    })
-            if (data.get("data") or {}).get("isNextPage"):
-                page += 1
-            else:
-                break
+                    for day in (item.get("history") or []):
+                        views      = int(day.get("openCardCount", 0) or 0)
+                        cart       = int(day.get("addToCartCount", 0) or 0)
+                        orders     = int(day.get("ordersCount", 0) or 0)
+                        buyouts    = int(day.get("buyoutsCount", 0) or 0)
+                        v2c        = float(day.get("addToCartPercent", 0) or 0)
+                        c2o        = float(day.get("cartToOrderPercent", 0) or 0)
+                        position   = day.get("avgOrdersCountPerDay")
+                        results.append({
+                            "product_id":         nm_id,
+                            "stat_date":          day.get("dt", chunk_from.isoformat()),
+                            "views":              views,
+                            "add_to_cart":        cart,
+                            "orders_count":       orders,
+                            "buyouts":            buyouts,
+                            "avg_position":       float(position) if position is not None else None,
+                            "conv_view_to_cart":  round(v2c, 2),
+                            "conv_cart_to_order": round(c2o, 2),
+                        })
+                if (data.get("data") or {}).get("isNextPage"):
+                    page += 1
+                else:
+                    break
+            chunk_from = chunk_to + timedelta(days=1)
         logger.info(f"[WB.get_funnel_stats] {date_from}–{date_to}: {len(results)} записей")
         return results
 
@@ -2461,6 +2474,7 @@ class OzonClient:
                 "offset":    offset,
             }
             data = None
+            last_error: Exception | None = None
             for attempt in range(3):
                 try:
                     async with aiohttp.ClientSession() as session:
@@ -2470,15 +2484,17 @@ class OzonClient:
                                 await asyncio.sleep(60)
                                 continue
                             if resp.status != 200:
-                                logger.error(f"[Ozon.get_funnel_stats] HTTP {resp.status}: {raw[:200]}")
+                                last_error = RuntimeError(f"Ozon analytics/data HTTP {resp.status}: {raw[:300]}")
+                                logger.error(f"[Ozon.get_funnel_stats] {last_error}")
                                 break
                             data = _json.loads(raw)
                             break
                 except Exception as e:
+                    last_error = e
                     logger.error(f"[Ozon.get_funnel_stats] exception: {e}")
                     break
             if data is None:
-                break
+                raise last_error or RuntimeError("Ozon analytics/data: пустой ответ после 3 попыток")
             rows = (data.get("result") or {}).get("data") or []
             for row in rows:
                 dims    = row.get("dimensions") or [{}]

@@ -381,7 +381,7 @@ class MaxAgent(BaseAgent):
             return "✅ Рекламная статистика обновлена. Если ДРР > 25% — алерт уже отправлен."
         if task == "__sync_funnel__":
             res = await self.sync_funnel(chat_id)
-            return f"✅ Воронка: WB {res.get('wb', 0)} зап., Ozon {res.get('ozon', 0)} зап."
+            return self._format_funnel_result(res)
         if task == "__sync_returns__":
             res = await self.sync_returns(chat_id)
             return f"✅ Возвраты: WB {res.get('wb', 0)} зап., Ozon {res.get('ozon', 0)} зап."
@@ -1988,7 +1988,7 @@ class MaxAgent(BaseAgent):
         shops = await get_marketplace_shops(chat_id)
         date_to   = datetime.now(_UTC).strftime("%Y-%m-%d")
         date_from = (datetime.now(_UTC) - timedelta(days=30)).strftime("%Y-%m-%d")
-        counts = {"wb": 0, "ozon": 0}
+        counts = {"wb": 0, "ozon": 0, "errors": {}}
 
         for shop in shops:
             mp = shop["marketplace"]
@@ -2011,7 +2011,8 @@ class MaxAgent(BaseAgent):
                     counts["wb"] = len(rows)
                     logger.info(f"[Макс/funnel] WB: {len(rows)} записей воронки")
                 except Exception as e:
-                    logger.error(f"[Макс/funnel] WB: {e}")
+                    logger.error(f"[Макс/funnel] WB: {e}", exc_info=True)
+                    counts["errors"]["wb"] = str(e)
 
             if mp == "ozon":
                 try:
@@ -2031,9 +2032,23 @@ class MaxAgent(BaseAgent):
                     counts["ozon"] = len(rows)
                     logger.info(f"[Макс/funnel] Ozon: {len(rows)} записей воронки")
                 except Exception as e:
-                    logger.error(f"[Макс/funnel] Ozon: {e}")
+                    logger.error(f"[Макс/funnel] Ozon: {e}", exc_info=True)
+                    counts["errors"]["ozon"] = str(e)
 
         return counts
+
+    @staticmethod
+    def _format_funnel_result(res: dict) -> str:
+        """Формирует сообщение по результату sync_funnel, не маскируя ошибки API под успех."""
+        errors = res.get("errors") or {}
+        lines = [f"WB: {res.get('wb', 0)} зап.", f"Ozon: {res.get('ozon', 0)} зап."]
+        if errors:
+            for mp, err in errors.items():
+                lines.append(f"⚠️ {mp.upper()}: ошибка синхронизации — {err[:200]}")
+            header = "⚠️ Воронка синхронизирована частично"
+        else:
+            header = "✅ Воронка синхронизирована"
+        return header + "\n" + "\n".join(lines)
 
     async def cmd_sync_funnel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/sync_funnel — синхронизация воронки конверсии карточки."""
@@ -2041,13 +2056,8 @@ class MaxAgent(BaseAgent):
         await update.message.reply_text("🔄 Синхронизирую воронку конверсии (30 дней)…")
         try:
             counts = await self.sync_funnel(chat_id)
-            wb_cnt   = counts.get("wb", 0)
-            ozon_cnt = counts.get("ozon", 0)
             await update.message.reply_text(
-                f"✅ Воронка синхронизирована\n"
-                f"WB: {wb_cnt} записей\n"
-                f"Ozon: {ozon_cnt} записей\n\n"
-                f"Запусти /funnel у Питера для анализа."
+                self._format_funnel_result(counts) + "\n\nЗапусти /funnel у Питера для анализа."
             )
         except Exception as e:
             logger.error(f"[Макс/sync_funnel] {e}", exc_info=True)
@@ -6496,11 +6506,7 @@ class MaxAgent(BaseAgent):
                 await msg.reply_text("⏳ Синхронизирую воронку…")
                 try:
                     counts = await self.sync_funnel(chat_id)
-                    await msg.reply_text(
-                        f"✅ Воронка синхронизирована\n"
-                        f"WB: {counts.get('wb', 0)} записей\n"
-                        f"Ozon: {counts.get('ozon', 0)} записей"
-                    )
+                    await msg.reply_text(self._format_funnel_result(counts))
                 except Exception as e:
                     await msg.reply_text(f"❌ Ошибка: {e}")
 
