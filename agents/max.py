@@ -1344,16 +1344,12 @@ class MaxAgent(BaseAgent):
 
         return results
 
-    async def _notify_pending_question(
-        self, chat_id: int, shop: dict, q: dict, generated_answer: str
-    ) -> bool:
-        """Уведомляет пользователя о новом вопросе. Возвращает True, если основное
-        уведомление реально доставлено — вызывающая сторона использует это, чтобы
-        не помечать вопрос как "уведомлён" при тихом сбое отправки в Telegram."""
-        mp = shop["marketplace"]
+    def _build_question_card(
+        self, mp: str, q: dict, generated_answer: str
+    ) -> tuple[str, InlineKeyboardMarkup]:
         mp_label = _MP_LABELS.get(mp, mp)
         answer_ok = bool((generated_answer or "").strip())
-        answer_line = generated_answer if answer_ok else "⚠️ Не удалось сгенерировать ответ автоматически — напишите вручную"
+        answer_line = generated_answer if answer_ok else "⚠️ Не удалось сгенерировать ответ автоматически"
         text = (
             f"❓ Вопрос [{mp_label}] — {q.get('product_name', 'товар')}\n\n"
             f"💬 {q.get('question_text') or '(без текста)'}\n\n"
@@ -1363,9 +1359,20 @@ class MaxAgent(BaseAgent):
         buttons = []
         if answer_ok:
             buttons.append(InlineKeyboardButton("✅ Отправить", callback_data=f"{cb_base}:approve"))
+        else:
+            buttons.append(InlineKeyboardButton("🔄 Сгенерировать", callback_data=f"{cb_base}:regen"))
         buttons.append(InlineKeyboardButton("✏️ Редактировать", callback_data=f"{cb_base}:edit"))
         buttons.append(InlineKeyboardButton("🚫 Пропустить", callback_data=f"{cb_base}:skip"))
-        keyboard = InlineKeyboardMarkup([buttons])
+        return text, InlineKeyboardMarkup([buttons])
+
+    async def _notify_pending_question(
+        self, chat_id: int, shop: dict, q: dict, generated_answer: str
+    ) -> bool:
+        """Уведомляет пользователя о новом вопросе. Возвращает True, если основное
+        уведомление реально доставлено — вызывающая сторона использует это, чтобы
+        не помечать вопрос как "уведомлён" при тихом сбое отправки в Telegram."""
+        mp = shop["marketplace"]
+        text, keyboard = self._build_question_card(mp, q, generated_answer)
         # Основной канал — через Марту в личный чат пользователя
         marta_token = getattr(getattr(self, '_marta_agent', None), 'bot_token', None)
         sent = await self._notify_user(chat_id, text, reply_markup=keyboard,
@@ -3071,11 +3078,12 @@ class MaxAgent(BaseAgent):
                     now, chat_id, mp,
                 )
 
-    async def _notify_pending(self, chat_id: int, shop: dict, rv: dict, generated_reply: str) -> None:
-        mp = shop["marketplace"]
+    def _build_review_card(
+        self, mp: str, rv: dict, generated_reply: str
+    ) -> tuple[str, InlineKeyboardMarkup]:
         rating = rv.get("rating", 0)
         reply_ok = bool((generated_reply or "").strip())
-        reply_line = generated_reply if reply_ok else "⚠️ Не удалось сгенерировать ответ автоматически — напишите вручную"
+        reply_line = generated_reply if reply_ok else "⚠️ Не удалось сгенерировать ответ автоматически"
         text = (
             f"{'⭐️' * rating} ({rating}/5) — {rv.get('product_name', 'товар')}\n"
             f"👤 {rv.get('author', 'Покупатель')}\n\n"
@@ -3086,9 +3094,15 @@ class MaxAgent(BaseAgent):
         buttons = []
         if reply_ok:
             buttons.append(InlineKeyboardButton("✅ Отправить", callback_data=f"{cb_base}:approve"))
+        else:
+            buttons.append(InlineKeyboardButton("🔄 Сгенерировать", callback_data=f"{cb_base}:regen"))
         buttons.append(InlineKeyboardButton("✏️ Редактировать", callback_data=f"{cb_base}:edit"))
         buttons.append(InlineKeyboardButton("🚫 Пропустить", callback_data=f"{cb_base}:skip"))
-        keyboard = InlineKeyboardMarkup([buttons])
+        return text, InlineKeyboardMarkup([buttons])
+
+    async def _notify_pending(self, chat_id: int, shop: dict, rv: dict, generated_reply: str) -> None:
+        mp = shop["marketplace"]
+        text, keyboard = self._build_review_card(mp, rv, generated_reply)
         # Основной канал — через Марту в личный чат пользователя
         marta_token = getattr(getattr(self, '_marta_agent', None), 'bot_token', None)
         await self._notify_user(chat_id, text, reply_markup=keyboard,
@@ -3193,6 +3207,32 @@ class MaxAgent(BaseAgent):
                 f"🚫 Пропущено — {first_name}\n{_first_line}",
                 reply_markup=None,
             )
+
+        elif action == "regen":
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT product_name, rating, text, author FROM marketplace_reviews "
+                    "WHERE marketplace=$1 AND review_id=$2",
+                    mp, review_id,
+                )
+            rv = dict(row) if row else {}
+            rv["review_id"] = review_id
+            try:
+                new_reply = await self._generate_reply(
+                    product_name=rv.get("product_name", ""),
+                    rating=rv.get("rating", 0),
+                    text=rv.get("text", ""),
+                    author=rv.get("author", ""),
+                )
+            except Exception as e:
+                logger.error(f"[Макс] regen reply error review={review_id[:8]}: {e}")
+                new_reply = ""
+
+            await update_review_status(mp, review_id, "pending_approval", generated_reply=new_reply)
+            # Решение ещё не принято — снимаем лок, чтобы карточка была снова доступна
+            await self._redis_set(lock_key, "", ttl=1)
+            text, keyboard = self._build_review_card(mp, rv, new_reply)
+            await query.edit_message_text(text, reply_markup=keyboard)
 
     async def _handle_edit_reply(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -3382,6 +3422,30 @@ class MaxAgent(BaseAgent):
                 f"🚫 Пропущено — {first_name}\n{_first_line}",
                 reply_markup=None,
             )
+
+        elif action == "regen":
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT product_name, product_id, question_text FROM marketplace_questions "
+                    "WHERE marketplace=$1 AND question_id=$2",
+                    mp, question_id,
+                )
+            q = dict(row) if row else {}
+            q["question_id"] = question_id
+            try:
+                new_answer = await self._generate_question_answer(
+                    product_name=q.get("product_name", ""),
+                    question_text=q.get("question_text", ""),
+                )
+            except Exception as e:
+                logger.error(f"[Макс] regen answer error q={question_id[:8]}: {e}")
+                new_answer = ""
+
+            await update_question_status(mp, question_id, "pending_approval", generated_answer=new_answer)
+            # Решение ещё не принято — снимаем лок, чтобы карточка была снова доступна
+            await self._redis_set(lock_key, "", ttl=1)
+            text, keyboard = self._build_question_card(mp, q, new_answer)
+            await query.edit_message_text(text, reply_markup=keyboard)
 
     # ------------------------------------------------------------------ #
     #  Команды (рабочие, но не в BotCommand меню)                         #
