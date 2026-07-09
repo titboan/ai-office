@@ -1352,17 +1352,20 @@ class MaxAgent(BaseAgent):
         не помечать вопрос как "уведомлён" при тихом сбое отправки в Telegram."""
         mp = shop["marketplace"]
         mp_label = _MP_LABELS.get(mp, mp)
+        answer_ok = bool((generated_answer or "").strip())
+        answer_line = generated_answer if answer_ok else "⚠️ Не удалось сгенерировать ответ автоматически — напишите вручную"
         text = (
             f"❓ Вопрос [{mp_label}] — {q.get('product_name', 'товар')}\n\n"
             f"💬 {q.get('question_text') or '(без текста)'}\n\n"
-            f"📝 Предлагаемый ответ:\n{generated_answer}"
+            f"📝 Предлагаемый ответ:\n{answer_line}"
         )
         cb_base = f"qrev:{mp}:{q['question_id']}"
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Отправить",     callback_data=f"{cb_base}:approve"),
-            InlineKeyboardButton("✏️ Редактировать", callback_data=f"{cb_base}:edit"),
-            InlineKeyboardButton("🚫 Пропустить",    callback_data=f"{cb_base}:skip"),
-        ]])
+        buttons = []
+        if answer_ok:
+            buttons.append(InlineKeyboardButton("✅ Отправить", callback_data=f"{cb_base}:approve"))
+        buttons.append(InlineKeyboardButton("✏️ Редактировать", callback_data=f"{cb_base}:edit"))
+        buttons.append(InlineKeyboardButton("🚫 Пропустить", callback_data=f"{cb_base}:skip"))
+        keyboard = InlineKeyboardMarkup([buttons])
         # Основной канал — через Марту в личный чат пользователя
         marta_token = getattr(getattr(self, '_marta_agent', None), 'bot_token', None)
         sent = await self._notify_user(chat_id, text, reply_markup=keyboard,
@@ -3071,18 +3074,21 @@ class MaxAgent(BaseAgent):
     async def _notify_pending(self, chat_id: int, shop: dict, rv: dict, generated_reply: str) -> None:
         mp = shop["marketplace"]
         rating = rv.get("rating", 0)
+        reply_ok = bool((generated_reply or "").strip())
+        reply_line = generated_reply if reply_ok else "⚠️ Не удалось сгенерировать ответ автоматически — напишите вручную"
         text = (
             f"{'⭐️' * rating} ({rating}/5) — {rv.get('product_name', 'товар')}\n"
             f"👤 {rv.get('author', 'Покупатель')}\n\n"
             f"💬 {rv.get('text') or '(без текста)'}\n\n"
-            f"📝 Предлагаемый ответ:\n{generated_reply}"
+            f"📝 Предлагаемый ответ:\n{reply_line}"
         )
         cb_base = f"rev:{mp}:{rv['review_id']}"
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Отправить",     callback_data=f"{cb_base}:approve"),
-            InlineKeyboardButton("✏️ Редактировать", callback_data=f"{cb_base}:edit"),
-            InlineKeyboardButton("🚫 Пропустить",    callback_data=f"{cb_base}:skip"),
-        ]])
+        buttons = []
+        if reply_ok:
+            buttons.append(InlineKeyboardButton("✅ Отправить", callback_data=f"{cb_base}:approve"))
+        buttons.append(InlineKeyboardButton("✏️ Редактировать", callback_data=f"{cb_base}:edit"))
+        buttons.append(InlineKeyboardButton("🚫 Пропустить", callback_data=f"{cb_base}:skip"))
+        keyboard = InlineKeyboardMarkup([buttons])
         # Основной канал — через Марту в личный чат пользователя
         marta_token = getattr(getattr(self, '_marta_agent', None), 'bot_token', None)
         await self._notify_user(chat_id, text, reply_markup=keyboard,
