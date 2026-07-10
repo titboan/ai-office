@@ -1117,7 +1117,7 @@ class MaxAgent(BaseAgent):
 
     async def process_reviews(self, chat_id: int) -> dict:
         """Обработать отзывы. Возвращает итоги по каждой площадке."""
-        from db import get_marketplace_shops, save_review, update_review_status
+        from db import get_marketplace_shops, save_review, update_review_status, get_review_status
         from tools.marketplace import make_client
 
         shops = await get_marketplace_shops(chat_id)
@@ -1160,7 +1160,12 @@ class MaxAgent(BaseAgent):
                     chat_id=chat_id,
                 )
                 if not is_new:
-                    continue
+                    # Отзыв уже видели. Пропускаем, если он уже дошёл до финального
+                    # статуса — но если авто-ответ раньше не удался (статус остался
+                    # 'new'), пробуем отправить ответ ещё раз, а не забываем о нём навсегда.
+                    existing_status = await get_review_status(mp, rv["review_id"])
+                    if existing_status != "new":
+                        continue
 
                 stats["found"] += 1
                 rating = rv.get("rating", 0)

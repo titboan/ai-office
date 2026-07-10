@@ -1014,6 +1014,16 @@ async def update_review_status(
         )
 
 
+async def get_review_status(marketplace: str, review_id: str) -> str | None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT status FROM marketplace_reviews WHERE marketplace = $1 AND review_id = $2",
+            marketplace, review_id,
+        )
+        return row["status"] if row else None
+
+
 async def get_pending_reviews(chat_id: int) -> list[dict]:
     pool = await get_pool()
     async with pool.acquire() as conn:
