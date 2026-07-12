@@ -53,6 +53,8 @@ export interface BidSuggestionRow {
   spend_7d: number; revenue_7d: number; drr: number
   direction: 'up' | 'down'; delta_pct: number; reason: string
   current_value: number | null; new_value: number | null
+  market_recommended_cpm: number | null   // только WB — рыночная рекомендация WB
+  market_flag: 'overspend' | 'underspend' | null
 }
 
 export interface DashboardData {

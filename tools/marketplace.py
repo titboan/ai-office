@@ -1258,6 +1258,63 @@ class WBClient:
             logger.error(f"[WB.update_campaign_cpm] error: {e}")
             return False
 
+    async def get_recommended_bid(self, campaign_id: str) -> dict | None:
+        """Получить рекомендуемую (конкурентную по рынку) CPM-ставку WB для кампании —
+        аукцион поиск/каталог (CPM-кампании, type 6/8). Для прочих типов WB не отдаёт
+        данные — это ожидаемо, не ошибка.
+
+        НЕПОДТВЕРЖДЁННЫЙ endpoint: документация WB была недоступна (403) на момент
+        реализации, названия полей ниже — лучшее предположение по открытым источникам.
+        Логируем полный сырой ответ при HTTP 200, чтобы скорректировать парсинг по
+        первому реальному вызову в проде (Railway logs) — тот же приём, что уже
+        применён для get_campaign_products_v2/get_campaign_details в этом файле.
+
+        Возвращает {"recommended_cpm": int, "min_cpm": int | None} или None, если WB
+        не отдал данные (не CPM-кампания, эндпоинт недоступен, ошибка сети/парсинга).
+        НЕ бросает исключения — это опциональный сигнал поверх ДРР-логики, вызывающий
+        код не должен падать из-за его недоступности.
+        """
+        import json as _json
+        url = "https://advert-api.wildberries.ru/api/advert/v0/bids/recommendations"
+        headers = {"Authorization": self._token}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url, headers=headers, params={"campaignId": campaign_id}, timeout=_TIMEOUT
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status == 404:
+                        logger.info(f"[WB.get_recommended_bid] 404 для campaign={campaign_id} (эндпоинт/кампания недоступны)")
+                        return None
+                    if resp.status != 200:
+                        logger.warning(f"[WB.get_recommended_bid] HTTP {resp.status} для campaign={campaign_id}: {raw[:200]}")
+                        return None
+                    logger.info(f"[WB.get_recommended_bid] ✅ HTTP 200 campaign={campaign_id} — ответ: {raw[:800]}")
+                    data = _json.loads(raw)
+            # Схема не подтверждена живым вызовом — пробуем несколько правдоподобных
+            # вариантов ключей/форм (список, обёртка data/recommendations, голый объект),
+            # ничего не находим — возвращаем None, не падаем.
+            unwrapped = data if isinstance(data, list) else (data.get("data") or data.get("recommendations") or data)
+            items = unwrapped if isinstance(unwrapped, list) else [unwrapped]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                recommended = (
+                    item.get("recommendedCpm") or item.get("recommendedBid")
+                    or item.get("bidKopecks") or item.get("cpm")
+                )
+                if recommended:
+                    min_bid = item.get("bidKopecksMin") or item.get("minCpm")
+                    return {
+                        "recommended_cpm": int(recommended),
+                        "min_cpm": int(min_bid) if min_bid else None,
+                    }
+            logger.info(f"[WB.get_recommended_bid] campaign={campaign_id}: не распознали поля в ответе, см. лог выше")
+            return None
+        except Exception as e:
+            logger.error(f"[WB.get_recommended_bid] error campaign={campaign_id}: {e}")
+            return None
+
     async def upload_product_photo(self, nm_id: str, photo_bytes: bytes, filename: str = "photo.jpg") -> bool:
         """Загрузить фото в карточку WB. nm_id — числовой nmID карточки."""
         url = "https://content-api.wildberries.ru/content/v3/media/save"

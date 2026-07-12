@@ -73,6 +73,22 @@ export default function BidSuggestions({ data }: { data: BidSuggestionRow[] }) {
                 )}
                 {applied && <span className="text-xs text-green-600 font-medium">✓ применено</span>}
                 {failed && <span className="text-red-500 text-xs" title="Не удалось применить, попробуй ещё раз">⚠</span>}
+                {r.market_recommended_cpm != null && (
+                  <span
+                    className={`text-[11px] whitespace-nowrap ${
+                      r.market_flag ? 'text-amber-600 dark:text-amber-400 font-medium' : 'text-gray-400 dark:text-gray-500'
+                    }`}
+                    title={
+                      r.market_flag === 'overspend'
+                        ? 'Выше рыночной ставки WB — риск перерасхода бюджета'
+                        : r.market_flag === 'underspend'
+                        ? 'Ниже рыночной ставки WB — риск проигрыша аукциона'
+                        : undefined
+                    }
+                  >
+                    {r.market_flag ? '⚠️ ' : ''}рынок ~{r.market_recommended_cpm.toLocaleString()} ₽
+                  </span>
+                )}
                 {canApply && (
                   <button
                     onClick={() => setPending({

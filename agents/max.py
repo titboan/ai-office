@@ -284,6 +284,25 @@ def clamp_ozon_bid(current_bid: float, direction: str, delta_pct: float) -> floa
     return max(1.0, min(ceiling, round(current_bid * multiplier, 2)))
 
 
+def wb_market_bid_flag(new_cpm: float, recommended_cpm: int | None) -> tuple[int | None, str | None]:
+    """Сравнить предлагаемую ставку WB с рыночной рекомендацией WB.
+
+    Возвращает (recommended_cpm, flag), где flag — "overspend" (ставка заметно
+    выше рынка, риск перерасхода бюджета), "underspend" (заметно ниже рынка,
+    риск проигрыша аукциона) или None (в пределах допуска). Если рыночные
+    данные недоступны — (None, None), без исключений.
+    """
+    if not recommended_cpm:
+        return None, None
+    over_pct = getattr(config, "WB_BID_OVERSPEND_TOLERANCE_PCT", 15)
+    under_pct = getattr(config, "WB_BID_UNDERSPEND_TOLERANCE_PCT", 15)
+    if new_cpm > recommended_cpm * (1 + over_pct / 100):
+        return recommended_cpm, "overspend"
+    if new_cpm < recommended_cpm * (1 - under_pct / 100):
+        return recommended_cpm, "underspend"
+    return recommended_cpm, None
+
+
 # Клавиатура с двумя постоянными кнопками действий
 def _static_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура без pending-кнопки (fallback когда chat_id недоступен)."""
@@ -5554,14 +5573,28 @@ class MaxAgent(BaseAgent):
                 # WB: корректировка ставок
                 arrow = "📉 Снизить" if d == "down" else "📈 Поднять"
                 price_line = ""
+                market_line = ""
                 try:
                     from tools.marketplace import WBClient
                     wb_shop = next((sh for sh in shops if sh["marketplace"] == "wb"), None)
                     if wb_shop:
-                        info = await WBClient(wb_shop["api_token"]).get_campaign_cpm(cid)
+                        wb_client = WBClient(wb_shop["api_token"])
+                        info = await wb_client.get_campaign_cpm(cid)
                         if info and info.get("cpm"):
                             new_cpm = clamp_wb_cpm(info["cpm"], d, dp)
                             price_line = f"CPM: {info['cpm']} ₽ → <b>{new_cpm} ₽</b>\n"
+                            try:
+                                market = await wb_client.get_recommended_bid(cid)
+                                recommended_cpm = market.get("recommended_cpm") if market else None
+                                _, flag = wb_market_bid_flag(new_cpm, recommended_cpm)
+                                if recommended_cpm:
+                                    market_line = f"Рынок (WB): рекомендовано ~{recommended_cpm} ₽\n"
+                                    if flag == "overspend":
+                                        market_line += "⚠️ Предложенная ставка выше рыночной — риск перерасхода бюджета\n"
+                                    elif flag == "underspend":
+                                        market_line += "⚠️ Предложенная ставка ниже рыночной — риск проигрыша аукциона\n"
+                            except Exception:
+                                pass
                 except Exception:
                     pass
                 text = (
@@ -5570,6 +5603,7 @@ class MaxAgent(BaseAgent):
                     f"(расход {s['spend_7d']:,.0f}₽ / выручка {s['revenue_7d']:,.0f}₽)\n\n"
                     f"💡 {arrow} ставку на <b>{dp}%</b>\n"
                     f"{price_line}"
+                    f"{market_line}"
                     f"Причина: {s['reason']}"
                 )
                 keyboard = InlineKeyboardMarkup([[
@@ -6315,14 +6349,26 @@ class MaxAgent(BaseAgent):
             mp, cid, d, dp = s["marketplace"], s["campaign_id"], s["direction"], s["delta_pct"]
             if mp == "ozon" and d == "down" and dp == 0:
                 continue
-            row = {**s, "shop_id": None, "current_value": None, "new_value": None}
+            row = {
+                **s, "shop_id": None, "current_value": None, "new_value": None,
+                "market_recommended_cpm": None, "market_flag": None,
+            }
             try:
                 if mp == "wb" and wb_shop:
                     from tools.marketplace import WBClient
-                    info = await WBClient(wb_shop["api_token"]).get_campaign_cpm(cid)
+                    wb_client = WBClient(wb_shop["api_token"])
+                    info = await wb_client.get_campaign_cpm(cid)
                     if info and info.get("cpm"):
                         row["current_value"] = info["cpm"]
                         row["new_value"] = clamp_wb_cpm(info["cpm"], d, dp)
+                        try:
+                            market = await wb_client.get_recommended_bid(cid)
+                            recommended_cpm = market.get("recommended_cpm") if market else None
+                            recommended_cpm, flag = wb_market_bid_flag(row["new_value"], recommended_cpm)
+                            row["market_recommended_cpm"] = recommended_cpm
+                            row["market_flag"] = flag
+                        except Exception:
+                            pass
                 elif mp == "ozon" and ozon_shop:
                     from tools.marketplace import OzonPerformanceClient
                     client = OzonPerformanceClient(

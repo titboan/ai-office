@@ -10,7 +10,7 @@ for _k in ("MARTA_BOT_TOKEN", "KASPER_BOT_TOKEN", "PETER_BOT_TOKEN", "ELINA_BOT_
     os.environ.setdefault(_k, "x")
 
 from config import config  # noqa: E402
-from agents.max import clamp_wb_cpm, clamp_ozon_bid  # noqa: E402
+from agents.max import clamp_wb_cpm, clamp_ozon_bid, wb_market_bid_flag  # noqa: E402
 
 
 def test_clamp_wb_cpm_down_applies_percent():
@@ -47,3 +47,26 @@ def test_clamp_ozon_bid_never_exceeds_ceiling():
     ceiling = config.OZON_MAX_BID_RUB
     assert clamp_ozon_bid(ceiling, "up", 50) == ceiling
     assert clamp_ozon_bid(ceiling * 10, "up", 5) == ceiling
+
+
+def test_wb_market_bid_flag_within_tolerance_is_none():
+    recommended, flag = wb_market_bid_flag(1050, 1000)
+    assert recommended == 1000
+    assert flag is None
+
+
+def test_wb_market_bid_flag_overspend():
+    recommended, flag = wb_market_bid_flag(1200, 1000)
+    assert recommended == 1000
+    assert flag == "overspend"
+
+
+def test_wb_market_bid_flag_underspend():
+    recommended, flag = wb_market_bid_flag(800, 1000)
+    assert recommended == 1000
+    assert flag == "underspend"
+
+
+def test_wb_market_bid_flag_no_market_data():
+    assert wb_market_bid_flag(1000, None) == (None, None)
+    assert wb_market_bid_flag(1000, 0) == (None, None)
