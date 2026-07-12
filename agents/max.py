@@ -5584,7 +5584,9 @@ class MaxAgent(BaseAgent):
                             new_cpm = clamp_wb_cpm(info["cpm"], d, dp)
                             price_line = f"CPM: {info['cpm']} ₽ → <b>{new_cpm} ₽</b>\n"
                             try:
-                                market = await wb_client.get_recommended_bid(cid)
+                                nms = await wb_client.get_campaigns_nms([cid])
+                                nm_id = next(iter(nms.get(cid) or []), None)
+                                market = await wb_client.get_recommended_bid(cid, nm_id) if nm_id else None
                                 recommended_cpm = market.get("recommended_cpm") if market else None
                                 _, flag = wb_market_bid_flag(new_cpm, recommended_cpm)
                                 if recommended_cpm:
@@ -6362,7 +6364,9 @@ class MaxAgent(BaseAgent):
                         row["current_value"] = info["cpm"]
                         row["new_value"] = clamp_wb_cpm(info["cpm"], d, dp)
                         try:
-                            market = await wb_client.get_recommended_bid(cid)
+                            nms = await wb_client.get_campaigns_nms([cid])
+                            nm_id = next(iter(nms.get(cid) or []), None)
+                            market = await wb_client.get_recommended_bid(cid, nm_id) if nm_id else None
                             recommended_cpm = market.get("recommended_cpm") if market else None
                             recommended_cpm, flag = wb_market_bid_flag(row["new_value"], recommended_cpm)
                             row["market_recommended_cpm"] = recommended_cpm

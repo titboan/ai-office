@@ -1258,21 +1258,21 @@ class WBClient:
             logger.error(f"[WB.update_campaign_cpm] error: {e}")
             return False
 
-    async def get_recommended_bid(self, campaign_id: str) -> dict | None:
-        """Получить рекомендуемую (конкурентную по рынку) CPM-ставку WB для кампании —
-        аукцион поиск/каталог (CPM-кампании, type 6/8). Для прочих типов WB не отдаёт
-        данные — это ожидаемо, не ошибка.
+    async def get_recommended_bid(self, campaign_id: str, nm_id: str) -> dict | None:
+        """Получить рекомендуемую (конкурентную по рынку) ставку WB для товара в рамках
+        кампании — аукцион поиск/каталог (CPM-кампании). Рекомендация считается WB на
+        пару (кампания, артикул), поэтому нужен nm_id, а не только campaign_id.
 
-        НЕПОДТВЕРЖДЁННЫЙ endpoint: документация WB была недоступна (403) на момент
-        реализации, названия полей ниже — лучшее предположение по открытым источникам.
-        Логируем полный сырой ответ при HTTP 200, чтобы скорректировать парсинг по
-        первому реальному вызову в проде (Railway logs) — тот же приём, что уже
-        применён для get_campaign_products_v2/get_campaign_details в этом файле.
+        Схема подтверждена по открытому OpenAPI-спеку сообщества (не по официальным
+        докам WB — dev.wildberries.ru отдаёт 403 на прямой фетч; спек синхронизируется
+        с реальным API): raw.githubusercontent.com/eslazarev/wildberries-sdk/main/specs/08-promotion.yaml.
+        WB отдаёт несколько уровней ставки — берём "competitiveBid" (конкурентная
+        по рынку) как ближайший аналог "не перерасходовать бюджет"; bidKopecks — в
+        копейках, конвертируем в рубли.
 
-        Возвращает {"recommended_cpm": int, "min_cpm": int | None} или None, если WB
-        не отдал данные (не CPM-кампания, эндпоинт недоступен, ошибка сети/парсинга).
-        НЕ бросает исключения — это опциональный сигнал поверх ДРР-логики, вызывающий
-        код не должен падать из-за его недоступности.
+        Возвращает {"recommended_cpm": int} (в рублях) или None, если WB не отдал
+        данные (не CPM-кампания, эндпоинт недоступен, сбой сети/парсинга). НЕ бросает
+        исключения — это опциональный сигнал поверх ДРР-логики.
         """
         import json as _json
         url = "https://advert-api.wildberries.ru/api/advert/v0/bids/recommendations"
@@ -1280,39 +1280,26 @@ class WBClient:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    url, headers=headers, params={"campaignId": campaign_id}, timeout=_TIMEOUT
+                    url, headers=headers,
+                    params={"advertId": campaign_id, "nmId": nm_id},
+                    timeout=_TIMEOUT,
                 ) as resp:
                     raw = await resp.text()
                     if resp.status == 404:
-                        logger.info(f"[WB.get_recommended_bid] 404 для campaign={campaign_id} (эндпоинт/кампания недоступны)")
+                        logger.info(f"[WB.get_recommended_bid] 404 для campaign={campaign_id} nm={nm_id} (эндпоинт/кампания недоступны)")
                         return None
                     if resp.status != 200:
-                        logger.warning(f"[WB.get_recommended_bid] HTTP {resp.status} для campaign={campaign_id}: {raw[:200]}")
+                        logger.warning(f"[WB.get_recommended_bid] HTTP {resp.status} campaign={campaign_id} nm={nm_id}: {raw[:200]}")
                         return None
-                    logger.info(f"[WB.get_recommended_bid] ✅ HTTP 200 campaign={campaign_id} — ответ: {raw[:800]}")
+                    logger.info(f"[WB.get_recommended_bid] ✅ HTTP 200 campaign={campaign_id} nm={nm_id} — ответ: {raw[:800]}")
                     data = _json.loads(raw)
-            # Схема не подтверждена живым вызовом — пробуем несколько правдоподобных
-            # вариантов ключей/форм (список, обёртка data/recommendations, голый объект),
-            # ничего не находим — возвращаем None, не падаем.
-            unwrapped = data if isinstance(data, list) else (data.get("data") or data.get("recommendations") or data)
-            items = unwrapped if isinstance(unwrapped, list) else [unwrapped]
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                recommended = (
-                    item.get("recommendedCpm") or item.get("recommendedBid")
-                    or item.get("bidKopecks") or item.get("cpm")
-                )
-                if recommended:
-                    min_bid = item.get("bidKopecksMin") or item.get("minCpm")
-                    return {
-                        "recommended_cpm": int(recommended),
-                        "min_cpm": int(min_bid) if min_bid else None,
-                    }
-            logger.info(f"[WB.get_recommended_bid] campaign={campaign_id}: не распознали поля в ответе, см. лог выше")
-            return None
+            bid_kopecks = ((data.get("base") or {}).get("competitiveBid") or {}).get("bidKopecks")
+            if not bid_kopecks:
+                logger.info(f"[WB.get_recommended_bid] campaign={campaign_id} nm={nm_id}: base.competitiveBid.bidKopecks отсутствует, см. лог выше")
+                return None
+            return {"recommended_cpm": round(bid_kopecks / 100)}
         except Exception as e:
-            logger.error(f"[WB.get_recommended_bid] error campaign={campaign_id}: {e}")
+            logger.error(f"[WB.get_recommended_bid] error campaign={campaign_id} nm={nm_id}: {e}")
             return None
 
     async def upload_product_photo(self, nm_id: str, photo_bytes: bytes, filename: str = "photo.jpg") -> bool:

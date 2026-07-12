@@ -47,6 +47,7 @@ description: >
 - Rate limit: 429 → sleep 60 сек + retry
 - Реклама: `/adv/v3/fullstats` — работает ✅
 - ⛔ `/adv/v1/promotion/adverts` — 404 с октября 2025 (баг WB). Названия кампаний — вручную в `wb_campaigns`
+- Рекомендуемая рыночная ставка: `GET /api/advert/v0/bids/recommendations?advertId=&nmId=` — требует ОБА параметра (кампания + артикул, рекомендация считается на пару). Ответ вложенный: `base.competitiveBid.bidKopecks` (конкурентная ставка, в копейках — делить на 100 для рублей), также `base.leadersBid`/`base.top2` и `normQueries[].reachMax/Medium/Min`. Схема взята из community OpenAPI-спека (`raw.githubusercontent.com/eslazarev/wildberries-sdk/main/specs/08-promotion.yaml`) — официальные доки dev.wildberries.ru отдают 403 на прямой фетч. Живым вызовом на проде ещё не подтверждено (см. `plans/2026-07-12-wb-recommended-bid.md`), при расхождении — поправить `WBClient.get_recommended_bid`. nm_id брать через `get_campaigns_nms([campaign_id])`.
 
 ## WB Analytics API (основной токен)
 
