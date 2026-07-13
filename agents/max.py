@@ -1702,9 +1702,12 @@ class MaxAgent(BaseAgent):
         # 7 дней" в _collect_bid_suggestions/_check_drr_alerts занижается против
         # реального расхода в кабинете Ozon — видели уведомление на КБ100 с ДРР
         # 1% вместо реальных ~2%, расход 1160₽ вместо 2145₽ (см. retrospectives).
-        # Синкаем 30 дней для дашборда/долгих периодов (Питер /report за 14 дней),
-        # ЗАТЕМ отдельным вызовом синкаем последние 7 дней — upsert перезаписывает
-        # (не складывает) те же даты точным средним по узкому окну, а не по 30-дневному.
+        # 30-дневный проход (для дашборда/долгих периодов, Питер /report за 14 дней)
+        # гоняем не каждый синк, а раз в ~неделю (Redis-гейт ниже) — старые дни всё
+        # равно не меняются. Последние 7 дней синкаем отдельным вызовом КАЖДЫЙ раз —
+        # upsert перезаписывает (не складывает) те же даты точным средним по узкому
+        # окну, а не по 30-дневному, и именно эти дни использует Макс для решений
+        # по ставкам.
         date_from_adv_ozon    = (datetime.now(_UTC) - timedelta(days=30)).strftime("%Y-%m-%d")
         date_from_adv_ozon_7d = (datetime.now(_UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
 
@@ -1894,13 +1897,25 @@ class MaxAgent(BaseAgent):
                                 prod_count += 1
                             return len(ad_stats), prod_count
 
-                        ad_stats_30d = await perf_client.get_ad_stats(date_from=date_from_adv_ozon, date_to=date_to_adv)
-                        rec_30d, prod_30d = await _upsert_ozon_ad_stats(ad_stats_30d)
-                        logger.info(f"[Макс/adv] Ozon реклама 30д (client_id={shop.get('client_id')}): {rec_30d} записей, {prod_30d} sku-записей")
+                        # 30-дневный проход даёт только историю для долгих периодов
+                        # (Питер /report, /drr за 14+ дней) — расход за дни старше
+                        # недели уже "устоялся" и меняться не будет, гонять его каждый
+                        # день незачем. Гейтим Redis-флагом на ~6 дней: полный проход
+                        # раз в неделю, каждый день — только точный 7-дневный.
+                        full_sync_key = f"ozon_adv_full_sync:{chat_id}:{shop.get('id') or ozon_perf_client_id}"
+                        if not await self._redis_get(full_sync_key):
+                            ad_stats_30d = await perf_client.get_ad_stats(date_from=date_from_adv_ozon, date_to=date_to_adv)
+                            rec_30d, prod_30d = await _upsert_ozon_ad_stats(ad_stats_30d)
+                            await self._redis_set(full_sync_key, "1", ttl=6 * 86400)
+                            logger.info(f"[Макс/adv] Ozon реклама 30д (client_id={shop.get('client_id')}): {rec_30d} записей, {prod_30d} sku-записей")
+                        else:
+                            logger.info(f"[Макс/adv] Ozon реклама 30д (client_id={shop.get('client_id')}): пропущено, синкали недавно")
 
-                        # Точечно перезаписываем последние 7 дней: то же среднее
-                        # spend_sum/days_count, но по узкому 7-дневному окну — совпадает
-                        # с "Последние 7 дней" в кабинете Ozon, а не размазано по 30 дням.
+                        # Точечно перезаписываем последние 7 дней КАЖДЫЙ синк: то же
+                        # среднее spend_sum/days_count, но по узкому 7-дневному окну —
+                        # совпадает с "Последние 7 дней" в кабинете Ozon, а не размазано
+                        # по 30 дням. Это данные, на которых Макс принимает решения по
+                        # ставкам, поэтому именно они должны быть точными каждый день.
                         ad_stats_7d = await perf_client.get_ad_stats(date_from=date_from_adv_ozon_7d, date_to=date_to_adv)
                         rec_7d, prod_7d = await _upsert_ozon_ad_stats(ad_stats_7d)
                         logger.info(f"[Макс/adv] Ozon реклама 7д уточнение (client_id={shop.get('client_id')}): {rec_7d} записей, {prod_7d} sku-записей")
