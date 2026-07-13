@@ -315,7 +315,7 @@ class AlexAgent(BaseAgent):
             return
         await update.message.reply_text("🗺️ Строю roadmap…")
         result = await self.handle_task(f"Составь roadmap для проекта: {project}", from_agent="команды /roadmap")
-        await _send_rich(self.bot_token, update.effective_chat.id, result)
+        await _send_rich(context.bot.token, update.effective_chat.id, result)
 
     async def cmd_testpush(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/testpush — проверить отправку push через ntfy.sh."""

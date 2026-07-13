@@ -270,10 +270,13 @@ async def run_all_async() -> None:
 
     # Ева заморожена — digest loop отключён до получения TELETHON_SESSION
 
-    max_agent   = next((a for a in started if isinstance(a, MaxAgent)), None)
-    peter_agent = next((a for a in started if a.__class__.__name__ == "PeterAgent"), None)
-    marta_agent = next((a for a in started if isinstance(a, MartaAgent)), None)
-    elina_agent = next((a for a in started if a.__class__.__name__ == "ElinaAgent"), None)
+    max_agent    = next((a for a in started if isinstance(a, MaxAgent)), None)
+    peter_agent  = next((a for a in started if a.__class__.__name__ == "PeterAgent"), None)
+    marta_agent  = next((a for a in started if isinstance(a, MartaAgent)), None)
+    elina_agent  = next((a for a in started if a.__class__.__name__ == "ElinaAgent"), None)
+    tina_agent   = next((a for a in started if isinstance(a, TinaAgent)), None)
+    alex_agent   = next((a for a in started if a.__class__.__name__ == "AlexAgent"), None)
+    kasper_agent = next((a for a in started if isinstance(a, KasperAgent)), None)
     if max_agent is not None and peter_agent is not None:
         max_agent._peter_agent = peter_agent
     if marta_agent is not None and max_agent is not None:
@@ -281,6 +284,16 @@ async def run_all_async() -> None:
         max_agent._marta_agent = marta_agent
     if marta_agent is not None and elina_agent is not None:
         marta_agent._elina_agent = elina_agent
+    # Единственная точка входа/выхода для пользователя — бот Марты: даём ей прямой
+    # доступ к остальным агентам, чтобы прокси-команды не зависели от очереди задач.
+    if marta_agent is not None and peter_agent is not None:
+        marta_agent._peter_agent = peter_agent
+    if marta_agent is not None and tina_agent is not None:
+        marta_agent._tina_agent = tina_agent
+    if marta_agent is not None and alex_agent is not None:
+        marta_agent._alex_agent = alex_agent
+    if marta_agent is not None and kasper_agent is not None:
+        marta_agent._kasper_agent = kasper_agent
 
     async def _reviews_task():
         """Обработка всех отзывов каждые 15 минут."""
@@ -480,8 +493,6 @@ async def run_all_async() -> None:
     asyncio.create_task(
         run_scheduled_loop("snapshot", _wait_daily_utc(1, 0), _daily_snapshot_task)
     )
-
-    tina_agent = next((a for a in started if isinstance(a, TinaAgent)), None)
 
     async def _tender_digest_task():
         """Ежедневно в config.TENDER_SCAN_HOUR_UTC (08:00 МСК по умолчанию) — тендерный дайджест."""

@@ -834,7 +834,8 @@ class PeterAgent(BaseAgent):
     ) -> None:
         _cid = chat_id or (update.effective_chat.id if update else None)
         if _cid:
-            await _send_rich(self.bot_token, _cid, answer)
+            _token = bot.token if bot is not None else self.bot_token
+            await _send_rich(_token, _cid, answer)
             if after_markup:
                 _bot = bot or self.app.bot
                 await _bot.send_message(
@@ -2733,10 +2734,14 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
             answer = f"{answer}\n\n---\n\n{extra_text}"
 
         try:
-            await self._send_answer(
-                answer,
-                chat_id=chat_id,
-            )
+            # Единственная точка входа/выхода для пользователя — бот Марты.
+            from telegram import Bot as _TGBot
+            async with _TGBot(token=config.MARTA_BOT_TOKEN) as _marta_bot:
+                await self._send_answer(
+                    answer,
+                    chat_id=chat_id,
+                    bot=_marta_bot,
+                )
             logger.info(f"[Питер/daily_digest] отправлен в chat_id={chat_id}")
         except Exception as e:
             logger.error(f"[Питер/daily_digest] ошибка отправки: {e}")

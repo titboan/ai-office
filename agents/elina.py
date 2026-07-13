@@ -352,7 +352,7 @@ class ElinaAgent(BaseAgent):
 
         await update.message.reply_text("🔍 Синхронизирую карточки и собираю данные…")
         result = await self._do_seo_task(product_id, chat_id)
-        await _send_rich(self.bot_token, update.effective_chat.id, result)
+        await _send_rich(context.bot.token, update.effective_chat.id, result)
 
         # Если Ozon-продукт — предложить применить заголовок и/или описание
         from db import get_seo_context, get_marketplace_shops
@@ -408,7 +408,7 @@ class ElinaAgent(BaseAgent):
                             f"<b>Описание ({len(desc)} симв.):</b>\n"
                             f"{desc[:200]}{'…' if len(desc) > 200 else ''}"
                         )
-                    await self.app.bot.send_message(
+                    await context.bot.send_message(
                         chat_id=chat_id,
                         text="💡 <b>Применить SEO к карточке Ozon?</b>\n\n" + "\n\n".join(preview_parts),
                         parse_mode="HTML",

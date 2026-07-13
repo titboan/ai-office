@@ -741,6 +741,7 @@ class BaseAgent(ABC):
                             await self._notify_user(
                                 reminder.chat_id,
                                 f"⏰ Напоминание: {reminder.payload}",
+                                bot_token=config.MARTA_BOT_TOKEN,
                             )
                         await mark_completed(reminder.id, "reminder_sent")
                 task = await get_next_task(self.agent_key or self.name.lower())
@@ -764,10 +765,8 @@ class BaseAgent(ABC):
                 self._current_chat_id = task.chat_id
                 self._task_tokens = {"input": 0, "output": 0, "cost": 0.0}
                 _task_start = time.monotonic()
-                # Токен для ответа: если задача от Марты — через её бот, иначе через свой.
-                _reply_token: str | None = {
-                    "marta": getattr(config, "MARTA_BOT_TOKEN", None),
-                }.get(task.from_agent)
+                # Единственная точка входа/выхода для пользователя — бот Марты.
+                _reply_token: str | None = getattr(config, "MARTA_BOT_TOKEN", None)
                 try:
                     result = await asyncio.wait_for(
                         self.handle_task(task.payload, from_agent=task.from_agent),
@@ -842,11 +841,13 @@ class BaseAgent(ABC):
     async def _notify_user(self, chat_id: int, text: str, reply_markup=None, bot_token: str | None = None) -> bool:
         """Отправить сообщение пользователю через Rich Messages (Bot API 10.1).
 
-        bot_token — если передан, использует этот токен (для ответа через Марту).
+        bot_token — если передан, используется этот токен. По умолчанию — бот Марты
+        (единственная точка входа/выхода для пользователя); self.bot_token — крайний
+        фоллбэк на случай, если MARTA_BOT_TOKEN не сконфигурирован (dev-режим).
         Fallback: sendRichMessage → sendMessage HTML → plain text.
         Возвращает True, если сообщение реально отправлено (для ретраев вызывающей стороной).
         """
-        token = bot_token or self.bot_token
+        token = bot_token or getattr(config, "MARTA_BOT_TOKEN", None) or self.bot_token
         if not token:
             return False
         text = _clean_output(text)
@@ -936,10 +937,8 @@ class BaseAgent(ABC):
         chat_id     = completed_task.chat_id
         current_result = getattr(completed_task, "result", None)
 
-        # Маршрутизация ответа: если цепочка инициирована Мартой — через её бот.
-        _chain_reply_token: str | None = {
-            "marta": getattr(config, "MARTA_BOT_TOKEN", None),
-        }.get(completed_task.from_agent)
+        # Единственная точка входа/выхода для пользователя — бот Марты.
+        _chain_reply_token: str | None = getattr(config, "MARTA_BOT_TOKEN", None)
 
         plan = await get_chain_plan(None, chain_id)
         if not plan:
@@ -1043,7 +1042,7 @@ class BaseAgent(ABC):
                 chain_total=chain_total,
                 parallel_group=next_index if is_parallel_next else None,
                 parent_task_id=completed_task.id,
-                from_agent=self.agent_key,
+                from_agent=completed_task.from_agent,
                 correlation_id=completed_task.correlation_id,
                 priority=getattr(completed_task, "priority", 0),
                 timeout_seconds=600 if next_agent == "dan" else 300,

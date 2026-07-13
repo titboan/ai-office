@@ -428,16 +428,16 @@ class TinaAgent(BaseAgent):
             logger.warning("[Тина] TENDER_KEYWORDS пустой — дайджест пропущен")
             return
         try:
-            await self._notify_user(chat_id, "📋 <b>Тина</b>: начинаю поиск тендеров, подожди немного…")
+            await self._notify_user(chat_id, "📋 <b>Тина</b>: начинаю поиск тендеров, подожди немного…", bot_token=config.MARTA_BOT_TOKEN)
             result = await self.scan_and_analyze(keywords, chat_id=chat_id)
             if not result:
                 result = "Подходящих тендеров сегодня не найдено."
             header = "📋 <b>Тендерный дайджест</b> — " + datetime.now(timezone.utc).strftime("%d.%m.%Y") + "\n\n"
-            await self._notify_user(chat_id, header + result)
+            await self._notify_user(chat_id, header + result, bot_token=config.MARTA_BOT_TOKEN)
             logger.info(f"[Тина] Дайджест отправлен | chat_id={chat_id} | len={len(result)}")
         except Exception as e:
             logger.error(f"[Тина] Ошибка дайджеста: {e}\n{traceback.format_exc()}")
-            await self._notify_user(chat_id, f"⚠️ Тина: ошибка при поиске тендеров: {e}")
+            await self._notify_user(chat_id, f"⚠️ Тина: ошибка при поиске тендеров: {e}", bot_token=config.MARTA_BOT_TOKEN)
 
     # ------------------------------------------------------------------ #
     #  handle_task (worker loop)                                           #

@@ -2252,11 +2252,13 @@ class MaxAgent(BaseAgent):
                 lines.append(f"  …и ещё {len(not_in_promo) - 8}")
             lines.append("\n💡 <i>Участие в акции = +30-50% видимости в выдаче</i>")
 
-        await self.app.bot.send_message(
-            chat_id=chat_id,
-            text="\n".join(lines),
-            parse_mode="HTML",
-        )
+        from telegram import Bot as _TGBot
+        async with _TGBot(token=config.MARTA_BOT_TOKEN) as _marta_bot:
+            await _marta_bot.send_message(
+                chat_id=chat_id,
+                text="\n".join(lines),
+                parse_mode="HTML",
+            )
         logger.info(f"[Макс/promotions_summary] chat={chat_id} акций={len(active)} вне_акций={len(not_in_promo)}")
 
     async def cmd_sync_promotions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -5094,7 +5096,7 @@ class MaxAgent(BaseAgent):
                     InlineKeyboardButton("❌ Понял", callback_data=f"rp:{mp}:{pid}:{int(s['current_price'])}:skip"),
                 ]])
 
-            await self.app.bot.send_message(
+            await context.bot.send_message(
                 chat_id=chat_id,
                 text="\n".join(lines),
                 parse_mode="HTML",
@@ -5103,7 +5105,7 @@ class MaxAgent(BaseAgent):
             sent += 1
 
         if sent == 0:
-            await self.app.bot.send_message(chat_id=chat_id, text="✅ Предложений нет.")
+            await context.bot.send_message(chat_id=chat_id, text="✅ Предложений нет.")
 
     async def _handle_reprice_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -5338,15 +5340,23 @@ class MaxAgent(BaseAgent):
                 "\n💡 Запроси /drr у Питера для детального анализа"
             )
 
-            await self.app.bot.send_message(
-                chat_id=chat_id, text="\n".join(parts), parse_mode="HTML"
-            )
+            from telegram import Bot as _TGBot
+            async with _TGBot(token=config.MARTA_BOT_TOKEN) as _marta_bot:
+                await _marta_bot.send_message(
+                    chat_id=chat_id, text="\n".join(parts), parse_mode="HTML"
+                )
             logger.info(f"[Макс/drr_alerts] chat={chat_id} алертов: {total}")
 
             if peter is not None:
                 import asyncio as _asyncio
-                # Передаём свой бот — ответ Питера приходит в тот же чат, что и алерт
-                _asyncio.create_task(peter.run_drr_for_chat(chat_id, days=7, reply_bot=self.app.bot))
+                from telegram import Bot as _TGBot
+
+                async def _run_drr_via_marta() -> None:
+                    # Единственная точка входа/выхода для пользователя — бот Марты.
+                    async with _TGBot(token=config.MARTA_BOT_TOKEN) as _bot:
+                        await peter.run_drr_for_chat(chat_id, days=7, reply_bot=_bot)
+
+                _asyncio.create_task(_run_drr_via_marta())
         except Exception as e:
             logger.error(f"[Макс/drr_alerts] ошибка: {e}", exc_info=True)
 
@@ -5604,12 +5614,14 @@ class MaxAgent(BaseAgent):
             sent += 1
 
         if sent:
-            await self.app.bot.send_message(
-                chat_id=chat_id,
-                text="\n\n———\n\n".join(text_parts),
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(keyboard_rows),
-            )
+            from telegram import Bot as _TGBot
+            async with _TGBot(token=config.MARTA_BOT_TOKEN) as _marta_bot:
+                await _marta_bot.send_message(
+                    chat_id=chat_id,
+                    text="\n\n———\n\n".join(text_parts),
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(keyboard_rows),
+                )
 
         return sent
 

@@ -1938,6 +1938,56 @@ class MartaAgent(BaseAgent):
     async def cmd_proxy_analyze(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "peter", "Проведи произвольный бизнес-анализ по данным маркетплейсов")
 
+    async def _handle_peter_menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка кнопок pmenu: (меню Питера) через бот Марты."""
+        peter = getattr(self, "_peter_agent", None)
+        if peter:
+            await peter._handle_peter_menu_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(query.message.text + "\n\n❌ Агент Питер недоступен", parse_mode="HTML")
+
+    async def _handle_peter_next_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка кнопок pnext: ('Что дальше?' у Питера) через бот Марты."""
+        peter = getattr(self, "_peter_agent", None)
+        if peter:
+            await peter._handle_peter_next_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(query.message.text + "\n\n❌ Агент Питер недоступен", parse_mode="HTML")
+
+    async def _handle_peter_set_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка кнопок pset: (настройки поставок Питера) через бот Марты."""
+        peter = getattr(self, "_peter_agent", None)
+        if peter:
+            await peter._handle_peter_set_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(query.message.text + "\n\n❌ Агент Питер недоступен", parse_mode="HTML")
+
+    async def _handle_seo_audit_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка кнопок pseo: (запуск SEO у Элины после аудита Питера) через бот Марты."""
+        peter = getattr(self, "_peter_agent", None)
+        if peter:
+            await peter._handle_seo_audit_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(query.message.text + "\n\n❌ Агент Питер недоступен", parse_mode="HTML")
+
+    async def _handle_returns_elina_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка кнопок returns_elina: (улучшить карточку из анализа возвратов) через бот Марты."""
+        peter = getattr(self, "_peter_agent", None)
+        if peter:
+            await peter._handle_returns_elina_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(query.message.text + "\n\n❌ Агент Питер недоступен", parse_mode="HTML")
+
     # ── Макс ─────────────────────────────────────────────────────────────────
 
     async def cmd_proxy_reviews(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2012,6 +2062,56 @@ class MartaAgent(BaseAgent):
             await query.edit_message_text(
                 query.message.text + "\n\n❌ Агент Макс недоступен", parse_mode="HTML"
             )
+
+    async def _handle_reprice_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка кнопок rp: (репрайсинг /reprice) через бот Марты."""
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent._handle_reprice_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(query.message.text + "\n\n❌ Агент Макс недоступен", parse_mode="HTML")
+
+    async def _handle_bid_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка кнопок bid: (/bid_adjust) через бот Марты."""
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent._handle_bid_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(query.message.text + "\n\n❌ Агент Макс недоступен", parse_mode="HTML")
+
+    async def _handle_price_apply_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка кнопок price_apply: (/apply_prices) через бот Марты."""
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent._handle_price_apply_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(query.message.text + "\n\n❌ Агент Макс недоступен", parse_mode="HTML")
+
+    async def _handle_catalog_add_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка кнопок addmp:/addcat: (мастер /add) через бот Марты."""
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent._handle_catalog_add_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(query.message.text + "\n\n❌ Агент Макс недоступен", parse_mode="HTML")
+
+    async def _handle_catalog_cost_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка кнопок costpick: (мастер /cost) через бот Марты."""
+        max_agent = getattr(self, "_max_agent", None)
+        if max_agent:
+            await max_agent._handle_catalog_cost_callback(update, context)
+        else:
+            query = update.callback_query
+            await query.answer()
+            await query.edit_message_text(query.message.text + "\n\n❌ Агент Макс недоступен", parse_mode="HTML")
 
     async def cmd_proxy_campaigns(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Показывает кампании Ozon с кнопками через Марту (прямой вызов без очереди)."""
@@ -2137,6 +2237,14 @@ class MartaAgent(BaseAgent):
 
     async def cmd_proxy_apply_prices(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "max", "применить рекомендованные цены от Питера — apply_prices")
+
+    async def cmd_proxy_set(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/set — настройки поставок Питера (срок, буфер)."""
+        peter = getattr(self, "_peter_agent", None)
+        if peter:
+            await peter.cmd_set.__func__(peter, update, context)
+        else:
+            await self._proxy_cmd(update, context, "peter", "__set__")
 
     # ── Онбординг и управление магазинами (все входы через Марту) ────────────
 
@@ -2288,6 +2396,14 @@ class MartaAgent(BaseAgent):
         else:
             await self._proxy_cmd(update, context, "alex", "__plans__")
 
+    async def cmd_proxy_roadmap(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        alex = getattr(self, "_alex_agent", None)
+        if alex:
+            await alex.cmd_roadmap.__func__(alex, update, context)
+        else:
+            args = " ".join(context.args) if context.args else ""
+            await self._proxy_cmd(update, context, "alex", f"Составь roadmap для проекта: {args}" if args else "__roadmap__")
+
     # ── Каспер ───────────────────────────────────────────────────────────────
 
     async def cmd_proxy_research(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2300,6 +2416,15 @@ class MartaAgent(BaseAgent):
 
     async def cmd_proxy_tenders_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "tina", "tenders_report")
+
+    async def cmd_proxy_tender(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/tender <lot_id> — полный анализ конкретного тендера."""
+        tina = getattr(self, "_tina_agent", None)
+        if tina:
+            await tina.cmd_tender.__func__(tina, update, context)
+        else:
+            args = " ".join(context.args) if context.args else ""
+            await self._proxy_cmd(update, context, "tina", f"tender {args}" if args else "__tender__")
 
     async def build_task_digest_text(self, hours: int = 24) -> str | None:
         """Собрать текст дайджеста задач (markdown) без отправки — переиспользуется daily_digest."""
@@ -2375,6 +2500,21 @@ class MartaAgent(BaseAgent):
         self.app.add_handler(CommandHandler("audit", self.cmd_proxy_audit))
         self.app.add_handler(CommandHandler("seo_audit", self.cmd_proxy_seo_audit))
         self.app.add_handler(CommandHandler("analyze", self.cmd_proxy_analyze))
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_peter_menu_callback, pattern=r"^pmenu:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_peter_next_callback, pattern=r"^pnext:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_peter_set_callback, pattern=r"^pset:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_seo_audit_callback, pattern=r"^pseo:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_returns_elina_callback, pattern=r"^returns_elina:")
+        )
         # ── Proxy-команды Макса ──────────────────────────────────────────
         self.app.add_handler(CommandHandler("reviews", self.cmd_proxy_reviews))
         self.app.add_handler(CommandHandler("sync", self.cmd_proxy_sync))
@@ -2411,8 +2551,24 @@ class MartaAgent(BaseAgent):
         self.app.add_handler(
             CallbackQueryHandler(self._handle_promo_callback, pattern=r"^promo:")
         )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_reprice_callback, pattern=r"^rp:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_bid_callback, pattern=r"^bid:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_price_apply_callback, pattern=r"^price_apply:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_catalog_add_callback, pattern=r"^(addmp|addcat):")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_catalog_cost_callback, pattern=r"^costpick:")
+        )
         self.app.add_handler(CommandHandler("margin", self.cmd_proxy_margin))
         self.app.add_handler(CommandHandler("apply_prices", self.cmd_proxy_apply_prices))
+        self.app.add_handler(CommandHandler("set", self.cmd_proxy_set))
         # ── Онбординг и управление магазинами (все входы через Марту) ────
         self.app.add_handler(CommandHandler("add_shop",          self.cmd_proxy_add_shop))
         self.app.add_handler(CommandHandler("set_performance",   self.cmd_proxy_set_performance))
@@ -2445,8 +2601,10 @@ class MartaAgent(BaseAgent):
         self.app.add_handler(CommandHandler("remind",   self.cmd_proxy_remind))
         self.app.add_handler(CommandHandler("testpush", self.cmd_proxy_testpush))
         self.app.add_handler(CommandHandler("plans",    self.cmd_proxy_plans))
+        self.app.add_handler(CommandHandler("roadmap",  self.cmd_proxy_roadmap))
         self.app.add_handler(CommandHandler("tenders", self.cmd_proxy_tenders))
         self.app.add_handler(CommandHandler("tenders_report", self.cmd_proxy_tenders_report))
+        self.app.add_handler(CommandHandler("tender", self.cmd_proxy_tender))
         # ── Меню ─────────────────────────────────────────────────────────
         self.app.add_handler(CommandHandler("menu", self.cmd_menu))
         # ── Callbacks Марты ──────────────────────────────────────────────
