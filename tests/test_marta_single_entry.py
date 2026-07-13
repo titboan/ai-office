@@ -1,7 +1,10 @@
 """
 Регрессия для Фазы 1 плана "единственная точка входа — Марта":
-_notify_user должен по умолчанию отвечать пользователю через бот Марты,
-а не через bot_token агента, который выполнил задачу.
+_notify_user по умолчанию (без явного bot_token=) отвечает пользователю через
+собственный бот агента (self.bot_token) — это нужно для нативных интерактивных
+флоу (например, онбординг-мастер Макса). Маршрутизация через бот Марты
+происходит только там, где вызывающий код явно передаёт bot_token= (worker
+loop на завершении задачи, продвижение цепочки, напоминания, дайджесты).
 """
 import os
 
@@ -39,8 +42,9 @@ class _DummyAgent(BaseAgent):
 
 
 @pytest.mark.asyncio
-async def test_notify_user_defaults_to_marta_bot_even_for_other_agent(monkeypatch):
-    """Агент (не Марта) без явного bot_token= должен слать через бот Марты."""
+async def test_notify_user_defaults_to_own_bot_when_not_overridden(monkeypatch):
+    """Без явного bot_token= _notify_user должен слать через собственный бот агента
+    (нужно для нативных флоу вроде онбординг-мастера Макса на его собственном боте)."""
     monkeypatch.setattr(base_agent_module.config, "MARTA_BOT_TOKEN", "marta-token", raising=False)
     agent = _DummyAgent(bot_token="max-token", agent_key="max")
 
@@ -54,8 +58,8 @@ async def test_notify_user_defaults_to_marta_bot_even_for_other_agent(monkeypatc
     ok = await agent._notify_user(12345, "привет")
 
     assert ok is True
-    assert captured["token"] == "marta-token"
-    assert captured["token"] != agent.bot_token
+    assert captured["token"] == "max-token"
+    assert captured["token"] == agent.bot_token
 
 
 @pytest.mark.asyncio

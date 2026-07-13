@@ -2244,7 +2244,7 @@ class MartaAgent(BaseAgent):
         if peter:
             await peter.cmd_set.__func__(peter, update, context)
         else:
-            await self._proxy_cmd(update, context, "peter", "__set__")
+            await self._proxy_cmd(update, context, "peter", "Покажи и позволь изменить настройки поставок (срок доставки, страховой буфер)")
 
     # ── Онбординг и управление магазинами (все входы через Марту) ────────────
 
@@ -2402,7 +2402,7 @@ class MartaAgent(BaseAgent):
             await alex.cmd_roadmap.__func__(alex, update, context)
         else:
             args = " ".join(context.args) if context.args else ""
-            await self._proxy_cmd(update, context, "alex", f"Составь roadmap для проекта: {args}" if args else "__roadmap__")
+            await self._proxy_cmd(update, context, "alex", f"Составь roadmap для проекта: {args}" if args else "Составь roadmap для проекта")
 
     # ── Каспер ───────────────────────────────────────────────────────────────
 
@@ -2424,7 +2424,7 @@ class MartaAgent(BaseAgent):
             await tina.cmd_tender.__func__(tina, update, context)
         else:
             args = " ".join(context.args) if context.args else ""
-            await self._proxy_cmd(update, context, "tina", f"tender {args}" if args else "__tender__")
+            await self._proxy_cmd(update, context, "tina", f"tender {args}" if args else "Использование: /tender <lot_id> — укажи номер лота тендера для анализа")
 
     async def build_task_digest_text(self, hours: int = 24) -> str | None:
         """Собрать текст дайджеста задач (markdown) без отправки — переиспользуется daily_digest."""

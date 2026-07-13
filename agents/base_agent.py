@@ -766,7 +766,7 @@ class BaseAgent(ABC):
                 self._task_tokens = {"input": 0, "output": 0, "cost": 0.0}
                 _task_start = time.monotonic()
                 # Единственная точка входа/выхода для пользователя — бот Марты.
-                _reply_token: str | None = getattr(config, "MARTA_BOT_TOKEN", None)
+                _reply_token: str | None = config.MARTA_BOT_TOKEN
                 try:
                     result = await asyncio.wait_for(
                         self.handle_task(task.payload, from_agent=task.from_agent),
@@ -841,13 +841,12 @@ class BaseAgent(ABC):
     async def _notify_user(self, chat_id: int, text: str, reply_markup=None, bot_token: str | None = None) -> bool:
         """Отправить сообщение пользователю через Rich Messages (Bot API 10.1).
 
-        bot_token — если передан, используется этот токен. По умолчанию — бот Марты
-        (единственная точка входа/выхода для пользователя); self.bot_token — крайний
-        фоллбэк на случай, если MARTA_BOT_TOKEN не сконфигурирован (dev-режим).
+        bot_token — если передан, используется этот токен (явный override), иначе —
+        self.bot_token (собственный бот агента).
         Fallback: sendRichMessage → sendMessage HTML → plain text.
         Возвращает True, если сообщение реально отправлено (для ретраев вызывающей стороной).
         """
-        token = bot_token or getattr(config, "MARTA_BOT_TOKEN", None) or self.bot_token
+        token = bot_token or self.bot_token
         if not token:
             return False
         text = _clean_output(text)
@@ -938,7 +937,7 @@ class BaseAgent(ABC):
         current_result = getattr(completed_task, "result", None)
 
         # Единственная точка входа/выхода для пользователя — бот Марты.
-        _chain_reply_token: str | None = getattr(config, "MARTA_BOT_TOKEN", None)
+        _chain_reply_token: str | None = config.MARTA_BOT_TOKEN
 
         plan = await get_chain_plan(None, chain_id)
         if not plan:
@@ -1042,7 +1041,7 @@ class BaseAgent(ABC):
                 chain_total=chain_total,
                 parallel_group=next_index if is_parallel_next else None,
                 parent_task_id=completed_task.id,
-                from_agent=completed_task.from_agent,
+                from_agent=self.agent_key,
                 correlation_id=completed_task.correlation_id,
                 priority=getattr(completed_task, "priority", 0),
                 timeout_seconds=600 if next_agent == "dan" else 300,

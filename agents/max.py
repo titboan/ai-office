@@ -2253,7 +2253,7 @@ class MaxAgent(BaseAgent):
             lines.append("\n💡 <i>Участие в акции = +30-50% видимости в выдаче</i>")
 
         from telegram import Bot as _TGBot
-        async with _TGBot(token=config.MARTA_BOT_TOKEN) as _marta_bot:
+        async with _TGBot(token=config.MARTA_BOT_TOKEN or self.bot_token) as _marta_bot:
             await _marta_bot.send_message(
                 chat_id=chat_id,
                 text="\n".join(lines),
@@ -5341,7 +5341,7 @@ class MaxAgent(BaseAgent):
             )
 
             from telegram import Bot as _TGBot
-            async with _TGBot(token=config.MARTA_BOT_TOKEN) as _marta_bot:
+            async with _TGBot(token=config.MARTA_BOT_TOKEN or self.bot_token) as _marta_bot:
                 await _marta_bot.send_message(
                     chat_id=chat_id, text="\n".join(parts), parse_mode="HTML"
                 )
@@ -5349,11 +5349,10 @@ class MaxAgent(BaseAgent):
 
             if peter is not None:
                 import asyncio as _asyncio
-                from telegram import Bot as _TGBot
 
                 async def _run_drr_via_marta() -> None:
                     # Единственная точка входа/выхода для пользователя — бот Марты.
-                    async with _TGBot(token=config.MARTA_BOT_TOKEN) as _bot:
+                    async with _TGBot(token=config.MARTA_BOT_TOKEN or self.bot_token) as _bot:
                         await peter.run_drr_for_chat(chat_id, days=7, reply_bot=_bot)
 
                 _asyncio.create_task(_run_drr_via_marta())
@@ -5615,7 +5614,7 @@ class MaxAgent(BaseAgent):
 
         if sent:
             from telegram import Bot as _TGBot
-            async with _TGBot(token=config.MARTA_BOT_TOKEN) as _marta_bot:
+            async with _TGBot(token=config.MARTA_BOT_TOKEN or self.bot_token) as _marta_bot:
                 await _marta_bot.send_message(
                     chat_id=chat_id,
                     text="\n\n———\n\n".join(text_parts),
