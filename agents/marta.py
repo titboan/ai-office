@@ -794,6 +794,36 @@ class MartaAgent(BaseAgent):
                 except Exception:
                     pass
 
+            # Если пользователь в мастере добавления товара (/add) — передаём Максу
+            if max_agent:
+                try:
+                    catalog_add_raw = await max_agent._redis_get(f"catalog_add:{chat_id}")
+                    if catalog_add_raw and catalog_add_raw not in (b"", ""):
+                        await max_agent._handle_catalog_add_text.__func__(max_agent, update, context)
+                        return
+                except Exception:
+                    pass
+
+            # Если пользователь в мастере ввода себестоимости (/cost) — передаём Максу
+            if max_agent:
+                try:
+                    catalog_cost_raw = await max_agent._redis_get(f"catalog_cost:{chat_id}")
+                    if catalog_cost_raw and catalog_cost_raw not in (b"", ""):
+                        await max_agent._handle_catalog_cost_text.__func__(max_agent, update, context)
+                        return
+                except Exception:
+                    pass
+
+            # Если пользователь вводит кастомную цену в мастере репрайсера (/reprice) — передаём Максу
+            if max_agent:
+                try:
+                    pending_reprice_raw = await max_agent._redis_get(f"pending_reprice:{chat_id}")
+                    if pending_reprice_raw and pending_reprice_raw not in (b"", ""):
+                        if await max_agent._handle_reprice_text.__func__(max_agent, update, context):
+                            return
+                except Exception:
+                    pass
+
             _kb = self._main_keyboard()
 
             async def reply(text, parse_mode=None, **kw):
