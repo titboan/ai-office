@@ -2174,11 +2174,7 @@ class MaxAgent(BaseAgent):
             )
 
         if not active:
-            await self.app.bot.send_message(
-                chat_id=chat_id,
-                text="🎁 Нет активных акций WB/Ozon на сегодня.",
-                parse_mode="HTML",
-            )
+            logger.info(f"[Макс/promotions_summary] chat={chat_id} активных акций нет, сообщение не отправляется")
             return
 
         # Все product_ids, участвующие хоть в одной акции
@@ -3028,79 +3024,6 @@ class MaxAgent(BaseAgent):
             logger.info("[Макс/sync] сводка отправлена")
         except Exception as e:
             logger.error(f"[Макс/sync] ошибка: {e}", exc_info=True)
-
-    async def check_negative_reviews(self, chat_id: int) -> None:
-        """Быстрый polling: только 1-2★, использует last_checked_negative."""
-        from db import get_marketplace_shops, save_review, update_review_status
-        from tools.marketplace import make_client
-
-        shops = await get_marketplace_shops(chat_id)
-        if not shops:
-            return
-
-        now = datetime.now(_UTC)
-
-        for shop in shops:
-            mp = shop["marketplace"]
-            mp_label = _MP_LABELS.get(mp, mp)
-
-            last = shop.get("last_checked_negative")
-            since = (
-                last if last and last.tzinfo else
-                (last.replace(tzinfo=_UTC) if last else now - timedelta(hours=1))
-            )
-
-            try:
-                client = make_client(shop)
-                if mp == "wb":
-                    reviews = await client.get_new_reviews(since=since, max_rating=2)
-                else:
-                    reviews = await client.get_new_reviews(since=since)
-                    reviews = [r for r in reviews if r.get("rating", 5) <= 2]
-                logger.info(f"[Макс/neg] {mp_label}: {len(reviews)} neg отзывов для chat={chat_id}")
-            except Exception as e:
-                logger.error(f"[Макс/neg] get_new_reviews {mp_label}: {e}")
-                continue
-
-            for rv in reviews:
-                is_new = await save_review(
-                    marketplace=mp,
-                    review_id=rv["review_id"],
-                    product_id=rv.get("product_id"),
-                    product_name=rv.get("product_name"),
-                    rating=rv.get("rating", 0),
-                    text=rv.get("text"),
-                    author=rv.get("author"),
-                    chat_id=chat_id,
-                )
-                if not is_new:
-                    continue
-
-                try:
-                    reply = await self._generate_reply(
-                        product_name=rv.get("product_name", ""),
-                        rating=rv.get("rating", 0),
-                        text=rv.get("text", ""),
-                        author=rv.get("author", ""),
-                    )
-                except Exception as e:
-                    logger.error(f"[Макс/neg] generate_reply: {e}")
-                    reply = ""
-
-                await update_review_status(mp, rv["review_id"], "pending_approval", generated_reply=reply)
-                try:
-                    await self._notify_pending(chat_id, shop, rv, reply)
-                except Exception as e:
-                    logger.error(f"[Макс/neg] _notify_pending failed review={rv['review_id'][:8]}: {e}")
-
-            # Обновляем last_checked_negative
-            from db import get_pool
-            pool = await get_pool()
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    "UPDATE marketplace_shops SET last_checked_negative = $1 WHERE chat_id = $2 AND marketplace = $3",
-                    now, chat_id, mp,
-                )
 
     def _build_review_card(
         self, mp: str, rv: dict, generated_reply: str
@@ -5376,7 +5299,7 @@ class MaxAgent(BaseAgent):
             await self.app.bot.send_message(
                 chat_id=chat_id, text="\n".join(parts), parse_mode="HTML"
             )
-            logger.info(f"[Макс/drr_alerts] chat={chat_id} алертов: {len(alerts)}")
+            logger.info(f"[Макс/drr_alerts] chat={chat_id} алертов: {total}")
 
             if peter is not None:
                 import asyncio as _asyncio
@@ -5510,14 +5433,14 @@ class MaxAgent(BaseAgent):
         shops = await get_marketplace_shops(chat_id)
         ozon_shop = next((s for s in shops if s["marketplace"] == "ozon"), None)
         ozon_shop_id = str(ozon_shop["id"]) if ozon_shop else None
-        await self.app.bot.send_message(
-            chat_id=chat_id,
-            text="🤖 <b>Авто-анализ ставок</b>\nПо данным за 7 дней есть предложения по корректировке:",
-            parse_mode="HTML",
-        )
+
+        _digit_emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣"]
+        text_parts = ["🤖 <b>Авто-анализ ставок</b>\nПо данным за 7 дней есть предложения по корректировке:"]
+        keyboard_rows: list[list[InlineKeyboardButton]] = []
 
         sent = 0
-        for s in suggestions[:8]:
+        for idx, s in enumerate(suggestions[:8]):
+            num = _digit_emoji[idx]
             mp = s["marketplace"]
             mp_label = _mp_label(mp)
             cid = s["campaign_id"]
@@ -5530,17 +5453,17 @@ class MaxAgent(BaseAgent):
                 if d == "down" and dp == 0:
                     # Критический ДРР → пауза кампании
                     text = (
-                        f"{mp_label} <b>{s['name']}</b>\n"
+                        f"{num} {mp_label} <b>{s['name']}</b>\n"
                         f"ДРР за 7д: <b>{s['drr']:.0f}%</b>  "
                         f"(расход {s['spend_7d']:,.0f}₽ / выручка {s['revenue_7d']:,.0f}₽)\n\n"
                         f"💡 Рекомендую поставить на паузу\n"
                         f"Причина: {s['reason']}"
                     )
-                    keyboard = InlineKeyboardMarkup([[
-                        InlineKeyboardButton("⏸️ Поставить на паузу", callback_data=f"camp:pause:{ozon_shop_id}:{cid}"),
+                    row = [
+                        InlineKeyboardButton(f"{num} ⏸️ Пауза", callback_data=f"camp:pause:{ozon_shop_id}:{cid}"),
                         InlineKeyboardButton("🗑️ Удалить", callback_data=f"camp:delete:{ozon_shop_id}:{cid}"),
                         InlineKeyboardButton("❌ Пропустить", callback_data=f"ozbid:{ozon_shop_id}:{cid[:20]}:{d}:{dp}:skip"),
-                    ]])
+                    ]
                 else:
                     # Корректировка ставок per-SKU
                     arrow = "📉 Снизить" if d == "down" else "📈 Поднять"
@@ -5558,17 +5481,17 @@ class MaxAgent(BaseAgent):
                     except Exception:
                         pass
                     text = (
-                        f"{mp_label} <b>{s['name']}</b>\n"
+                        f"{num} {mp_label} <b>{s['name']}</b>\n"
                         f"ДРР за 7д: <b>{s['drr']:.0f}%</b>  "
                         f"(расход {s['spend_7d']:,.0f}₽ / выручка {s['revenue_7d']:,.0f}₽)\n\n"
                         f"💡 {arrow} ставки на <b>{dp}%</b> по всем SKU\n"
                         f"{price_line}"
                         f"Причина: {s['reason']}"
                     )
-                    keyboard = InlineKeyboardMarkup([[
-                        InlineKeyboardButton(f"✅ {arrow} ставки", callback_data=f"ozbid:{ozon_shop_id}:{cid[:20]}:{d}:{dp}:apply"),
+                    row = [
+                        InlineKeyboardButton(f"{num} ✅ {arrow}", callback_data=f"ozbid:{ozon_shop_id}:{cid[:20]}:{d}:{dp}:apply"),
                         InlineKeyboardButton("❌ Пропустить", callback_data=f"ozbid:{ozon_shop_id}:{cid[:20]}:{d}:{dp}:skip"),
-                    ]])
+                    ]
             else:
                 # WB: корректировка ставок
                 arrow = "📉 Снизить" if d == "down" else "📈 Поднять"
@@ -5600,7 +5523,7 @@ class MaxAgent(BaseAgent):
                 except Exception:
                     pass
                 text = (
-                    f"{mp_label} <b>{s['name']}</b>\n"
+                    f"{num} {mp_label} <b>{s['name']}</b>\n"
                     f"ДРР за 7д: <b>{s['drr']:.0f}%</b>  "
                     f"(расход {s['spend_7d']:,.0f}₽ / выручка {s['revenue_7d']:,.0f}₽)\n\n"
                     f"💡 {arrow} ставку на <b>{dp}%</b>\n"
@@ -5608,15 +5531,22 @@ class MaxAgent(BaseAgent):
                     f"{market_line}"
                     f"Причина: {s['reason']}"
                 )
-                keyboard = InlineKeyboardMarkup([[
-                    InlineKeyboardButton(f"✅ {arrow}", callback_data=f"bid:{mp}:{cid[:20]}:{d}:{dp}:apply"),
+                row = [
+                    InlineKeyboardButton(f"{num} ✅ {arrow}", callback_data=f"bid:{mp}:{cid[:20]}:{d}:{dp}:apply"),
                     InlineKeyboardButton("❌ Пропустить", callback_data=f"bid:{mp}:{cid[:20]}:{d}:{dp}:skip"),
-                ]])
+                ]
 
-            await self.app.bot.send_message(
-                chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=keyboard
-            )
+            text_parts.append(text)
+            keyboard_rows.append(row)
             sent += 1
+
+        if sent:
+            await self.app.bot.send_message(
+                chat_id=chat_id,
+                text="\n\n———\n\n".join(text_parts),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(keyboard_rows),
+            )
 
         return sent
 

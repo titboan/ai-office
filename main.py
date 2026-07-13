@@ -477,15 +477,6 @@ async def run_all_async() -> None:
                 logger.error(f"[snapshot] stocks chat={chat_id}: {e}")
                 await report_loop_failure(f"snapshot_stocks:{chat_id}", e)
 
-            # Алерт остатков после ежедневного снимка
-            if max_agent is not None:
-                try:
-                    await max_agent._check_stock_alerts(chat_id)
-                    report_loop_success(f"snapshot_alerts:{chat_id}")
-                except Exception as e:
-                    logger.error(f"[snapshot] stock_alerts chat={chat_id}: {e}")
-                    await report_loop_failure(f"snapshot_alerts:{chat_id}", e)
-
     asyncio.create_task(
         run_scheduled_loop("snapshot", _wait_daily_utc(1, 0), _daily_snapshot_task)
     )
@@ -608,17 +599,25 @@ async def run_all_async() -> None:
     )
 
     async def _daily_digest_task():
-        """Ежедневный дайджест от Питера — каждый день в 18:00 UTC (21:00 МСК)."""
+        """Ежедневный дайджест — каждый день в 18:00 UTC (21:00 МСК).
+
+        Одно сообщение: бизнес-сводка Питера + дайджест задач Марты (если Питер
+        недоступен — отправляется только дайджест Марты отдельным сообщением).
+        """
         from db import get_all_active_shops
 
-        if peter_agent is None:
-            logger.warning("[daily_digest] Питер не найден, пропускаем")
+        if peter_agent is None and marta_agent is None:
+            logger.warning("[daily_digest] Питер и Марта не найдены, пропускаем")
             return
         shops = await get_all_active_shops()
         unique_chats = _unique_chats(shops)
         for chat_id in unique_chats:
             try:
-                await peter_agent.run_daily_digest(chat_id)
+                task_digest = await marta_agent.build_task_digest_text() if marta_agent else None
+                if peter_agent is not None:
+                    await peter_agent.run_daily_digest(chat_id, extra_text=task_digest)
+                elif task_digest:
+                    await marta_agent.send_daily_digest(chat_id)
                 logger.info(f"[daily_digest] chat_id={chat_id} завершено")
                 report_loop_success(f"daily_digest:{chat_id}")
             except Exception as e:
@@ -631,27 +630,6 @@ async def run_all_async() -> None:
         )
     )
     logger.info("[main] Daily digest task запущен (каждый день 18:00 UTC = 21:00 МСК)")
-
-    async def _marta_digest_task():
-        """Дайджест задач от Марты — каждый день в 18:05 UTC (21:05 МСК)."""
-        from db import get_all_active_shops
-
-        if marta_agent is None:
-            return
-        shops = await get_all_active_shops()
-        for chat_id in _unique_chats(shops):
-            try:
-                await marta_agent.send_daily_digest(chat_id)
-                logger.info(f"[marta_digest] chat_id={chat_id} отправлено")
-                report_loop_success(f"marta_digest:{chat_id}")
-            except Exception as e:
-                logger.error(f"[marta_digest] chat_id={chat_id} ошибка: {e}")
-                await report_loop_failure(f"marta_digest:{chat_id}", e)
-
-    asyncio.create_task(
-        run_scheduled_loop("marta_digest", _wait_daily_utc(18, 5), _marta_digest_task)
-    )
-    logger.info("[main] Marta digest task запущен (18:05 UTC = 21:05 МСК)")
 
     async def _funnel_sync_task():
         """Воронка конверсии — ежедневно в 02:30 UTC."""

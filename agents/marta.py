@@ -2301,12 +2301,12 @@ class MartaAgent(BaseAgent):
     async def cmd_proxy_tenders_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "tina", "tenders_report")
 
-    async def send_daily_digest(self, chat_id: int) -> None:
-        """Ежедневный дайджест задач — отправляется в 21:00 МСК (18:00 UTC)."""
+    async def build_task_digest_text(self, hours: int = 24) -> str | None:
+        """Собрать текст дайджеста задач (markdown) без отправки — переиспользуется daily_digest."""
         from task_queue import get_daily_task_summary
-        stats = await get_daily_task_summary(hours=24)
+        stats = await get_daily_task_summary(hours=hours)
         if not stats:
-            return
+            return None
 
         emoji_map = {
             "marta": "👩‍💼", "kevin": "👨‍💻", "kasper": "🔍",
@@ -2318,14 +2318,14 @@ class MartaAgent(BaseAgent):
         total_fail = sum(v["failed"] + v["timeout"] for v in stats.values())
 
         lines = [
-            f"📋 <b>Дайджест за сегодня</b>\n",
-            f"✅ Выполнено: <b>{total_ok}</b>  ❌ Ошибок: <b>{total_fail}</b>\n",
+            "📋 **Дайджест задач за сегодня**\n",
+            f"✅ Выполнено: **{total_ok}**  ❌ Ошибок: **{total_fail}**\n",
         ]
 
         # Активность по агентам
         active = {k: v for k, v in stats.items() if v["completed"] + v["failed"] + v["timeout"] > 0}
         if active:
-            lines.append("<b>По агентам:</b>")
+            lines.append("**По агентам:**")
             for agent, v in sorted(active.items(), key=lambda x: x[1]["completed"], reverse=True):
                 icon = emoji_map.get(agent, "🤖")
                 ok = v["completed"]
@@ -2339,19 +2339,22 @@ class MartaAgent(BaseAgent):
         all_errors = []
         for agent, v in stats.items():
             for err in v["errors"]:
-                all_errors.append(f"<i>{agent}:</i> {err}")
+                all_errors.append(f"_{agent}:_ {err}")
         if all_errors:
-            lines.append("\n<b>Ошибки:</b>")
+            lines.append("\n**Ошибки:**")
             lines.extend(all_errors[:3])
             if len(all_errors) > 3:
-                lines.append(f"<i>…ещё {len(all_errors) - 3}</i>")
+                lines.append(f"_…ещё {len(all_errors) - 3}_")
 
+        return "\n".join(lines)
+
+    async def send_daily_digest(self, chat_id: int) -> None:
+        """Дайджест задач отдельным сообщением (используется только если Питер недоступен)."""
+        text = await self.build_task_digest_text()
+        if not text:
+            return
         try:
-            await self.app.bot.send_message(
-                chat_id=chat_id,
-                text="\n".join(lines),
-                parse_mode="HTML",
-            )
+            await _send_rich(self.bot_token, chat_id, text)
         except Exception as e:
             logger.warning(f"[Марта/digest] chat_id={chat_id}: {e}")
 
