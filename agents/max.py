@@ -1709,7 +1709,13 @@ class MaxAgent(BaseAgent):
         # окну, а не по 30-дневному, и именно эти дни использует Макс для решений
         # по ставкам.
         date_from_adv_ozon    = (datetime.now(_UTC) - timedelta(days=30)).strftime("%Y-%m-%d")
-        date_from_adv_ozon_7d = (datetime.now(_UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
+        # days=6, не 7: date_from..date_to(сегодня) должно давать РОВНО 7 календарных
+        # дат (сегодня-6 … сегодня), чтобы days_count в _parse_ozon_ad_stats_csv тоже
+        # был 7 и spend делился на 7, а не на 8 — иначе SUM(spend) в SQL-запросах
+        # (которые фильтруют stat_date >= NOW() - INTERVAL '7 days', то есть те же
+        # 7 дат) складывает только 7 из 8 сохранённых строк и снова занижает сумму,
+        # хоть и не так сильно, как исходный баг с 30-дневным окном.
+        date_from_adv_ozon_7d = (datetime.now(_UTC) - timedelta(days=6)).strftime("%Y-%m-%d")
 
         for shop in shops:
             mp = shop["marketplace"]
