@@ -283,7 +283,6 @@ class AlexAgent(BaseAgent):
         answer = await self._run_with_tools(
             f"Запрос от {from_agent}: {task}", chat_id
         )
-        await self.post_to_group(f"📅 Алекс ответил: {answer[:200]}…")
         return answer
 
     # ------------------------------------------------------------------ #

@@ -296,7 +296,6 @@ class KevinAgent(BaseAgent):
             logger.error(f"[Кевин] Claude API error: {e}")
             return f"⚠️ Ошибка вызова Claude: {e}"
 
-        await self.post_to_group(f"💻 Кевин выполнил задачу: {final_text[:80] if final_text else ''}")
         return final_text or "Задача выполнена."
 
     async def _request_gate_confirmation(self, messages, response, iteration: int, critical_block) -> str:

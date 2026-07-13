@@ -26,7 +26,6 @@ railway logs --tail 100 | Select-String -Pattern "adv|OzonPerf|реклама"
 |---------|---------|---------|
 | `Conflict` при деплое | Rolling restart | Норма, само проходит 30-60 сек |
 | `rate limit 429` у WB | Statistics API | sleep 60 сек + retry (реализовано) |
-| `Chat not found` у Макса | Неверный PARTNERS_GROUP_ID | Проверить в Railway Variables |
 | `Message is too long` | > 4096 символов | Разбивается автоматически |
 | `PermissionDenied` у Ozon | Отзывы на Premium Lite | Недоступно, норма |
 | `WB 404 /adv/v1/promotion/adverts` | Баг WB с окт 2025 | Названия кампаний вручную в wb_campaigns |
@@ -41,8 +40,6 @@ ANTHROPIC_API_KEY
 MARTA_BOT_TOKEN / KEVIN_BOT_TOKEN / KASPER_BOT_TOKEN
 PETER_BOT_TOKEN / ELINA_BOT_TOKEN / ALEX_BOT_TOKEN
 DEN_BOT_TOKEN / EVA_BOT_TOKEN / MAX_BOT_TOKEN
-OFFICE_GROUP_ID
-PARTNERS_GROUP_ID
 DATABASE_URL            -- внутренний Railway
 DATABASE_PUBLIC_URL     -- публичный (использовать для подключения извне)
 REDIS_URL

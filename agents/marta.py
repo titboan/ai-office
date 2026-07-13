@@ -714,7 +714,6 @@ class MartaAgent(BaseAgent):
         if delegation is None:
             cleaned = _clean_output(marta_response)
             await reply_func(cleaned)
-            await self.post_to_group(marta_response)
             return
 
         agent_key, subtask = delegation
@@ -727,8 +726,6 @@ class MartaAgent(BaseAgent):
             await reply_func(f"⚠️ Не могу найти агента `{agent_key}`.")
             return
 
-        short_task = (subtask[:80] + "…") if len(subtask) > 80 else subtask
-
         task_id, corr_id = await enqueue_task(
             assigned_agent=agent_key,
             payload=subtask,
@@ -739,12 +736,10 @@ class MartaAgent(BaseAgent):
         )
 
         if task_id:
-            await self.post_to_group(f"🟡 Задача #{task_id} → {agent.name}: {short_task}")
             logger.info(f"[Марта] Задача #{task_id} → {agent.name} (priority={prio})")
         else:
             logger.warning("[Марта] task_queue недоступен — fallback на прямой вызов")
             await reply_func(f"⏳ {agent.emoji} **{agent.name}** работает…")
-            await self.post_to_group(f"🔀 Делегирую → {agent.name}: {short_task}")
             agent._current_chat_id = chat_id
             try:
                 result = await agent.run_task(subtask, from_agent="Марты")
@@ -1195,9 +1190,7 @@ class MartaAgent(BaseAgent):
             agent_key, subtask = delegation
             agent = self._get_agent(agent_key)
             if agent:
-                short_task = (subtask[:80] + "…") if len(subtask) > 80 else subtask
                 logger.info(f"[Марта] Делегирую (handle_task) → {agent.name}")
-                await self.post_to_group(f"🔀 Делегирую → {agent.name}: {short_task}")
                 agent._current_chat_id = getattr(self, "_current_chat_id", None)
                 try:
                     result = await agent.run_task(subtask, from_agent="Марты")
@@ -1207,7 +1200,6 @@ class MartaAgent(BaseAgent):
 
         # Fallback: Марта отвечает сама
         clean = self._strip_delegate_block(marta_response)
-        await self.post_to_group(f"📋 {clean[:200]}")
 
         return clean
 

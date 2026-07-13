@@ -1401,9 +1401,6 @@ class MaxAgent(BaseAgent):
         marta_token = getattr(getattr(self, '_marta_agent', None), 'bot_token', None)
         sent = await self._notify_user(chat_id, text, reply_markup=keyboard,
                                         bot_token=marta_token or self.bot_token)
-        # Дополнительно — в группу партнёров если задана
-        if config.PARTNERS_GROUP_ID:
-            await self._notify_user(config.PARTNERS_GROUP_ID, text, reply_markup=keyboard)
         return sent
 
     async def cmd_questions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3098,9 +3095,6 @@ class MaxAgent(BaseAgent):
         marta_token = getattr(getattr(self, '_marta_agent', None), 'bot_token', None)
         await self._notify_user(chat_id, text, reply_markup=keyboard,
                                 bot_token=marta_token or self.bot_token)
-        # Дополнительно — в группу партнёров если задана
-        if config.PARTNERS_GROUP_ID:
-            await self._notify_user(config.PARTNERS_GROUP_ID, text, reply_markup=keyboard)
 
     # ------------------------------------------------------------------ #
     #  Callback — отзывы                                                   #

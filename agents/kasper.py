@@ -85,7 +85,6 @@ class KasperAgent(BaseAgent):
             await _send_rich(self.bot_token, chat_id, answer)
 
             logger.info(f"[Каспер] Ответ отправлен")
-            await self.post_to_group(answer[:500] + ("…" if len(answer) > 500 else ""))
 
         except Exception as e:
             logger.error(f"[Каспер] НЕОБРАБОТАННАЯ ОШИБКА: {type(e).__name__}: {e}\n{traceback.format_exc()}")
@@ -119,7 +118,6 @@ class KasperAgent(BaseAgent):
         answer = await self.think(enriched, chat_id=0, is_task=True)
         logger.info(f"[Каспер] handle_task Claude вернул {len(answer)} символов")
 
-        await self.post_to_group(f"📚 Исследование завершено: {answer[:200]}…")
         return answer
 
     # ------------------------------------------------------------------ #

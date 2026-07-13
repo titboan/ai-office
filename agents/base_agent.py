@@ -12,7 +12,7 @@ from typing import Any, Optional
 import anthropic
 import redis.asyncio as aioredis
 from loguru import logger
-from telegram import Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
@@ -474,46 +474,6 @@ class BaseAgent(ABC):
             return f"⚠️ Claude API вернул ошибку {e.status_code}: {e.message}"
 
     # ------------------------------------------------------------------ #
-    #  Telegram — отправка в офисную группу                               #
-    # ------------------------------------------------------------------ #
-
-    async def post_to_group(self, text: str) -> None:
-        """Написать в общую группу офиса от имени агента.
-
-        Работает в двух режимах:
-        - self.app задан (бот запущен) → переиспользует HTTP-сессию app.bot
-        - self.app = None (worker-режим при делегировании) → создаёт Bot на лету
-
-        Формат: 👤 [Имя агента]: текст
-        Если OFFICE_GROUP_ID не задан — пропускает без ошибки.
-        """
-        if not config.OFFICE_GROUP_ID or not self.bot_token:
-            return
-
-        message = f"👤 [{self.name}]: {text}"
-
-        try:
-            if self.app:
-                # Основной режим: переиспользуем сессию работающего бота
-                await self.app.bot.send_message(
-                    chat_id=config.OFFICE_GROUP_ID,
-                    text=message,
-                )
-            else:
-                # Worker-режим: временный Bot без запущенного Application
-                async with Bot(token=self.bot_token) as bot:
-                    await bot.send_message(
-                        chat_id=config.OFFICE_GROUP_ID,
-                        text=message,
-                    )
-        except Exception as e:
-            logger.warning(f"[{self.name}] Ошибка отправки в группу: {e}")
-
-    # Обратная совместимость — старые вызовы post_to_office() продолжают работать
-    async def post_to_office(self, text: str) -> None:
-        await self.post_to_group(text)
-
-    # ------------------------------------------------------------------ #
     #  Telegram — обработчики                                             #
     # ------------------------------------------------------------------ #
 
@@ -569,8 +529,6 @@ class BaseAgent(ABC):
                 reply_to_message_id=update.message.message_id,
             )
             logger.info(f"[{self.name}] Ответ отправлен ({len(answer)} символов)")
-
-            await self.post_to_group(answer)
 
         except Exception as e:
             logger.error(f"[{self.name}] Ошибка в handle_message: {e}\n{traceback.format_exc()}")
@@ -668,16 +626,11 @@ class BaseAgent(ABC):
         """Выполнить задачу, делегированную от другого агента."""
 
     async def run_task(self, task: str, from_agent: str = "user") -> str:
-        """Публичная обёртка над handle_task() с уведомлениями в группу.
+        """Публичная обёртка над handle_task().
 
         Вызывается из Марты (и агент-к-агенту) вместо handle_task() напрямую.
-        Порядок событий в группе:
-          1. "📥 [Агент]: Принял задачу от X: ..."
-          2. handle_task() выполняется (может постить своё сообщение)
-          3. "✅ [Агент]: Задача выполнена: ..."
         """
         short_task = (task[:80] + "…") if len(task) > 80 else task
-        await self.post_to_group(f"📥 Принял задачу от {from_agent}: {short_task}")
         logger.info(f"[{self.name}] run_task от {from_agent}: {short_task!r}")
 
         try:
@@ -686,8 +639,6 @@ class BaseAgent(ABC):
             logger.error(f"[{self.name}] Ошибка в handle_task: {e}")
             result = f"⚠️ Не удалось выполнить задачу: {e}"
 
-        short_result = (result[:200] + "…") if len(result) > 200 else result
-        await self.post_to_group(f"✅ Задача выполнена: {short_result}")
         return result
 
     # ------------------------------------------------------------------ #
@@ -760,8 +711,6 @@ class BaseAgent(ABC):
                     f"[{self.name}] corr={task.correlation_id[:8]} | "
                     f"task_id={task.id} | payload={task.payload[:60]!r}"
                 )
-                short = (task.payload[:80] + "…") if len(task.payload) > 80 else task.payload
-                await self.post_to_group(f"🔵 Выполняю (corr={task.correlation_id[:8]}): {short}")
                 self._current_chat_id = task.chat_id
                 self._task_tokens = {"input": 0, "output": 0, "cost": 0.0}
                 _task_start = time.monotonic()
@@ -793,7 +742,6 @@ class BaseAgent(ABC):
                                 result_msg,
                                 bot_token=_reply_token,
                             )
-                        await self.post_to_group(f"✅ Задача #{task.id} завершена")
                 except asyncio.TimeoutError:
                     await mark_failed(task.id, f"Таймаут {task.timeout_seconds}с", retry=False)
                     await log_event(
@@ -1127,19 +1075,8 @@ class BaseAgent(ABC):
         Единственный владелец (config.OWNER_CHAT_ID) может писать ботам компании.
         Без этого любой человек, узнавший username бота, тратит Claude API за наш счёт.
         Если OWNER_CHAT_ID не настроен (0) — ограничение не включается (dev-режим).
-
-        Группа партнёров (config.PARTNERS_GROUP_ID) исключена: там участники
-        (например, менеджер по рекламе) обращаются к боту через "Макс"/@упоминание,
-        и это должно решаться триггер-логикой _handle_group_message, а не глушиться
-        здесь с публичным "Доступ ограничен" на каждое их сообщение.
         """
         if not config.OWNER_CHAT_ID:
-            return
-        chat = update.effective_chat
-        if (
-            chat and config.PARTNERS_GROUP_ID
-            and chat.id == config.PARTNERS_GROUP_ID
-        ):
             return
         user = update.effective_user
         if user and user.id != config.OWNER_CHAT_ID:

@@ -27,9 +27,6 @@ class Config:
     ALEX_BOT_TOKEN: str = os.getenv("ALEX_BOT_TOKEN", "")
     DEN_BOT_TOKEN: str = os.getenv("DEN_BOT_TOKEN", "")
 
-    # Общая группа офиса
-    OFFICE_GROUP_ID: int = int(os.getenv("OFFICE_GROUP_ID", "0"))
-
     # Веб-поиск (Каспер)
     TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
 
@@ -56,7 +53,6 @@ class Config:
 
     # Макс — отзывы на маркетплейсах
     MAX_BOT_TOKEN: str = os.getenv("MAX_BOT_TOKEN", "")
-    PARTNERS_GROUP_ID: int = int(os.getenv("PARTNERS_GROUP_ID", "0"))
 
     # Ева — Telethon MTProto + бот
     EVA_BOT_TOKEN: str = os.getenv("EVA_BOT_TOKEN", "")

@@ -225,7 +225,6 @@ class ElinaAgent(BaseAgent):
             is_task=True,
         )
 
-        await self.post_to_group(f"📝 SEO-карточка готова: {answer[:200]}…")
         return answer
 
     # ------------------------------------------------------------------ #
@@ -265,8 +264,6 @@ class ElinaAgent(BaseAgent):
             is_task=True,
         )
 
-        content_type = _detect_content_type(task)
-        await self.post_to_group(f"📝 {content_type} готов: {answer[:200]}…")
         return answer
 
     # ------------------------------------------------------------------ #

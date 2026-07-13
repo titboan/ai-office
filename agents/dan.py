@@ -250,7 +250,6 @@ class DanAgent(BaseAgent):
             logger.error(f"[Дэн] Claude API error: {e}")
             return f"⚠️ Ошибка вызова Claude: {e}"
 
-        await self.post_to_group(f"🎨 Дэн выполнил задачу: {task[:80]}")
         return final_text or "Задача выполнена."
 
     def _help_text(self) -> str:

@@ -1020,7 +1020,6 @@ class PeterAgent(BaseAgent):
         except Exception as e:
             logger.warning(f"[Питер] handle_task: ошибка Claude: {e}")
             answer = f"⚠️ Ошибка анализа: {e}"
-        await self.post_to_group(f"📊 Анализ готов: {answer[:200]}…")
         return answer
 
     async def cmd_report(
