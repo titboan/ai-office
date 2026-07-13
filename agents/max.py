@@ -5324,6 +5324,17 @@ class MaxAgent(BaseAgent):
             # умножались на количество строк с другой стороны джойна (fan-out).
             # Результат — ДРР, раздутый на порядки (видели 719% при реальном
             # расходе на товар в разы меньше показанного).
+            #
+            # per_product держит расход/выручку на уровне товара (product_id),
+            # а кампания на Ozon может рекламировать несколько SKU одновременно.
+            # Раньше финальный SELECT отдавал по строке на КАЖДЫЙ товар, и Python
+            # ниже дедупил по campaign_id, беря ПЕРВУЮ (самую высокую по ДРР)
+            # строку — расход/выручка остальных SKU той же кампании молча
+            # терялись, хотя кнопка "поднять/снизить ставку" применяется сразу
+            # ко всем SKU кампании. Из-за этого в уведомлении показывался расход
+            # только одного SKU вместо суммы по кампании (видели ~2x занижение).
+            # Агрегируем SUM(spend)/SUM(revenue) по campaign_id, чтобы цифры в
+            # уведомлении совпадали с реальными суммами по всей кампании.
             rows = await conn.fetch("""
                 WITH adv AS (
                     SELECT marketplace, campaign_id, product_id,
@@ -5333,7 +5344,6 @@ class MaxAgent(BaseAgent):
                       AND stat_date >= NOW() - INTERVAL '7 days'
                       AND campaign_id IS NOT NULL
                     GROUP BY marketplace, campaign_id, product_id
-                    HAVING SUM(spend) > 200
                 ),
                 orders AS (
                     SELECT marketplace, product_id, MAX(product_name) AS product_name,
@@ -5342,28 +5352,39 @@ class MaxAgent(BaseAgent):
                     WHERE chat_id = $1
                       AND order_date >= NOW() - INTERVAL '7 days'
                     GROUP BY marketplace, product_id
-                )
-                SELECT
-                    a.marketplace,
-                    a.campaign_id,
-                    COALESCE(m.display_name, o.product_name, a.product_id) AS name,
-                    a.spend_7d,
-                    COALESCE(o.revenue_7d, 0) AS revenue_7d,
-                    CASE WHEN COALESCE(o.revenue_7d, 0) > 0
-                         THEN ROUND(a.spend_7d / o.revenue_7d * 100, 1)
-                         ELSE NULL END AS drr
-                FROM adv a
-                LEFT JOIN product_mapping m ON (
-                    m.wb_nm_id = a.product_id OR m.ozon_sku = a.product_id
-                )
-                LEFT JOIN orders o ON (
-                    o.marketplace = a.marketplace
-                    -- WB: marketplace_orders.product_id = wb_article, product_adv_stats.product_id = nm_id
-                    AND (
-                        (a.marketplace = 'wb'   AND o.product_id = m.wb_article)
-                        OR (a.marketplace = 'ozon' AND o.product_id = a.product_id)
+                ),
+                per_product AS (
+                    SELECT
+                        a.marketplace,
+                        a.campaign_id,
+                        COALESCE(m.display_name, o.product_name, a.product_id) AS name,
+                        a.spend_7d,
+                        COALESCE(o.revenue_7d, 0) AS revenue_7d
+                    FROM adv a
+                    LEFT JOIN product_mapping m ON (
+                        m.wb_nm_id = a.product_id OR m.ozon_sku = a.product_id
+                    )
+                    LEFT JOIN orders o ON (
+                        o.marketplace = a.marketplace
+                        -- WB: marketplace_orders.product_id = wb_article, product_adv_stats.product_id = nm_id
+                        AND (
+                            (a.marketplace = 'wb'   AND o.product_id = m.wb_article)
+                            OR (a.marketplace = 'ozon' AND o.product_id = a.product_id)
+                        )
                     )
                 )
+                SELECT
+                    marketplace,
+                    campaign_id,
+                    (ARRAY_AGG(name ORDER BY spend_7d DESC))[1] AS name,
+                    SUM(spend_7d)::numeric(12,2) AS spend_7d,
+                    SUM(revenue_7d)::numeric(12,2) AS revenue_7d,
+                    CASE WHEN SUM(revenue_7d) > 0
+                         THEN ROUND(SUM(spend_7d) / SUM(revenue_7d) * 100, 1)
+                         ELSE NULL END AS drr
+                FROM per_product
+                GROUP BY marketplace, campaign_id
+                HAVING SUM(spend_7d) > 200
                 ORDER BY drr DESC NULLS LAST
             """, chat_id)
 
