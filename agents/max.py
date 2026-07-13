@@ -1694,10 +1694,19 @@ class MaxAgent(BaseAgent):
         shops = await get_marketplace_shops(chat_id)
         date_to_adv      = datetime.now(_UTC).strftime("%Y-%m-%d")
         date_from_adv_wb = (datetime.now(_UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
-        # Ozon Performance возвращает агрегат за период одним CSV (не по дням),
-        # поэтому синкаем 30 дней — стоимость API та же, зато покрываем полное окно
-        # дашборда и перезаписываем любые устаревшие строки из старого формата.
-        date_from_adv_ozon = (datetime.now(_UTC) - timedelta(days=30)).strftime("%Y-%m-%d")
+        # Ozon Performance возвращает агрегат за период одним CSV (не по дням) —
+        # мы делим spend_sum на число дней окна и пишем как "дневной" расход
+        # каждому дню окна (см. _parse_ozon_ad_stats_csv). При окне 30 дней это
+        # даёт грубое среднее: если расход последней недели заметно выше среднего
+        # за 30 дней (например, недавно подняли ставки), SUM(spend) за "последние
+        # 7 дней" в _collect_bid_suggestions/_check_drr_alerts занижается против
+        # реального расхода в кабинете Ozon — видели уведомление на КБ100 с ДРР
+        # 1% вместо реальных ~2%, расход 1160₽ вместо 2145₽ (см. retrospectives).
+        # Синкаем 30 дней для дашборда/долгих периодов (Питер /report за 14 дней),
+        # ЗАТЕМ отдельным вызовом синкаем последние 7 дней — upsert перезаписывает
+        # (не складывает) те же даты точным средним по узкому окну, а не по 30-дневному.
+        date_from_adv_ozon    = (datetime.now(_UTC) - timedelta(days=30)).strftime("%Y-%m-%d")
+        date_from_adv_ozon_7d = (datetime.now(_UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
 
         for shop in shops:
             mp = shop["marketplace"]
@@ -1846,43 +1855,55 @@ class MaxAgent(BaseAgent):
                     if ozon_perf_client_id and ozon_perf_client_secret:
                         redis = await self._get_redis()
                         perf_client = OzonPerformanceClient(ozon_perf_client_id, ozon_perf_client_secret, redis)
-                        ad_stats = await perf_client.get_ad_stats(date_from=date_from_adv_ozon, date_to=date_to_adv)
-                        prod_count = 0
-                        # Суммируем по (product_id, stat_date) со всех кампаний ЗА ОДИН
-                        # вызов синка — итог заменяет старую запись, не складывается с ней
-                        # (см. upsert_product_ad_stat), иначе 30-дневное окно раздувает spend.
-                        ozon_product_agg: dict[tuple[str, object], dict] = {}
-                        for s in ad_stats:
-                            stat_date = _date.fromisoformat(s["stat_date"]) if isinstance(s["stat_date"], str) else s["stat_date"]
-                            await upsert_ad_stat(
-                                chat_id=chat_id, marketplace="ozon",
-                                campaign_id=s["campaign_id"], campaign_name=s["campaign_name"],
-                                stat_date=stat_date, views=s["views"],
-                                clicks=s["clicks"], ctr=s["ctr"], spend=s["spend"],
-                            )
-                            for ps in (s.get("product_stats") or []):
-                                key = (ps["product_id"], stat_date)
-                                agg = ozon_product_agg.setdefault(key, {
-                                    "campaign_id": s["campaign_id"], "views": 0, "clicks": 0,
-                                    "spend": 0.0, "orders_count": 0,
-                                })
-                                agg["campaign_id"] = s["campaign_id"]
-                                agg["views"] += ps["views"]
-                                agg["clicks"] += ps["clicks"]
-                                agg["spend"] += ps["spend"]
-                                agg["orders_count"] += ps.get("orders_count", 0)
 
-                        for (product_id, stat_date), agg in ozon_product_agg.items():
-                            ctr = round(agg["clicks"] / agg["views"] * 100, 4) if agg["views"] else 0
-                            await upsert_product_ad_stat(
-                                chat_id=chat_id, marketplace="ozon",
-                                product_id=product_id, campaign_id=agg["campaign_id"],
-                                stat_date=stat_date, views=agg["views"],
-                                clicks=agg["clicks"], ctr=ctr, spend=round(agg["spend"], 4),
-                                orders_count=agg["orders_count"],
-                            )
-                            prod_count += 1
-                        logger.info(f"[Макс/adv] Ozon реклама (client_id={shop.get('client_id')}): {len(ad_stats)} записей, {prod_count} sku-записей")
+                        async def _upsert_ozon_ad_stats(ad_stats: list[dict]) -> tuple[int, int]:
+                            # Суммируем по (product_id, stat_date) со всех кампаний ЗА ОДИН
+                            # вызов синка — итог заменяет старую запись, не складывается с ней
+                            # (см. upsert_product_ad_stat), иначе окно раздувает spend.
+                            ozon_product_agg: dict[tuple[str, object], dict] = {}
+                            for s in ad_stats:
+                                stat_date = _date.fromisoformat(s["stat_date"]) if isinstance(s["stat_date"], str) else s["stat_date"]
+                                await upsert_ad_stat(
+                                    chat_id=chat_id, marketplace="ozon",
+                                    campaign_id=s["campaign_id"], campaign_name=s["campaign_name"],
+                                    stat_date=stat_date, views=s["views"],
+                                    clicks=s["clicks"], ctr=s["ctr"], spend=s["spend"],
+                                )
+                                for ps in (s.get("product_stats") or []):
+                                    key = (ps["product_id"], stat_date)
+                                    agg = ozon_product_agg.setdefault(key, {
+                                        "campaign_id": s["campaign_id"], "views": 0, "clicks": 0,
+                                        "spend": 0.0, "orders_count": 0,
+                                    })
+                                    agg["campaign_id"] = s["campaign_id"]
+                                    agg["views"] += ps["views"]
+                                    agg["clicks"] += ps["clicks"]
+                                    agg["spend"] += ps["spend"]
+                                    agg["orders_count"] += ps.get("orders_count", 0)
+
+                            prod_count = 0
+                            for (product_id, stat_date), agg in ozon_product_agg.items():
+                                ctr = round(agg["clicks"] / agg["views"] * 100, 4) if agg["views"] else 0
+                                await upsert_product_ad_stat(
+                                    chat_id=chat_id, marketplace="ozon",
+                                    product_id=product_id, campaign_id=agg["campaign_id"],
+                                    stat_date=stat_date, views=agg["views"],
+                                    clicks=agg["clicks"], ctr=ctr, spend=round(agg["spend"], 4),
+                                    orders_count=agg["orders_count"],
+                                )
+                                prod_count += 1
+                            return len(ad_stats), prod_count
+
+                        ad_stats_30d = await perf_client.get_ad_stats(date_from=date_from_adv_ozon, date_to=date_to_adv)
+                        rec_30d, prod_30d = await _upsert_ozon_ad_stats(ad_stats_30d)
+                        logger.info(f"[Макс/adv] Ozon реклама 30д (client_id={shop.get('client_id')}): {rec_30d} записей, {prod_30d} sku-записей")
+
+                        # Точечно перезаписываем последние 7 дней: то же среднее
+                        # spend_sum/days_count, но по узкому 7-дневному окну — совпадает
+                        # с "Последние 7 дней" в кабинете Ozon, а не размазано по 30 дням.
+                        ad_stats_7d = await perf_client.get_ad_stats(date_from=date_from_adv_ozon_7d, date_to=date_to_adv)
+                        rec_7d, prod_7d = await _upsert_ozon_ad_stats(ad_stats_7d)
+                        logger.info(f"[Макс/adv] Ozon реклама 7д уточнение (client_id={shop.get('client_id')}): {rec_7d} записей, {prod_7d} sku-записей")
                     else:
                         logger.warning(f"[Макс/adv] Ozon Performance credentials не настроены для client_id={shop.get('client_id')}")
                 except Exception as e:
