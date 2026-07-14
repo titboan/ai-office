@@ -32,18 +32,23 @@
 
 ## Фаза 2 — `agents/marta.py`: три «теневых» reply() в обход `_send_rich`
 
-- [ ] `handle_voice()` (~917-918): локальный `reply()` делает
+- [x] `handle_voice()` (~917-918): локальный `reply()` делает
   `update.message.reply_text(text, parse_mode=parse_mode)` с `parse_mode`,
   который вызывающий код никогда не передаёт (всегда `None`) — Rich Markdown
   (`**bold**`, `` `code` ``) от Клода уходит как есть, пользователь видит
   сырые звёздочки. Заменить на вызов `_send_rich`/`send_rich_or_fallback`
   (с той же `looks_like_html`-развилкой, что и в base_agent, для единообразия).
-- [ ] `handle_photo()` (~1118-1119) — та же проблема, тот же фикс.
-- [ ] `_handle_image_action()` (~1169-1170) — `context.bot.send_message(..., parse_mode=parse_mode)`,
+- [x] `handle_photo()` (~1118-1119) — та же проблема, тот же фикс.
+- [x] `_handle_image_action()` (~1169-1170) — `context.bot.send_message(..., parse_mode=parse_mode)`,
   тот же паттерн, тот же фикс.
-- [ ] Fallback-путь при недоступном `task_queue` (~740-749): `header + _clean_output(result)`
+- [x] Fallback-путь при недоступном `task_queue` (~740-749): `header + _clean_output(result)`
   агента (может быть HTML-таблица Макса) уходит через GFM `_send_rich` —
   применить ту же `looks_like_html`-развилку, что в `_notify_user`.
+
+Реализовано через уже существующий `self._send_agent_text()` (из Фазы 1).
+Осознанно не тронуто (тот же класс проблемы, но вне заявленных трёх мест):
+`reply()` в `handle_callback_query` (`chain_cancel`, ~строка 462) — уже
+вызывает `_send_rich` напрямую, но без `looks_like_html`-развилки.
 
 ## Фаза 3 — `agents/kevin.py::_handle_gate_callback`
 

@@ -15,7 +15,7 @@ from telegram.ext import CommandHandler, CallbackQueryHandler, MessageHandler, f
 from config import config
 from db import save_project, find_project, list_projects
 from utils.tg_format import clean_agent_output as _clean_output
-from utils.tg_rich import send_rich_or_fallback as _send_rich
+from utils.tg_rich import send_rich_or_fallback as _send_rich, looks_like_html
 from task_queue import create_task as enqueue_task, get_active_tasks, get_recent_tasks, enqueue_chain_task
 from .base_agent import BaseAgent, _AGENT_NAMES, with_company_context
 
@@ -745,8 +745,12 @@ class MartaAgent(BaseAgent):
                 result = await agent.run_task(subtask, from_agent="Марты")
             finally:
                 agent._current_chat_id = None
-            header = f"📬 {agent.emoji} **{agent.name}** выполнил задачу:\n\n"
-            await reply_func(header + _clean_output(result))
+            if looks_like_html(result):
+                header = f"📬 {agent.emoji} <b>{agent.name}</b> выполнил задачу:\n\n"
+                await self._send_agent_text(chat_id, header + result)
+            else:
+                header = f"📬 {agent.emoji} **{agent.name}** выполнил задачу:\n\n"
+                await reply_func(header + _clean_output(result))
 
     # ------------------------------------------------------------------ #
     #  Telegram — обработчик сообщений (переопределяем BaseAgent)          #
@@ -914,8 +918,8 @@ class MartaAgent(BaseAgent):
 
             _kb = self._main_keyboard()
 
-            async def reply(text, parse_mode=None):
-                await update.message.reply_text(text, parse_mode=parse_mode, reply_markup=_kb)
+            async def reply(text, parse_mode=None, **kw):
+                await self._send_agent_text(chat_id, text, reply_markup=_kb)
 
             await self._process_text(user_text, chat_id, reply)
 
@@ -1115,8 +1119,8 @@ class MartaAgent(BaseAgent):
 
             _kb = self._main_keyboard()
 
-            async def reply(text, parse_mode=None):
-                await update.message.reply_text(text, parse_mode=parse_mode, reply_markup=_kb)
+            async def reply(text, parse_mode=None, **kw):
+                await self._send_agent_text(chat_id, text, reply_markup=_kb)
 
             await self._process_text(combined_text, chat_id, reply)
 
@@ -1166,8 +1170,8 @@ class MartaAgent(BaseAgent):
 
         _kb = self._main_keyboard()
 
-        async def reply(text, parse_mode=None):
-            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, reply_markup=_kb)
+        async def reply(text, parse_mode=None, **kw):
+            await self._send_agent_text(chat_id, text, reply_markup=_kb)
 
         await self._process_text(combined_text, chat_id, reply)
 
