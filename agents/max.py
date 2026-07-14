@@ -2136,6 +2136,98 @@ class MaxAgent(BaseAgent):
             logger.error(f"[Макс/sync_funnel] {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
 
+    async def _run_full_sync_with_progress(self, chat_id: int, target_chat_id: int, bot) -> dict:
+        """Единый прогон всех синков (заказы/остатки → фин.отчёты → реклама →
+        воронка) с видимым прогрессом — по сообщению за шаг в target_chat_id.
+
+        Каждый шаг изолирован своим try/except: ошибка одной площадки/отчёта
+        не должна прерывать всю цепочку — остальные шаги всё равно выполняются.
+        Не маскирует ошибку под успех (см. `_format_funnel_result`).
+        """
+        summary: dict = {
+            "orders_ok": False,
+            "financial": {"wb": 0, "ozon": 0},
+            "adv_ok": False,
+            "funnel": {"wb": 0, "ozon": 0, "errors": {}},
+            "errors": [],
+        }
+
+        # Шаг 1/4 — заказы и остатки
+        try:
+            await self.sync_marketplace_data(chat_id)
+            summary["orders_ok"] = True
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text="🔄 Шаг 1/4: заказы и остатки — ✅ готово",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"[Макс/full_sync] шаг 1: {e}", exc_info=True)
+            summary["errors"].append(f"шаг 1 (заказы/остатки): {e}")
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text=f"⚠️ Шаг 1/4: не удалось — {e}",
+            )
+
+        # (место для Фазы 2 — auto_populate_product_mapping, вызывается здесь,
+        # между заказами/остатками и финотчётами)
+
+        # Шаг 2/4 — финансовые отчёты
+        try:
+            counts = await self.sync_financial_report(chat_id, days=90)
+            summary["financial"] = counts
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text=(
+                    f"💰 Шаг 2/4: финансовые отчёты — "
+                    f"WB {counts.get('wb', 0)}, Ozon {counts.get('ozon', 0)}"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"[Макс/full_sync] шаг 2: {e}", exc_info=True)
+            summary["errors"].append(f"шаг 2 (финотчёты): {e}")
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text=f"⚠️ Шаг 2/4: не удалось — {e}",
+            )
+
+        # Шаг 3/4 — реклама
+        try:
+            await self.sync_ad_stats(chat_id)
+            summary["adv_ok"] = True
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text="📢 Шаг 3/4: реклама — ✅",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"[Макс/full_sync] шаг 3: {e}", exc_info=True)
+            summary["errors"].append(f"шаг 3 (реклама): {e}")
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text=f"⚠️ Шаг 3/4: не удалось — {e}",
+            )
+
+        # Шаг 4/4 — воронка конверсии
+        try:
+            funnel_counts = await self.sync_funnel(chat_id)
+            summary["funnel"] = funnel_counts
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text="🔻 Шаг 4/4: " + self._format_funnel_result(funnel_counts),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"[Макс/full_sync] шаг 4: {e}", exc_info=True)
+            summary["errors"].append(f"шаг 4 (воронка): {e}")
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text=f"⚠️ Шаг 4/4: не удалось — {e}",
+            )
+
+        return summary
+
     async def sync_promotions(self, chat_id: int) -> dict:
         """Синхронизация акционных кампаний WB + Ozon."""
         from db import get_marketplace_shops, upsert_promotion
