@@ -1148,6 +1148,23 @@ class BaseAgent(ABC):
         )
         logger.info(f"[{self.name}] Worker task запущен")
 
+    async def start_worker_only_async(self) -> None:
+        """Запустить только worker loop, без Telegram polling.
+
+        Марта — единственная точка входа: остальные агенты больше не принимают
+        сообщения напрямую от пользователя в Telegram, но их worker loop должен
+        оставаться живым, чтобы забирать делегированные задачи из очереди Postgres
+        и выполнять фоновые/расписанные задания (синки, дайджесты, алерты).
+        Telegram Application намеренно не создаётся: build_app()/initialize()/
+        start()/start_polling() здесь не вызываются, self.app остаётся None.
+        """
+        self._worker_stop_event = asyncio.Event()
+        self._worker_task = asyncio.create_task(
+            self._worker_loop(),
+            name=f"worker_{self.name.lower()}",
+        )
+        logger.info(f"[{self.name}] Worker task запущен (worker-only, без Telegram polling)")
+
     async def stop_async(self) -> None:
         """Graceful shutdown: worker + polling + HTTP-сессия + Redis."""
         # Останавливаем worker loop

@@ -237,11 +237,17 @@ async def run_all_async() -> None:
     if not agents:
         raise RuntimeError("Ни один агент не был создан — проверь токены в .env")
 
-    # Запускаем всех агентов
+    # Запускаем всех агентов. Марта — единственная точка входа в Telegram:
+    # только она поднимает polling-соединение, остальные агенты живут
+    # worker-only (обрабатывают делегированные задачи из очереди и
+    # фоновые/расписанные задания, но не принимают сообщения напрямую).
     started = []
     for agent in agents:
         try:
-            await agent.start_polling_async()
+            if isinstance(agent, MartaAgent):
+                await agent.start_polling_async()
+            else:
+                await agent.start_worker_only_async()
             started.append(agent)
         except Exception as e:
             logger.error(f"[{agent.name}] Ошибка запуска: {e}")
