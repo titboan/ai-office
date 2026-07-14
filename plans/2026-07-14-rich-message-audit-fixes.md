@@ -52,13 +52,15 @@
 
 ## Фаза 3 — `agents/kevin.py::_handle_gate_callback`
 
-- [ ] Строки ~363-364: `self.app.bot.send_message(chat_id, final_text or "Готово.")` —
+- [x] Строки ~363-364: `self.app.bot.send_message(chat_id, final_text or "Готово.")` —
   без `parse_mode`, без `_send_rich`. `final_text` (Rich Markdown после
   подтверждения PR) уходит как plain text. Завести через `_send_rich`/`send_rich_or_fallback`.
+  Заодно точечный фикс `agents/peter.py:2702` — одиночная `*звёздочка*` (курсив)
+  → `**двойная**` (жирный, как задумано).
 
 ## Фаза 4 — `agents/elina.py`: экранирование перед вставкой в HTML
 
-- [ ] `_extract_description_from_seo`/`_extract_title_from_seo` (~270-304) корректно
+- [x] `_extract_description_from_seo`/`_extract_title_from_seo` (~270-304) корректно
   вырезают `**`/`*`, но не делают `html.escape()` перед вставкой результата в
   HTML-превью (~383-396, `parse_mode="HTML"`). Если Клод вернёт в названии/описании
   символы `<`, `>`, `&` — сообщение сломается или отрендерится не так. Добавить

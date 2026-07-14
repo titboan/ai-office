@@ -361,7 +361,7 @@ class KevinAgent(BaseAgent):
         final_text = await self._run_tool_loop(messages, iteration_start=state["iteration"] + 1)
 
         try:
-            await self.app.bot.send_message(chat_id, final_text or "Готово.")
+            await self._send_agent_text(chat_id, final_text or "Готово.")
         except Exception as e:
             logger.error(f"[Кевин] не удалось отправить результат после подтверждения PR: {e}")
 
