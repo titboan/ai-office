@@ -570,6 +570,8 @@ class MaxAgent(BaseAgent):
         if await self._redis_get(f"catalog_cost:{chat_id}"):
             await self._handle_catalog_cost_text(update, context)
             return
+        if await self._handle_cost_wizard_text(update, context):
+            return
         state = await self._get_onboard(chat_id)
         if state and state.get("step") not in (None, "done"):
             return
@@ -688,7 +690,9 @@ class MaxAgent(BaseAgent):
         )
 
     async def _send_finish(self, chat_id: int, connected: list[str]) -> None:
-        """Финал онбординга — показать статус с кнопками."""
+        """Финал онбординга — сама, без единой команды пользователя, запускает
+        полный синк (Фаза 1+2) и проактивный мастер себестоимости (Фаза 3)
+        (Фаза 4, plans/2026-07-14-guided-onboarding-analytics.md)."""
         from db import get_marketplace_shops
         shops = await get_marketplace_shops(chat_id)
         labels = " и ".join(_MP_LABELS.get(mp, mp) for mp in connected)
@@ -696,20 +700,47 @@ class MaxAgent(BaseAgent):
         text = (
             f"🎉 **{labels} подключён!**\n\n"
             f"{status}\n\n"
-            "**Что происходит автоматически:**\n"
-            "• Отзывы проверяются в 09:00, 14:00 и 20:00 МСК\n"
-            "• 3–5⭐ — публикую ответ сам\n"
-            "• 1–2⭐ — пришлю тебе на одобрение\n\n"
-            "**С чего начать:**\n"
-            "1. /sync — загрузить данные магазина\n"
-            "2. /products — добавить себестоимость товаров\n"
-            "3. /dashboard — посмотреть аналитику"
+            "🔄 Собираю данные магазина — обычно 1-3 минуты, буду присылать "
+            "статус по шагам."
         )
         await self._notify_user(
             chat_id,
             text,
             reply_markup=await self._build_keyboard(chat_id),
         )
+
+        import asyncio as _asyncio
+        _asyncio.create_task(self._run_post_onboarding_flow(chat_id))
+
+    async def _run_post_onboarding_flow(self, chat_id: int) -> None:
+        """Синк + мастер себестоимости после онбординга — фоновой задачей.
+
+        КРИТИЧНО: PTB-приложение здесь без concurrent_updates=True (см.
+        base_agent.build_app), апдейты обрабатываются строго последовательно.
+        Если await'ить синк (может занять 1-3 мин из-за WB rate-limit sleep 60с)
+        прямо в обработчике текстового апдейта, бот встанет для ВСЕХ чатов —
+        группы, одобрение отзывов, другие команды будут ждать в очереди.
+        Поэтому запускается через asyncio.create_task, а не await."""
+        try:
+            await self._run_full_sync_with_progress(chat_id, chat_id, self.app.bot)
+
+            await self.app.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "🎉 Данные собраны. Дальше — по каждому товару спрошу "
+                    "себестоимость, чтобы дашборд считал точную маржу."
+                ),
+            )
+            await self._run_cost_wizard(chat_id, self.app.bot)
+        except Exception as e:
+            logger.error(f"[Макс/post_onboarding] chat={chat_id}: {e}", exc_info=True)
+            try:
+                await self.app.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ Сбор данных прервался — {e}\nПопробуй /sync позже.",
+                )
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ #
     #  /start                                                               #
@@ -2146,6 +2177,7 @@ class MaxAgent(BaseAgent):
         """
         summary: dict = {
             "orders_ok": False,
+            "products": {"created": 0, "merged": 0},
             "financial": {"wb": 0, "ozon": 0},
             "adv_ok": False,
             "funnel": {"wb": 0, "ozon": 0, "errors": {}},
@@ -2169,8 +2201,20 @@ class MaxAgent(BaseAgent):
                 text=f"⚠️ Шаг 1/4: не удалось — {e}",
             )
 
-        # (место для Фазы 2 — auto_populate_product_mapping, вызывается здесь,
-        # между заказами/остатками и финотчётами)
+        try:
+            products = await self._auto_populate_products(chat_id)
+            summary["products"] = products
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text=f"📦 Товары в каталоге: +{products.get('created', 0)} новых, +{products.get('merged', 0)} объединено",
+            )
+        except Exception as e:
+            logger.error(f"[Макс/full_sync] авто-каталог: {e}", exc_info=True)
+            summary["errors"].append(f"авто-каталог: {e}")
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text=f"⚠️ Не удалось завести товары в каталог автоматически — {e}",
+            )
 
         # Шаг 2/4 — финансовые отчёты
         try:
@@ -4228,13 +4272,22 @@ class MaxAgent(BaseAgent):
         спрашивает по одному товару без заданной себестоимости (Фаза 3,
         plans/2026-07-14-guided-onboarding-analytics.md). Вызывается из хука
         после онбординга (Фаза 4)."""
-        from db import get_products_without_cost
+        from db import get_products_without_cost, count_products
         items = await get_products_without_cost(chat_id)
         if not items:
-            await bot.send_message(
-                chat_id=chat_id,
-                text="✅ У всех товаров уже задана себестоимость.",
-            )
+            if await count_products() == 0:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "В каталоге пока нет товаров — как только появятся заказы "
+                        "или остатки, я заведу их автоматически и спрошу себестоимость."
+                    ),
+                )
+            else:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text="✅ У всех товаров уже задана себестоимость.",
+                )
             return
         state = {"items": items, "index": 0, "saved": 0}
         await self._redis_set(f"cost_wizard:{chat_id}", json.dumps(state), ttl=_ONBOARD_TTL)
@@ -4643,6 +4696,7 @@ class MaxAgent(BaseAgent):
         chat_id = update.effective_chat.id
         await self._redis_set(f"catalog_add:{chat_id}",  "", ttl=1)
         await self._redis_set(f"catalog_cost:{chat_id}", "", ttl=1)
+        await self._redis_set(f"cost_wizard:{chat_id}",  "", ttl=1)
         await update.message.reply_text("Отменено.")
 
     # ------------------------------------------------------------------ #

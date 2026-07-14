@@ -2444,6 +2444,15 @@ async def get_products_without_cost(chat_id: int | None = None) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def count_products() -> int:
+    """Сколько товаров всего в реестре product_mapping — используется чтобы
+    отличить «каталог пуст» от «у всех уже задана себестоимость»
+    (Фаза 4, plans/2026-07-14-guided-onboarding-analytics.md)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval("SELECT COUNT(*) FROM product_mapping")
+
+
 async def create_user_plan(
     chat_id: int,
     title: str,
