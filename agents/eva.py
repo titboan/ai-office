@@ -119,32 +119,83 @@ def _parse_since(arg: str | None, last_checked: datetime | None) -> datetime | s
     return f"Не могу распарсить параметр: «{arg}». Используй: 3d, 12h, 2026-06-01"
 
 
+_BQ_OPEN_RE = re.compile(r"<blockquote(?:\s[^>]*)?>", re.IGNORECASE)
+_BQ_CLOSE_RE = re.compile(r"</blockquote>", re.IGNORECASE)
+
+
 def _split_digest(text: str, limit: int = 4000) -> list[str]:
-    """Разрезать дайджест по границам тем (строки ##), не в середине."""
+    """Разрезать дайджест на части ≤limit по границам пустой строки (\\n\\n).
+
+    Дайджест форматируется в HTML (`<blockquote expandable>`, `<b>` и т.п.),
+    поэтому резать нужно только там, где на данный момент нет незакрытого
+    <blockquote...> — иначе получившийся кусок будет с непарным тегом и
+    Telegram не сможет его распарсить. Если разрез на границе \\n\\n попадает
+    внутрь открытого <blockquote>, откатываемся к ближайшей предыдущей
+    сбалансированной \\n\\n-границе (перед этим тегом).
+    """
     if len(text) <= limit:
         return [text]
 
+    # Разбиваем на блоки по границам "\n\n", разделитель приклеен к концу
+    # предыдущего блока — конкатенация блоков даёт исходный текст без потерь.
+    tokens = re.split(r"(\n\n+)", text)
+    blocks: list[str] = []
+    for i in range(0, len(tokens), 2):
+        sep = tokens[i + 1] if i + 1 < len(tokens) else ""
+        blocks.append(tokens[i] + sep)
+
     parts: list[str] = []
     current: list[str] = []
+    cum_open = [0]   # cum_open[k] — открытых <blockquote> в первых k блоках current
+    cum_close = [0]
     current_len = 0
 
-    for line in text.splitlines(keepends=True):
-        # Новая тема — возможное место разреза
-        if line.startswith("##") and current_len + len(line) > limit and current:
-            parts.append("".join(current).rstrip())
-            current = []
-            current_len = 0
-        # Принудительный разрез если блок слишком большой
-        if current_len + len(line) > limit and current:
-            parts.append("".join(current).rstrip())
-            current = []
-            current_len = 0
-        current.append(line)
-        current_len += len(line)
+    for block in blocks:
+        if current_len + len(block) > limit and current:
+            # Ищем самую правую точку среди накопленных блоков, где теги сбалансированы
+            split_idx = None
+            for k in range(len(current), 0, -1):
+                if cum_open[k] == cum_close[k]:
+                    split_idx = k
+                    break
+            if split_idx:
+                parts.append("".join(current[:split_idx]).rstrip())
+                current = current[split_idx:]
+                cum_open = [0]
+                cum_close = [0]
+                for b in current:
+                    cum_open.append(cum_open[-1] + len(_BQ_OPEN_RE.findall(b)))
+                    cum_close.append(cum_close[-1] + len(_BQ_CLOSE_RE.findall(b)))
+                current_len = sum(len(b) for b in current)
+            # если split_idx не найден — даже первый накопленный блок открывает
+            # незакрытый тег, разрез откладывается до появления баланса
+
+        current.append(block)
+        cum_open.append(cum_open[-1] + len(_BQ_OPEN_RE.findall(block)))
+        cum_close.append(cum_close[-1] + len(_BQ_CLOSE_RE.findall(block)))
+        current_len += len(block)
 
     if current:
         parts.append("".join(current).rstrip())
-    return [p for p in parts if p.strip()]
+
+    # Fallback: часть всё ещё длиннее лимита (например один <blockquote>
+    # длиннее лимита целиком, либо во всём тексте нет ни одной "\n\n"-границы) —
+    # жёсткий разрез по длине, как раньше, но с явным предупреждением в лог,
+    # т.к. это может разорвать HTML-тег.
+    result: list[str] = []
+    for part in parts:
+        if len(part) <= limit:
+            result.append(part)
+        else:
+            logger.warning(
+                f"[Ева] _split_digest: не нашлось безопасной границы \\n\\n для среза "
+                f"≤{limit} символов (похоже, один HTML-блок длиннее лимита) — "
+                f"жёсткий разрез по длине, возможен разрыв тега"
+            )
+            for start in range(0, len(part), limit):
+                result.append(part[start:start + limit])
+
+    return [p for p in result if p.strip()]
 
 
 class EvaAgent(BaseAgent):

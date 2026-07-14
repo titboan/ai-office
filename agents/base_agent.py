@@ -27,6 +27,7 @@ from config import config
 from db import log_event
 from utils.tg_format import clean_agent_output as _clean_output
 from utils.tg_rich import send_rich_or_fallback as _send_rich
+from utils.tg_rich import looks_like_html, send_html_message
 from task_queue import (
     get_next_task,
     mark_running,
@@ -523,9 +524,8 @@ class BaseAgent(ABC):
         try:
             await context.bot.send_chat_action(chat_id=chat_id, action="typing")
             answer = await self.think(user_text, chat_id)
-            answer = _clean_output(answer)
-            await _send_rich(
-                self.bot_token, update.effective_chat.id, answer,
+            await self._send_agent_text(
+                update.effective_chat.id, answer,
                 reply_to_message_id=update.message.message_id,
             )
             logger.info(f"[{self.name}] Ответ отправлен ({len(answer)} символов)")
@@ -736,7 +736,7 @@ class BaseAgent(ABC):
                         await self._advance_chain(task)
                     else:
                         if task.chat_id:
-                            result_msg = f"✅ {self.emoji} **{self.name}:**\n\n{result}"
+                            result_msg = f"{self._agent_label(result)}\n\n{result}"
                             await self._notify_user(
                                 task.chat_id,
                                 result_msg,
@@ -786,21 +786,61 @@ class BaseAgent(ABC):
                 await asyncio.sleep(5)
         logger.info(f"[{self.name}] Worker loop остановлен")
 
-    async def _notify_user(self, chat_id: int, text: str, reply_markup=None, bot_token: str | None = None) -> bool:
-        """Отправить сообщение пользователю через Rich Messages (Bot API 10.1).
+    def _agent_label(self, result: str) -> str:
+        """Шапка результата — в том же формате (HTML/Markdown), что и тело result.
 
-        bot_token — если передан, используется этот токен (явный override), иначе —
-        self.bot_token (собственный бот агента).
-        Fallback: sendRichMessage → sendMessage HTML → plain text.
-        Возвращает True, если сообщение реально отправлено (для ретраев вызывающей стороной).
+        Хардкод-отчёты Макса (каталог, маржа, магазины) собраны в HTML (<pre>-таблицы) —
+        шапка должна быть <b>...</b>, иначе смешение форматов ломает рендер в _notify_user.
+        """
+        if looks_like_html(result):
+            return f"✅ {self.emoji} <b>{self.name}:</b>"
+        return f"✅ {self.emoji} **{self.name}:**"
+
+    async def _send_agent_text(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        reply_to_message_id: int | None = None,
+        reply_markup=None,
+        bot_token: str | None = None,
+    ) -> bool:
+        """Отправить текст ответа агента с автоопределением формата (общий путь для
+        _notify_user и handle_message).
+
+        Если text — готовый Telegram HTML (хардкод-отчёты Макса: <pre>-таблицы,
+        HTML-промпт Тины и т.п.) — отправляем как есть через send_html_message,
+        БЕЗ clean_agent_output (который стирает теги) и БЕЗ Rich Markdown/GFM
+        (одиночные \\n в HTML-таблицах схлопываются в soft-break при GFM-рендере).
+        Иначе — текущий путь: clean_agent_output → Rich Markdown/GFM.
+        Fallback (не-HTML путь): sendRichMessage → sendMessage HTML → plain text.
+        Возвращает True, если сообщение реально отправлено.
         """
         token = bot_token or self.bot_token
         if not token:
             return False
-        text = _clean_output(text)
         markup_dict = reply_markup.to_dict() if reply_markup else None
+        if looks_like_html(text):
+            return await send_html_message(
+                token, chat_id, text,
+                reply_markup_dict=markup_dict, reply_to_message_id=reply_to_message_id,
+            )
+        text = _clean_output(text)
+        return await _send_rich(
+            token, chat_id, text,
+            reply_markup_dict=markup_dict, reply_to_message_id=reply_to_message_id,
+        )
+
+    async def _notify_user(self, chat_id: int, text: str, reply_markup=None, bot_token: str | None = None) -> bool:
+        """Отправить сообщение пользователю через Rich Messages (Bot API 10.1).
+
+        bot_token — если передан, используется этот токен (явный override), иначе —
+        self.bot_token (собственный бот агента). Формат (HTML vs Rich Markdown/GFM)
+        определяется автоматически в _send_agent_text().
+        Возвращает True, если сообщение реально отправлено (для ретраев вызывающей стороной).
+        """
         try:
-            return await _send_rich(token, chat_id, text, reply_markup_dict=markup_dict)
+            return await self._send_agent_text(chat_id, text, reply_markup=reply_markup, bot_token=bot_token)
         except Exception as e:
             logger.warning(f"[{self.name}] _notify_user ошибка (chat={chat_id}): {e}")
             return False

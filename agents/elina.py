@@ -7,6 +7,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from config import config
+from utils.tg_format import escape
 from utils.tg_rich import send_rich_or_fallback as _send_rich
 from .base_agent import BaseAgent
 
@@ -382,11 +383,11 @@ class ElinaAgent(BaseAgent):
 
                     preview_parts = []
                     if title:
-                        preview_parts.append(f"<b>Заголовок:</b> {title[:120]}")
+                        preview_parts.append(f"<b>Заголовок:</b> {escape(title[:120])}")
                     if desc:
                         preview_parts.append(
                             f"<b>Описание ({len(desc)} симв.):</b>\n"
-                            f"{desc[:200]}{'…' if len(desc) > 200 else ''}"
+                            f"{escape(desc[:200])}{'…' if len(desc) > 200 else ''}"
                         )
                     await context.bot.send_message(
                         chat_id=chat_id,

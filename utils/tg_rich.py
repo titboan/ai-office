@@ -30,6 +30,19 @@ RICH_MARKDOWN_FORMAT_RULES = """
 
 RICH_MESSAGE_CHUNK_SIZE = 30_000
 
+_HTML_TAG_RE = re.compile(r"</?(b|i|u|s|code|pre|blockquote|a)\b", re.IGNORECASE)
+
+
+def looks_like_html(text: str) -> bool:
+    """True if text contains Telegram HTML tags (utils.tg_format style: bold/italic/code/pre/quote/link).
+
+    Легитимный Rich Markdown от Клода никогда не содержит такие теги —
+    RICH_MARKDOWN_FORMAT_RULES явно запрещает <b>, <i>, <code>.
+    """
+    if not text:
+        return False
+    return bool(_HTML_TAG_RE.search(text))
+
 
 async def send_rich_message(
     bot_token: str,
@@ -137,6 +150,16 @@ async def _html_fallback(
     reply_to_message_id: int | None,
 ) -> bool:
     html = gfm_to_html_fallback(chunk)
+    return await _send_html_chunks(bot_token, chat_id, html, reply_markup_dict, reply_to_message_id)
+
+
+async def _send_html_chunks(
+    bot_token: str,
+    chat_id: int | str,
+    html: str,
+    reply_markup_dict: dict | None,
+    reply_to_message_id: int | None,
+) -> bool:
     html_chunks = [html[j : j + 4096] for j in range(0, max(len(html), 1), 4096)]
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     all_ok = True
@@ -174,3 +197,22 @@ async def _html_fallback(
             logger.error(f"send_rich_or_fallback HTML fallback exception: {e}")
             all_ok = False
     return all_ok
+
+
+async def send_html_message(
+    bot_token: str,
+    chat_id: int | str,
+    html_text: str,
+    reply_markup_dict: dict | None = None,
+    reply_to_message_id: int | None = None,
+) -> bool:
+    """Send already-built Telegram HTML text (e.g. Max's hardcoded <pre> reports).
+
+    Chunk by 4096 chars, sendMessage with parse_mode="HTML"; on API error per chunk,
+    fall back to the same chunk without tags (no parse_mode).
+    """
+    if not html_text:
+        return False
+    return await _send_html_chunks(
+        bot_token, chat_id, html_text, reply_markup_dict, reply_to_message_id
+    )
