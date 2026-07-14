@@ -48,7 +48,18 @@ product_mapping          -- реестр товаров
                          --   Нужен для join с product_adv_stats (fullstats отдаёт nmId, не wb_article)
   ozon_offer_id          -- nullable
   ozon_sku               -- nullable
-  display_name           -- UNIQUE, ключ для /add и /cost
+  display_name           -- UNIQUE ГЛОБАЛЬНО (не по chat_id!), ключ для /add и /cost
+                         --   каталог общий на все чаты, подключённые к боту (см. ниже)
+
+  Заполняется НЕ ТОЛЬКО вручную (/add, /map) — при онбординге и /sync
+  db.auto_populate_product_mapping(chat_id) заводит товары автоматически
+  из marketplace_stocks (WB — с fallback на marketplace_orders, у Ozon
+  fallback нет: там product_id = SKU, а не offer_id). Мэтчинг между
+  площадками — только по точному совпадению display_name (без учёта
+  регистра), без фаззи — примеры товаров типа wb_article="БК50гр" /
+  ozon_offer_id="КБ50" текстом не сопоставить, склейка чужих товаров хуже,
+  чем две отдельные строки. При коллизии display_name с другим товаром —
+  суффикс " (WB)"/" (Ozon)", существующая строка не перезаписывается.
 
 product_costs            -- себестоимость
   mapping_id → cost (₽), updated_at, marketplace ('wb'/'ozon')
@@ -116,7 +127,13 @@ adv_stats_summary   -- агрегат: total_views, total_clicks, avg_ctr, total
 ## Важные нюансы
 
 - `product_mapping.wb_article` и `ozon_offer_id` — nullable (товар может быть только на одной ПЛ)
-- `UNIQUE(display_name)` — основной ключ для пользовательских команд
+- `UNIQUE(display_name)` — основной ключ для пользовательских команд, ГЛОБАЛЬНЫЙ
+  (не по `chat_id`, хотя колонка `chat_id` в таблице есть — используется только
+  в `save_price_recommendations`/`get_price_recommendations`). Каталог товаров
+  сейчас один на все чаты, подключённые к боту — не проблема, пока бот
+  обслуживает один бизнес с несколькими chat_id, но станет реальным багом
+  (чужие товары/себестоимость видны друг другу), если появится больше одного
+  независимого магазина от разных людей.
 - `product_costs` привязан к `product_mapping.id`, не к артикулу МП
 - Цена селлера и реализация — РАЗНЫЕ поля (см. skills/max-api)
 - `marketplace_financial_report.report_date` — всегда понедельник недели (агрегат за неделю)
