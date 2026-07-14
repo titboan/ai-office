@@ -2394,6 +2394,56 @@ async def auto_populate_product_mapping(chat_id: int) -> dict:
     return {"created": created_total, "merged": merged_total}
 
 
+async def set_product_cost(mapping_id: int, marketplace: str, cost: float) -> None:
+    """Задать/обновить себестоимость товара на площадке (product_costs).
+    Используется и ручным /cost, и проактивным мастером себестоимости
+    (Фаза 3, plans/2026-07-14-guided-onboarding-analytics.md)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO product_costs (mapping_id, marketplace, cost, updated_at)
+            VALUES ($1, $2, $3, now())
+            ON CONFLICT (mapping_id, marketplace)
+            DO UPDATE SET cost = $3, updated_at = now()
+            """,
+            mapping_id, marketplace, cost,
+        )
+
+
+async def get_products_without_cost(chat_id: int | None = None) -> list[dict]:
+    """Товары (пары mapping_id+marketplace), для которых ещё не задана
+    себестоимость в product_costs. Используется проактивным мастером
+    себестоимости (Фаза 3).
+
+    ПРИМЕЧАНИЕ: product_mapping нигде в проекте не фильтруется по chat_id
+    (см. Фаза 2 плана) — параметр chat_id пока не используется, оставлен
+    для совместимости на будущее."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT m.id AS mapping_id, m.display_name, 'wb' AS marketplace
+              FROM product_mapping m
+             WHERE m.wb_article IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM product_costs c
+                    WHERE c.mapping_id = m.id AND c.marketplace = 'wb'
+               )
+            UNION ALL
+            SELECT m.id AS mapping_id, m.display_name, 'ozon' AS marketplace
+              FROM product_mapping m
+             WHERE m.ozon_offer_id IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM product_costs c
+                    WHERE c.mapping_id = m.id AND c.marketplace = 'ozon'
+               )
+            ORDER BY display_name
+            """
+        )
+        return [dict(r) for r in rows]
+
+
 async def create_user_plan(
     chat_id: int,
     title: str,

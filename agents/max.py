@@ -4177,7 +4177,7 @@ class MaxAgent(BaseAgent):
             await update.message.reply_text(f"❌ '{cost_str}' — не число")
             return
         try:
-            from db import get_pool
+            from db import get_pool, set_product_cost
             pool = await get_pool()
             async with pool.acquire() as conn:
                 row = await conn.fetchrow("""
@@ -4189,18 +4189,123 @@ class MaxAgent(BaseAgent):
                         f"❌ Товар '{ident}' не найден. Добавь: /add"
                     )
                     return
-                await conn.execute("""
-                    INSERT INTO product_costs (mapping_id, marketplace, cost, updated_at)
-                    VALUES ($1, $2, $3, now())
-                    ON CONFLICT (mapping_id, marketplace)
-                    DO UPDATE SET cost = $3, updated_at = now()
-                """, row["id"], mp, cost)
+            await set_product_cost(row["id"], mp, cost)
             await update.message.reply_text(
                 f"✅ {row['display_name']} [{mp.upper()}]: с/с = {cost} ₽"
             )
         except Exception as e:
             logger.error(f"[Макс/cost] ошибка: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
+
+    # ------------------------------------------------------------------ #
+    #  Проактивный мастер себестоимости (Фаза 3, товар за товаром)         #
+    # ------------------------------------------------------------------ #
+
+    def _cost_wizard_question(self, item: dict) -> str:
+        mp_label = "WB" if item["marketplace"] == "wb" else "Ozon"
+        return (
+            f"💰 {item['display_name']} ({mp_label}) — сколько стоит "
+            f"закупка/производство 1 шт, ₽?\n\n"
+            "/skip — пропустить этот товар\n"
+            "/done — закончить, вернусь к этому позже"
+        )
+
+    def _cost_wizard_keyboard(self) -> InlineKeyboardMarkup:
+        """Клавиатура с кнопкой дашборда — тот же паттерн что и в _build_keyboard."""
+        _dash_url = (
+            f"{config.DASHBOARD_URL}?token={config.DASHBOARD_TOKEN}"
+            if config.DASHBOARD_TOKEN else config.DASHBOARD_URL
+        )
+        _dash_btn = (
+            InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=_dash_url))
+            if _dash_url else
+            InlineKeyboardButton("📊 Дашборд", callback_data="menu_cat:analytics")
+        )
+        return InlineKeyboardMarkup([[_dash_btn]])
+
+    async def _run_cost_wizard(self, chat_id: int, bot) -> None:
+        """Проактивный мастер себестоимости — бот сам, без команды пользователя,
+        спрашивает по одному товару без заданной себестоимости (Фаза 3,
+        plans/2026-07-14-guided-onboarding-analytics.md). Вызывается из хука
+        после онбординга (Фаза 4)."""
+        from db import get_products_without_cost
+        items = await get_products_without_cost(chat_id)
+        if not items:
+            await bot.send_message(
+                chat_id=chat_id,
+                text="✅ У всех товаров уже задана себестоимость.",
+            )
+            return
+        state = {"items": items, "index": 0, "saved": 0}
+        await self._redis_set(f"cost_wizard:{chat_id}", json.dumps(state), ttl=_ONBOARD_TTL)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=self._cost_wizard_question(items[0]),
+        )
+
+    async def _handle_cost_wizard_text(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> bool:
+        """Обработчик текстовых ответов в проактивном мастере себестоимости.
+        Возвращает True если сообщение обработано этим мастером (есть активное
+        состояние cost_wizard:{chat_id}), False — если мастер не запущен, тогда
+        вызывающий код должен передать обработку дальше другим текстовым
+        хендлерам. Регистрация в общем потоке сообщений — Фаза 4."""
+        chat_id = update.effective_chat.id
+        raw = await self._redis_get(f"cost_wizard:{chat_id}")
+        if not raw:
+            return False
+        state = json.loads(raw)
+        items = state.get("items", [])
+        index = state.get("index", 0)
+        saved = state.get("saved", 0)
+        text = (update.message.text or "").strip()
+
+        async def _finish() -> None:
+            await self._redis_set(f"cost_wizard:{chat_id}", "", ttl=1)
+            await update.message.reply_text(
+                f"Себестоимость задана для {saved} из {len(items)} товаров",
+                reply_markup=self._cost_wizard_keyboard(),
+            )
+
+        if text == "/done":
+            await _finish()
+            return True
+
+        if text == "/skip":
+            index += 1
+            if index >= len(items):
+                await _finish()
+                return True
+            state["index"] = index
+            await self._redis_set(f"cost_wizard:{chat_id}", json.dumps(state), ttl=_ONBOARD_TTL)
+            await update.message.reply_text(self._cost_wizard_question(items[index]))
+            return True
+
+        try:
+            cost = float(text.replace(",", "."))
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Не понял, отправь число (например: 136.3) или /skip"
+            )
+            return True
+
+        item = items[index]
+        from db import set_product_cost
+        await set_product_cost(item["mapping_id"], item["marketplace"], cost)
+        mp_label = "WB" if item["marketplace"] == "wb" else "Ozon"
+        await update.message.reply_text(f"✅ {item['display_name']} ({mp_label}): {cost} ₽")
+
+        saved += 1
+        index += 1
+        if index >= len(items):
+            await _finish()
+            return True
+        state["index"] = index
+        state["saved"] = saved
+        await self._redis_set(f"cost_wizard:{chat_id}", json.dumps(state), ttl=_ONBOARD_TTL)
+        await update.message.reply_text(self._cost_wizard_question(items[index]))
+        return True
 
     async def cmd_cost_wizard(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         from telegram import Chat, InlineKeyboardButton, InlineKeyboardMarkup
