@@ -570,6 +570,8 @@ class MaxAgent(BaseAgent):
         if await self._redis_get(f"catalog_cost:{chat_id}"):
             await self._handle_catalog_cost_text(update, context)
             return
+        if await self._handle_cost_wizard_text(update, context):
+            return
         state = await self._get_onboard(chat_id)
         if state and state.get("step") not in (None, "done"):
             return
@@ -688,7 +690,9 @@ class MaxAgent(BaseAgent):
         )
 
     async def _send_finish(self, chat_id: int, connected: list[str]) -> None:
-        """Финал онбординга — показать статус с кнопками."""
+        """Финал онбординга — сама, без единой команды пользователя, запускает
+        полный синк (Фаза 1+2) и проактивный мастер себестоимости (Фаза 3)
+        (Фаза 4, plans/2026-07-14-guided-onboarding-analytics.md)."""
         from db import get_marketplace_shops
         shops = await get_marketplace_shops(chat_id)
         labels = " и ".join(_MP_LABELS.get(mp, mp) for mp in connected)
@@ -696,20 +700,47 @@ class MaxAgent(BaseAgent):
         text = (
             f"🎉 **{labels} подключён!**\n\n"
             f"{status}\n\n"
-            "**Что происходит автоматически:**\n"
-            "• Отзывы проверяются в 09:00, 14:00 и 20:00 МСК\n"
-            "• 3–5⭐ — публикую ответ сам\n"
-            "• 1–2⭐ — пришлю тебе на одобрение\n\n"
-            "**С чего начать:**\n"
-            "1. /sync — загрузить данные магазина\n"
-            "2. /products — добавить себестоимость товаров\n"
-            "3. /dashboard — посмотреть аналитику"
+            "🔄 Собираю данные магазина — обычно 1-3 минуты, буду присылать "
+            "статус по шагам."
         )
         await self._notify_user(
             chat_id,
             text,
             reply_markup=await self._build_keyboard(chat_id),
         )
+
+        import asyncio as _asyncio
+        _asyncio.create_task(self._run_post_onboarding_flow(chat_id))
+
+    async def _run_post_onboarding_flow(self, chat_id: int) -> None:
+        """Синк + мастер себестоимости после онбординга — фоновой задачей.
+
+        КРИТИЧНО: PTB-приложение здесь без concurrent_updates=True (см.
+        base_agent.build_app), апдейты обрабатываются строго последовательно.
+        Если await'ить синк (может занять 1-3 мин из-за WB rate-limit sleep 60с)
+        прямо в обработчике текстового апдейта, бот встанет для ВСЕХ чатов —
+        группы, одобрение отзывов, другие команды будут ждать в очереди.
+        Поэтому запускается через asyncio.create_task, а не await."""
+        try:
+            await self._run_full_sync_with_progress(chat_id, chat_id, self.app.bot)
+
+            await self.app.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "🎉 Данные собраны. Дальше — по каждому товару спрошу "
+                    "себестоимость, чтобы дашборд считал точную маржу."
+                ),
+            )
+            await self._run_cost_wizard(chat_id, self.app.bot)
+        except Exception as e:
+            logger.error(f"[Макс/post_onboarding] chat={chat_id}: {e}", exc_info=True)
+            try:
+                await self.app.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ Сбор данных прервался — {e}\nПопробуй /sync позже.",
+                )
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ #
     #  /start                                                               #
@@ -2135,6 +2166,117 @@ class MaxAgent(BaseAgent):
         except Exception as e:
             logger.error(f"[Макс/sync_funnel] {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
+
+    async def _run_full_sync_with_progress(self, chat_id: int, target_chat_id: int, bot) -> dict:
+        """Единый прогон всех синков (заказы/остатки → фин.отчёты → реклама →
+        воронка) с видимым прогрессом — по сообщению за шаг в target_chat_id.
+
+        Каждый шаг изолирован своим try/except: ошибка одной площадки/отчёта
+        не должна прерывать всю цепочку — остальные шаги всё равно выполняются.
+        Не маскирует ошибку под успех (см. `_format_funnel_result`).
+        """
+        summary: dict = {
+            "orders_ok": False,
+            "products": {"created": 0, "merged": 0},
+            "financial": {"wb": 0, "ozon": 0},
+            "adv_ok": False,
+            "funnel": {"wb": 0, "ozon": 0, "errors": {}},
+            "errors": [],
+        }
+
+        # Шаг 1/4 — заказы и остатки
+        try:
+            await self.sync_marketplace_data(chat_id)
+            summary["orders_ok"] = True
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text="🔄 Шаг 1/4: заказы и остатки — ✅ готово",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"[Макс/full_sync] шаг 1: {e}", exc_info=True)
+            summary["errors"].append(f"шаг 1 (заказы/остатки): {e}")
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text=f"⚠️ Шаг 1/4: не удалось — {e}",
+            )
+
+        try:
+            products = await self._auto_populate_products(chat_id)
+            summary["products"] = products
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text=f"📦 Товары в каталоге: +{products.get('created', 0)} новых, +{products.get('merged', 0)} объединено",
+            )
+        except Exception as e:
+            logger.error(f"[Макс/full_sync] авто-каталог: {e}", exc_info=True)
+            summary["errors"].append(f"авто-каталог: {e}")
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text=f"⚠️ Не удалось завести товары в каталог автоматически — {e}",
+            )
+
+        # Шаг 2/4 — финансовые отчёты
+        try:
+            counts = await self.sync_financial_report(chat_id, days=90)
+            summary["financial"] = counts
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text=(
+                    f"💰 Шаг 2/4: финансовые отчёты — "
+                    f"WB {counts.get('wb', 0)}, Ozon {counts.get('ozon', 0)}"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"[Макс/full_sync] шаг 2: {e}", exc_info=True)
+            summary["errors"].append(f"шаг 2 (финотчёты): {e}")
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text=f"⚠️ Шаг 2/4: не удалось — {e}",
+            )
+
+        # Шаг 3/4 — реклама
+        try:
+            await self.sync_ad_stats(chat_id)
+            summary["adv_ok"] = True
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text="📢 Шаг 3/4: реклама — ✅",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"[Макс/full_sync] шаг 3: {e}", exc_info=True)
+            summary["errors"].append(f"шаг 3 (реклама): {e}")
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text=f"⚠️ Шаг 3/4: не удалось — {e}",
+            )
+
+        # Шаг 4/4 — воронка конверсии
+        try:
+            funnel_counts = await self.sync_funnel(chat_id)
+            summary["funnel"] = funnel_counts
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text="🔻 Шаг 4/4: " + self._format_funnel_result(funnel_counts),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"[Макс/full_sync] шаг 4: {e}", exc_info=True)
+            summary["errors"].append(f"шаг 4 (воронка): {e}")
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text=f"⚠️ Шаг 4/4: не удалось — {e}",
+            )
+
+        return summary
+
+    async def _auto_populate_products(self, chat_id: int) -> dict:
+        """Обёртка над db.auto_populate_product_mapping — автозаполнение реестра
+        товаров из данных синка (Фаза 2 онбординга). Возвращает {"created", "merged"}."""
+        from db import auto_populate_product_mapping
+        return await auto_populate_product_mapping(chat_id)
 
     async def sync_promotions(self, chat_id: int) -> dict:
         """Синхронизация акционных кампаний WB + Ozon."""
@@ -4079,7 +4221,7 @@ class MaxAgent(BaseAgent):
             await update.message.reply_text(f"❌ '{cost_str}' — не число")
             return
         try:
-            from db import get_pool
+            from db import get_pool, set_product_cost
             pool = await get_pool()
             async with pool.acquire() as conn:
                 row = await conn.fetchrow("""
@@ -4091,18 +4233,132 @@ class MaxAgent(BaseAgent):
                         f"❌ Товар '{ident}' не найден. Добавь: /add"
                     )
                     return
-                await conn.execute("""
-                    INSERT INTO product_costs (mapping_id, marketplace, cost, updated_at)
-                    VALUES ($1, $2, $3, now())
-                    ON CONFLICT (mapping_id, marketplace)
-                    DO UPDATE SET cost = $3, updated_at = now()
-                """, row["id"], mp, cost)
+            await set_product_cost(row["id"], mp, cost)
             await update.message.reply_text(
                 f"✅ {row['display_name']} [{mp.upper()}]: с/с = {cost} ₽"
             )
         except Exception as e:
             logger.error(f"[Макс/cost] ошибка: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
+
+    # ------------------------------------------------------------------ #
+    #  Проактивный мастер себестоимости (Фаза 3, товар за товаром)         #
+    # ------------------------------------------------------------------ #
+
+    def _cost_wizard_question(self, item: dict) -> str:
+        mp_label = "WB" if item["marketplace"] == "wb" else "Ozon"
+        return (
+            f"💰 {item['display_name']} ({mp_label}) — сколько стоит "
+            f"закупка/производство 1 шт, ₽?\n\n"
+            "/skip — пропустить этот товар\n"
+            "/done — закончить, вернусь к этому позже"
+        )
+
+    def _cost_wizard_keyboard(self) -> InlineKeyboardMarkup:
+        """Клавиатура с кнопкой дашборда — тот же паттерн что и в _build_keyboard."""
+        _dash_url = (
+            f"{config.DASHBOARD_URL}?token={config.DASHBOARD_TOKEN}"
+            if config.DASHBOARD_TOKEN else config.DASHBOARD_URL
+        )
+        _dash_btn = (
+            InlineKeyboardButton("📊 Дашборд", web_app=WebAppInfo(url=_dash_url))
+            if _dash_url else
+            InlineKeyboardButton("📊 Дашборд", callback_data="menu_cat:analytics")
+        )
+        return InlineKeyboardMarkup([[_dash_btn]])
+
+    async def _run_cost_wizard(self, chat_id: int, bot) -> None:
+        """Проактивный мастер себестоимости — бот сам, без команды пользователя,
+        спрашивает по одному товару без заданной себестоимости (Фаза 3,
+        plans/2026-07-14-guided-onboarding-analytics.md). Вызывается из хука
+        после онбординга (Фаза 4)."""
+        from db import get_products_without_cost, count_products
+        items = await get_products_without_cost(chat_id)
+        if not items:
+            if await count_products() == 0:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "В каталоге пока нет товаров — как только появятся заказы "
+                        "или остатки, я заведу их автоматически и спрошу себестоимость."
+                    ),
+                )
+            else:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text="✅ У всех товаров уже задана себестоимость.",
+                )
+            return
+        state = {"items": items, "index": 0, "saved": 0}
+        await self._redis_set(f"cost_wizard:{chat_id}", json.dumps(state), ttl=_ONBOARD_TTL)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=self._cost_wizard_question(items[0]),
+        )
+
+    async def _handle_cost_wizard_text(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> bool:
+        """Обработчик текстовых ответов в проактивном мастере себестоимости.
+        Возвращает True если сообщение обработано этим мастером (есть активное
+        состояние cost_wizard:{chat_id}), False — если мастер не запущен, тогда
+        вызывающий код должен передать обработку дальше другим текстовым
+        хендлерам. Регистрация в общем потоке сообщений — Фаза 4."""
+        chat_id = update.effective_chat.id
+        raw = await self._redis_get(f"cost_wizard:{chat_id}")
+        if not raw:
+            return False
+        state = json.loads(raw)
+        items = state.get("items", [])
+        index = state.get("index", 0)
+        saved = state.get("saved", 0)
+        text = (update.message.text or "").strip()
+
+        async def _finish() -> None:
+            await self._redis_set(f"cost_wizard:{chat_id}", "", ttl=1)
+            await update.message.reply_text(
+                f"Себестоимость задана для {saved} из {len(items)} товаров",
+                reply_markup=self._cost_wizard_keyboard(),
+            )
+
+        if text == "/done":
+            await _finish()
+            return True
+
+        if text == "/skip":
+            index += 1
+            if index >= len(items):
+                await _finish()
+                return True
+            state["index"] = index
+            await self._redis_set(f"cost_wizard:{chat_id}", json.dumps(state), ttl=_ONBOARD_TTL)
+            await update.message.reply_text(self._cost_wizard_question(items[index]))
+            return True
+
+        try:
+            cost = float(text.replace(",", "."))
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Не понял, отправь число (например: 136.3) или /skip"
+            )
+            return True
+
+        item = items[index]
+        from db import set_product_cost
+        await set_product_cost(item["mapping_id"], item["marketplace"], cost)
+        mp_label = "WB" if item["marketplace"] == "wb" else "Ozon"
+        await update.message.reply_text(f"✅ {item['display_name']} ({mp_label}): {cost} ₽")
+
+        saved += 1
+        index += 1
+        if index >= len(items):
+            await _finish()
+            return True
+        state["index"] = index
+        state["saved"] = saved
+        await self._redis_set(f"cost_wizard:{chat_id}", json.dumps(state), ttl=_ONBOARD_TTL)
+        await update.message.reply_text(self._cost_wizard_question(items[index]))
+        return True
 
     async def cmd_cost_wizard(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         from telegram import Chat, InlineKeyboardButton, InlineKeyboardMarkup
@@ -4440,6 +4696,7 @@ class MaxAgent(BaseAgent):
         chat_id = update.effective_chat.id
         await self._redis_set(f"catalog_add:{chat_id}",  "", ttl=1)
         await self._redis_set(f"catalog_cost:{chat_id}", "", ttl=1)
+        await self._redis_set(f"cost_wizard:{chat_id}",  "", ttl=1)
         await update.message.reply_text("Отменено.")
 
     # ------------------------------------------------------------------ #
