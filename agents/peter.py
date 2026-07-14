@@ -360,7 +360,15 @@ class PeterAgent(BaseAgent):
             # текущую неделю: её report_date (понедельник) почти всегда раньше date_from,
             # хотя данные внутри периода есть. Округляем date_from вниз до понедельника
             # его недели, чтобы захватить всю неделю, в которую попадает начало периода.
-            _wb_date_from = date_from - timedelta(days=date_from.weekday())
+            # Но и это не спасает, если отчёта по последним 1-2 неделям ещё нет в базе (WB
+            # публикует отчёт с задержкой + синк раз в неделю) — тогда якоримся на последний
+            # реально существующий report_date, чтобы окно всегда захватывало хотя бы его.
+            _wb_latest_report = await conn.fetchval("""
+                SELECT MAX(report_date) FROM marketplace_financial_report
+                WHERE chat_id = $1 AND marketplace = 'wb'
+            """, chat_id)
+            _wb_anchor = min(date_from, _wb_latest_report) if _wb_latest_report else date_from
+            _wb_date_from = _wb_anchor - timedelta(days=_wb_anchor.weekday())
             net_margin_raw = await _q(conn, "net_margin", """
                 SELECT
                     COALESCE(m.display_name, f.product_id) AS product_name,
