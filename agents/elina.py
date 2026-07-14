@@ -28,29 +28,12 @@ ELINA_SYSTEM = """Ты — Элина, копирайтер ИИ-офиса.
 Отвечай по-русски, творчески."""
 
 
-# ── Определение типа контента по тексту задачи ────────────────────────────────
-
-_POST_KEYWORDS    = ("пост", "telegram", "тг", "инстаграм", "instagram", "соцсет", "vk", "вконтакте", "linkedin")
-_LETTER_KEYWORDS  = ("письмо", "email", "рассылк", "newsletter", "e-mail", "почт")
-_ARTICLE_KEYWORDS = ("статья", "блог", "blog", "seo", "лендинг", "landing", "сценари", "скрипт")
-
 # Ключевые слова для автодетекции SEO-запроса в handle_task
 _SEO_INTENT_KEYWORDS = ("seo", "карточк", "оптимизир", "заголовок товар", "описание товар", "артикул")
 # Числовой product_id (WB nm_id — 7-10 цифр)
 _PRODUCT_ID_RE = re.compile(r'\b(\d{7,10})\b')
 # Свежесть данных: синкаем если старше 12 часов
 _CARDS_MAX_AGE_HOURS = 12
-
-
-def _detect_content_type(task: str) -> str:
-    t = task.lower()
-    if any(kw in t for kw in _POST_KEYWORDS):
-        return "Пост"
-    if any(kw in t for kw in _LETTER_KEYWORDS):
-        return "Письмо"
-    if any(kw in t for kw in _ARTICLE_KEYWORDS):
-        return "Статья"
-    return "Идея"
 
 
 class ElinaAgent(BaseAgent):
