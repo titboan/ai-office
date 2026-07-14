@@ -2260,6 +2260,140 @@ async def clear_price_recommendations(chat_id: int, marketplace: str) -> None:
         )
 
 
+async def _auto_populate_side(
+    conn: asyncpg.Connection,
+    chat_id: int,
+    marketplace: str,
+    id_col: str,
+    suffix: str,
+    fallback_to_orders: bool,
+) -> tuple[int, int]:
+    """Заводит товары одной площадки (WB или Ozon) в product_mapping.
+    Возвращает (created, merged). Ошибка на одном товаре не прерывает остальные —
+    каждый товар обрабатывается в своём savepoint (nested transaction), чтобы
+    ROLLBACK одного INSERT не убил внешнюю транзакцию всей функции."""
+    rows = await conn.fetch(
+        """
+        SELECT DISTINCT product_id, product_name
+          FROM marketplace_stocks
+         WHERE chat_id = $1 AND marketplace = $2
+           AND product_id IS NOT NULL AND product_id != ''
+        """,
+        chat_id, marketplace,
+    )
+    if not rows and fallback_to_orders:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT product_id, product_name
+              FROM marketplace_orders
+             WHERE chat_id = $1 AND marketplace = $2
+               AND product_id IS NOT NULL AND product_id != ''
+            """,
+            chat_id, marketplace,
+        )
+
+    # Один и тот же product_id может встретиться с разными product_name
+    # (опечатки/разные склады) — схлопываем, берём первое непустое имя.
+    items: dict[str, str] = {}
+    for r in rows:
+        pid = (r["product_id"] or "").strip()
+        if not pid:
+            continue
+        if pid not in items or not items[pid]:
+            items[pid] = (r["product_name"] or "").strip()
+
+    created = merged = 0
+    for pid, name in items.items():
+        display_name = name or pid
+        try:
+            async with conn.transaction():  # savepoint на товар
+                exists = await conn.fetchval(
+                    f"SELECT 1 FROM product_mapping WHERE {id_col} = $1", pid
+                )
+                if exists:
+                    continue
+
+                merge_row = await conn.fetchrow(
+                    f"""
+                    SELECT id FROM product_mapping
+                     WHERE LOWER(display_name) = LOWER($1) AND {id_col} IS NULL
+                    """,
+                    display_name,
+                )
+                if merge_row:
+                    await conn.execute(
+                        f"UPDATE product_mapping SET {id_col} = $1 WHERE id = $2",
+                        pid, merge_row["id"],
+                    )
+                    merged += 1
+                    continue
+
+                try:
+                    async with conn.transaction():  # savepoint на попытку INSERT
+                        await conn.execute(
+                            f"INSERT INTO product_mapping (display_name, {id_col}) VALUES ($1, $2)",
+                            display_name, pid,
+                        )
+                    created += 1
+                except asyncpg.UniqueViolationError:
+                    # display_name занят другим товаром (другая площадка/дубликат) —
+                    # НЕ перезаписываем чужую строку, добавляем суффикс площадки.
+                    alt_name = f"{display_name} ({suffix})"
+                    try:
+                        async with conn.transaction():
+                            await conn.execute(
+                                f"INSERT INTO product_mapping (display_name, {id_col}) VALUES ($1, $2)",
+                                alt_name, pid,
+                            )
+                        created += 1
+                    except asyncpg.UniqueViolationError:
+                        logger.warning(
+                            f"[auto_populate_product_mapping] коллизия display_name "
+                            f"'{alt_name}' ({id_col}={pid}), товар пропущен"
+                        )
+        except Exception as e:
+            logger.warning(
+                f"[auto_populate_product_mapping] ошибка на товаре {id_col}={pid}: {e}"
+            )
+
+    return created, merged
+
+
+async def auto_populate_product_mapping(chat_id: int) -> dict:
+    """Автоматически заводит товары в product_mapping из данных синка (Фаза 2
+    онбординга), без ручного /add.
+
+    Источник: marketplace_stocks (product_id + product_name на площадку).
+    WB: если остатков нет — fallback на marketplace_orders (там product_id
+    тоже supplierArticle, совпадает с wb_article). Ozon — без fallback:
+    marketplace_orders.product_id для Ozon — это SKU, не offer_id, для
+    product_mapping.ozon_offer_id не годится.
+
+    Сопоставление между площадками — только по точному совпадению display_name
+    (без учёта регистра), фаззи-мэтчинга нет (см. plans/2026-07-14-guided-
+    onboarding-analytics.md, Фаза 2).
+
+    Возвращает {"created": int, "merged": int}.
+    """
+    pool = await get_pool()
+    created_total = merged_total = 0
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            c, m = await _auto_populate_side(
+                conn, chat_id, "wb", "wb_article", "WB", fallback_to_orders=True
+            )
+            created_total += c
+            merged_total += m
+
+            c, m = await _auto_populate_side(
+                conn, chat_id, "ozon", "ozon_offer_id", "Ozon", fallback_to_orders=False
+            )
+            created_total += c
+            merged_total += m
+
+    return {"created": created_total, "merged": merged_total}
+
+
 async def create_user_plan(
     chat_id: int,
     title: str,

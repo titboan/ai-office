@@ -2228,6 +2228,12 @@ class MaxAgent(BaseAgent):
 
         return summary
 
+    async def _auto_populate_products(self, chat_id: int) -> dict:
+        """Обёртка над db.auto_populate_product_mapping — автозаполнение реестра
+        товаров из данных синка (Фаза 2 онбординга). Возвращает {"created", "merged"}."""
+        from db import auto_populate_product_mapping
+        return await auto_populate_product_mapping(chat_id)
+
     async def sync_promotions(self, chat_id: int) -> dict:
         """Синхронизация акционных кампаний WB + Ozon."""
         from db import get_marketplace_shops, upsert_promotion
