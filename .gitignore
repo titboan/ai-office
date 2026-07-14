@@ -2,6 +2,7 @@
 .claude/*
 !.claude/skills/
 !.claude/settings.json
+!.claude/agents/
 
 # ── Секреты ───────────────────────────────────────────────────────────────────
 .env
