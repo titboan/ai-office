@@ -2,6 +2,8 @@
   "permissions": {
     "deny": [
       "Bash(git add -A*)",
+      "Bash(git add .)",
+      "Bash(git push --force*)",
       "Bash(railway up*)"
     ]
   }
