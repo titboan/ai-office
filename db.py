@@ -2524,6 +2524,22 @@ async def find_barcode_merge_candidates() -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def dismiss_merge_candidate(wb_mapping_id: int, ozon_mapping_id: int) -> None:
+    """Отмечает пару строк product_mapping как отклонённую пользователем
+    («это разные товары») — find_barcode_merge_candidates больше не будет
+    предлагать её повторно."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO product_merge_dismissed (wb_mapping_id, ozon_mapping_id)
+            VALUES ($1, $2)
+            ON CONFLICT (wb_mapping_id, ozon_mapping_id) DO NOTHING
+            """,
+            wb_mapping_id, ozon_mapping_id,
+        )
+
+
 async def auto_populate_product_mapping(chat_id: int) -> dict:
     """Автоматически заводит товары в product_mapping из данных синка (Фаза 2
     онбординга), без ручного /add.

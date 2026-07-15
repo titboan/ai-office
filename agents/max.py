@@ -2225,6 +2225,8 @@ class MaxAgent(BaseAgent):
                 text=f"⚠️ Не удалось завести товары в каталог автоматически — {e}",
             )
 
+        await self._suggest_product_merges(chat_id, bot)
+
         # Шаг 2/4 — финансовые отчёты
         try:
             counts = await self.sync_financial_report(chat_id, days=90)
@@ -2286,6 +2288,59 @@ class MaxAgent(BaseAgent):
         товаров из данных синка (Фаза 2 онбординга). Возвращает {"created", "merged"}."""
         from db import auto_populate_product_mapping
         return await auto_populate_product_mapping(chat_id)
+
+    async def _suggest_product_merges(self, chat_id: int, bot) -> None:
+        """Проактивно предлагает объединить пары товаров WB/Ozon, у которых
+        совпал штрихкод (Фаза 3) — по одному сообщению с кнопками Да/Нет на
+        кандидата. Молча выходит, если кандидатов нет — синк не должен
+        превращаться в лишний шум. Ошибка тут не должна ронять вызывающий
+        синк."""
+        _bot = bot if bot is not None else self.app.bot
+        try:
+            from db import find_barcode_merge_candidates
+            candidates = await find_barcode_merge_candidates()
+            for c in candidates:
+                text = (
+                    f"🔗 По штрихкоду похоже, что «{c['wb_name']}» (WB) и "
+                    f"«{c['ozon_name']}» (Ozon) — один и тот же товар. "
+                    f"Объединить в один в каталоге?"
+                )
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "✅ Да, один товар",
+                        callback_data=f"merge:yes:{c['wb_id']}:{c['ozon_id']}",
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Нет, разные",
+                        callback_data=f"merge:no:{c['wb_id']}:{c['ozon_id']}",
+                    ),
+                ]])
+                await _bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard)
+        except Exception as e:
+            logger.error(f"[Макс/suggest_merges] {e}", exc_info=True)
+
+    async def _handle_merge_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Callback на кнопки предложения слияния (Фаза 3):
+        merge:yes:{wb_id}:{ozon_id} / merge:no:{wb_id}:{ozon_id}."""
+        query = update.callback_query
+        await query.answer()
+        try:
+            action, wb_id, ozon_id = query.data.split(":")[1:]
+            wb_id, ozon_id = int(wb_id), int(ozon_id)
+
+            if action == "yes":
+                from db import merge_product_rows
+                await merge_product_rows(wb_id, ozon_id)
+                await query.edit_message_text("✅ Объединено в каталоге.")
+            elif action == "no":
+                from db import dismiss_merge_candidate
+                await dismiss_merge_candidate(wb_id, ozon_id)
+                await query.edit_message_text("Ок, не объединяю — это разные товары.")
+        except Exception as e:
+            logger.error(f"[Макс/merge_callback] {e}", exc_info=True)
+            await query.edit_message_text(f"❌ Ошибка: {e}")
 
     async def sync_promotions(self, chat_id: int) -> dict:
         """Синхронизация акционных кампаний WB + Ozon."""
@@ -3210,6 +3265,7 @@ class MaxAgent(BaseAgent):
         logger.info(f"[Макс/sync] send_daily_summary старт для owner={owner_chat_id} target={target_chat_id}")
         try:
             await self.sync_marketplace_data(owner_chat_id)
+            await self._suggest_product_merges(owner_chat_id, bot)
             await self._send_sales_summary(owner_chat_id, target_chat_id, bot)
             await self._send_stocks("wb", owner_chat_id, target_chat_id, bot)
             await self._send_stocks("ozon", owner_chat_id, target_chat_id, bot)
@@ -7139,6 +7195,9 @@ class MaxAgent(BaseAgent):
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_promo_callback, pattern=r"^promo:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_merge_callback, pattern=r"^merge:")
         )
         self.app.add_handler(CommandHandler("campaigns",    self.cmd_campaigns))
         self.app.add_handler(CommandHandler("promotions",   self.cmd_promotions))
