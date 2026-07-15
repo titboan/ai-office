@@ -18,9 +18,9 @@ import AbcTable from './charts/AbcTable'
 import ChainTimeline from './charts/ChainTimeline'
 import KwTable from './charts/KwTable'
 import SupplyPlan from './charts/SupplyPlan'
+import ProductsTable from './charts/ProductsTable'
+import ShopKpiCard from './charts/ShopKpiCard'
 import CardSkeleton from './components/CardSkeleton'
-import EmptyState from './components/EmptyState'
-import Card from './components/Card'
 
 type Days = 7 | 14 | 30
 type Theme = 'light' | 'dark'
@@ -258,9 +258,12 @@ export default function App() {
       )}
 
       {tab === 'catalog' && (
-        <Card title="Каталог">
-          <EmptyState message="Скоро: товары, маржа, KPI магазина" />
-        </Card>
+        <div className="space-y-3">
+          {/* Товары: цены WB/Ozon, привязка артикулов, факт заданной с/с */}
+          <ProductsTable data={data?.catalog?.products ?? []} />
+          {/* Рейтинг и штрафы магазина на WB/Ozon */}
+          <ShopKpiCard data={data?.catalog?.shop_kpi ?? {}} />
+        </div>
       )}
 
       {tab === 'settings' && (

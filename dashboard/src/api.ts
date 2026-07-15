@@ -73,6 +73,27 @@ export interface SupplyPlan {
   safety_days: number
 }
 
+export interface CatalogProductRow {
+  name: string
+  wb_article: string | null
+  ozon_offer_id: string | null
+  wb_price: number | null
+  ozon_price: number | null
+  has_cost_wb: boolean
+  has_cost_ozon: boolean
+}
+export interface ShopKpiRow {
+  rating: number | null
+  return_pct: number | null
+  cancellation_pct: number | null
+  penalty_count: number
+  is_proxy: boolean   // WB-фолбэк "по данным за 30 дн", когда прямого API рейтинга нет
+}
+export interface CatalogData {
+  products: CatalogProductRow[]
+  shop_kpi: Record<string, ShopKpiRow>   // ключ — 'wb' | 'ozon'
+}
+
 export interface BidSuggestionRow {
   marketplace: 'wb' | 'ozon'
   campaign_id: string
@@ -106,6 +127,7 @@ export interface DashboardData {
   abc_data: AbcRow[]
   bid_suggestions: BidSuggestionRow[]
   supply_plan: SupplyPlan
+  catalog: CatalogData
 }
 
 export interface TimelineEvent {

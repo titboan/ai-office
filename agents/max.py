@@ -3909,21 +3909,30 @@ class MaxAgent(BaseAgent):
             logger.error(f"[Макс/sync_sku] ошибка: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
 
-    async def _catalog_text(self, chat_id: int) -> str:
-        """Каталог товаров: с/с и текущие цены в виде <pre>-таблицы."""
+    async def _get_catalog_products(self) -> list[dict]:
+        """Реестр товаров: название, WB/Ozon артикулы, цены, признак заданной с/с и когда
+        обновлялись цены — общий источник для _catalog_text (полная таблица, /products в
+        меню), краткой сводки /products (Фаза 4) и дашборда (вкладка «Каталог»).
+        product_mapping не привязан к chat_id — реестр общий на все чаты бота (см. db-schema)."""
         from db import get_pool
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT m.display_name,
+                SELECT m.display_name, m.wb_article, m.ozon_offer_id,
                        m.wb_price, m.ozon_price, m.prices_updated_at,
                        MAX(c.cost) FILTER (WHERE c.marketplace = 'wb')   AS cost_wb,
                        MAX(c.cost) FILTER (WHERE c.marketplace = 'ozon') AS cost_ozon
                 FROM product_mapping m
                 LEFT JOIN product_costs c ON c.mapping_id = m.id
-                GROUP BY m.id, m.display_name, m.wb_price, m.ozon_price, m.prices_updated_at
+                GROUP BY m.id, m.display_name, m.wb_article, m.ozon_offer_id,
+                         m.wb_price, m.ozon_price, m.prices_updated_at
                 ORDER BY m.display_name
             """)
+        return [dict(r) for r in rows]
+
+    async def _catalog_text(self, chat_id: int) -> str:
+        """Каталог товаров: с/с и текущие цены в виде <pre>-таблицы."""
+        rows = await self._get_catalog_products()
         if not rows:
             return "📦 Реестр пуст.\nДобавь товар: <code>/map name=КБ50 wb=БК50гр ozon=КБ50</code>"
 
@@ -3969,29 +3978,65 @@ class MaxAgent(BaseAgent):
         return "\n".join(lines)
 
     async def cmd_products(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/products — каталог товаров: цены и себестоимость."""
+        """/products — краткая сводка каталога (позиции, чего не хватает). Полная таблица
+        со всеми товарами — в дашборде, вкладка «Каталог» (Фаза 4, plans/2026-07-15-miniapp-
+        full-expansion.md) — раньше выводилась простыней прямо в чат."""
         chat_id = update.effective_chat.id
         try:
-            text = await self._catalog_text(chat_id)
-            await update.message.reply_text(
-                text,
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📊 Маржа и рекомендации", callback_data="menu_cmd:cost"),
-                ]]),
-            )
+            rows = await self._get_catalog_products()
+            if not rows:
+                await update.message.reply_text(
+                    "📦 Реестр пуст.\nДобавь товар: <code>/map name=КБ50 wb=БК50гр ozon=КБ50</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+            no_wb_price   = sum(1 for r in rows if r["wb_price"] is None)
+            no_ozon_price = sum(1 for r in rows if r["ozon_price"] is None)
+            no_cost       = sum(1 for r in rows if r["cost_wb"] is None and r["cost_ozon"] is None)
+
+            lines = [f"📦 <b>Каталог товаров</b>  ·  {len(rows)} позиций"]
+            warn = []
+            if no_wb_price or no_ozon_price:
+                warn.append(f"нет цены — WB: {no_wb_price}, Ozon: {no_ozon_price}")
+            if no_cost:
+                warn.append(f"нет с/с у {no_cost}")
+            if warn:
+                lines.append("⚠️ " + " · ".join(warn))
+            text = "\n".join(lines)
+
+            buttons = [[InlineKeyboardButton("📊 Маржа и рекомендации", callback_data="menu_cmd:cost")]]
+            if config.DASHBOARD_URL:
+                dash_url = (
+                    f"{config.DASHBOARD_URL}?token={config.DASHBOARD_TOKEN}&tab=catalog"
+                    if config.DASHBOARD_TOKEN else
+                    f"{config.DASHBOARD_URL}?tab=catalog"
+                )
+                buttons.append([
+                    InlineKeyboardButton("📦 Полный каталог в дашборде", web_app=WebAppInfo(url=dash_url)),
+                ])
+            await update.message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
         except Exception as e:
             logger.error(f"[Макс/products] ошибка: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
 
-    async def _margin_check_text(self, chat_id: int) -> str:
-        """Маржинальность всех товаров с с/с — текст для /margin и menu_cmd:cost.
+    async def _compute_margin_rows(self, chat_id: int) -> dict:
+        """Маржинальность всех товаров с с/с — общий расчёт для полной ASCII-таблицы
+        (_margin_check_text — /margin в меню, menu_cmd:cost) и краткой сводки (/margin в
+        чате, Фаза 4).
 
         WB: скользящие 35 дней — каждая строка финотчёта уже содержит qty+payout,
             поэтому данные актуальны (включает неполный текущий месяц).
         Ozon: последний полный календарный месяц — qty приходит только в строке
             реализации (последний день месяца), поэтому нельзя брать неполный месяц:
             payout есть, qty=0, маржа не считается.
+
+        Returns dict:
+            rows: список кортежей (name, wb_price, wb_margin, wb_icon, wb_rec,
+                  oz_price, oz_margin, oz_icon, oz_rec) — как раньше в _margin_check_text.
+            period_label: подпись периода ("WB: .. / Ozon: ..").
+            missing_fin: есть товары с заданной с/с, но без данных о продажах за период.
+            empty_message: готовый текст ответа, если считать нечего (иначе None).
         """
         from db import get_pool
         from config import config as cfg
@@ -4026,10 +4071,13 @@ class MaxAgent(BaseAgent):
                 ORDER BY m.display_name
             """)
             if not cost_rows:
-                return (
-                    "💲 Себестоимость не задана ни для одного товара.\n"
-                    "Добавь: <code>/cost КБ50 wb 541</code>"
-                )
+                return {
+                    "rows": [], "period_label": period_label, "missing_fin": False,
+                    "empty_message": (
+                        "💲 Себестоимость не задана ни для одного товара.\n"
+                        "Добавь: <code>/cost КБ50 wb 541</code>"
+                    ),
+                }
             fin_rows = await conn.fetch("""
                 SELECT
                     COALESCE(m.display_name, f.product_id) AS name,
@@ -4116,7 +4164,26 @@ class MaxAgent(BaseAgent):
             rows.append((name, wb_c, wb_m, wb_i, wb_r, oz_c, oz_m, oz_i, oz_r))
 
         if not rows:
-            return f"💲 Нет данных за {period_label}. Запусти /sync_fin."
+            return {
+                "rows": [], "period_label": period_label, "missing_fin": False,
+                "empty_message": f"💲 Нет данных за {period_label}. Запусти /sync_fin.",
+            }
+
+        return {"rows": rows, "period_label": period_label, "missing_fin": missing_fin, "empty_message": None}
+
+    async def _margin_check_text(self, chat_id: int) -> str:
+        """Маржинальность всех товаров с с/с — текст для меню (menu_cmd:cost) и Marta-диспатча
+        (__margin__). /margin в чате теперь короткая сводка — см. cmd_margin_check."""
+        from config import config as cfg
+
+        data = await self._compute_margin_rows(chat_id)
+        if data["empty_message"]:
+            return data["empty_message"]
+
+        rows = data["rows"]
+        period_label = data["period_label"]
+        missing_fin = data["missing_fin"]
+        target_pct = cfg.TARGET_NET_MARGIN_PCT
 
         w_name  = max(len(r[0]) for r in rows)
         prices  = [c for r in rows for c in [r[1], r[5]] if c]
@@ -4159,11 +4226,59 @@ class MaxAgent(BaseAgent):
         return "\n".join(out)
 
     async def cmd_margin_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/margin — маржинальность по всем товарам с рекомендованными ценами."""
+        """/margin — краткая сводка маржинальности (🟢🟡🔴 по товарам + топ-3 худших).
+        Полная таблица по всем товарам — в дашборде, вкладка «Каталог» (Фаза 4)."""
         chat_id = update.effective_chat.id
         try:
-            text = await self._margin_check_text(chat_id)
-            await update.message.reply_text(text, parse_mode="HTML")
+            data = await self._compute_margin_rows(chat_id)
+            if data["empty_message"]:
+                await update.message.reply_text(data["empty_message"], parse_mode="HTML")
+                return
+
+            # Разворачиваем построчные (WB+Ozon) кортежи в плоский список ячеек с реально
+            # посчитанной маржой (icon непустой) — по одной на площадку, где есть с/с и продажи.
+            cells: list[tuple[str, str, str, str]] = []  # (name, mp_label, margin_str, icon)
+            for name, wb_c, wb_m, wb_i, wb_r, oz_c, oz_m, oz_i, oz_r in data["rows"]:
+                if wb_i:
+                    cells.append((name, "WB", wb_m, wb_i))
+                if oz_i:
+                    cells.append((name, "OZ", oz_m, oz_i))
+
+            green  = sum(1 for c in cells if c[3] == "🟢")
+            yellow = sum(1 for c in cells if c[3] == "🟡")
+            red    = sum(1 for c in cells if c[3] == "🔴")
+
+            def _pct(c: tuple) -> float:
+                try:
+                    return float(c[2].rstrip("%"))
+                except (ValueError, AttributeError):
+                    return 999.0
+
+            worst = sorted((c for c in cells if c[3] in ("🔴", "🟡")), key=_pct)[:3]
+
+            lines = [
+                f"💲 <b>Себестоимость и маржа</b>  ·  {data['period_label']}",
+                f"🟢 {green}  🟡 {yellow}  🔴 {red}",
+            ]
+            if worst:
+                lines.append("<b>Хуже всего:</b>")
+                for name, mp, margin, icon in worst:
+                    lines.append(f"{icon} {name} [{mp}] — {margin}")
+            if data["missing_fin"]:
+                lines.append(f"Нет данных за {data['period_label']} → /sync_fin")
+            text = "\n".join(lines)
+
+            buttons = None
+            if config.DASHBOARD_URL:
+                dash_url = (
+                    f"{config.DASHBOARD_URL}?token={config.DASHBOARD_TOKEN}&tab=catalog"
+                    if config.DASHBOARD_TOKEN else
+                    f"{config.DASHBOARD_URL}?tab=catalog"
+                )
+                buttons = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("💲 Подробно в дашборде", web_app=WebAppInfo(url=dash_url)),
+                ]])
+            await update.message.reply_text(text, parse_mode="HTML", reply_markup=buttons)
         except Exception as e:
             logger.error(f"[Макс/margin] ошибка: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
@@ -6860,6 +6975,61 @@ class MaxAgent(BaseAgent):
                 pass
             result.append(row)
         await self._redis_set(cache_key, json.dumps(result), ttl=120)
+        return result
+
+    async def _collect_catalog_for_dashboard(self, chat_id: int) -> dict:
+        """Товары (цены WB/Ozon, привязка артикулов, факт заданной с/с) + рейтинг/штрафы
+        магазина — для вкладки «Каталог» дашборда (Фаза 4,
+        plans/2026-07-15-miniapp-full-expansion.md).
+
+        Себестоимость сама по себе НЕ отдаётся (только has_cost_wb/has_cost_ozon) — точные
+        суммы уже есть в /api/costs (CostEditor, вкладка «Настройки»), не дублируем и не
+        светим ₽ на URL с ?token= (доступен коллегам в режиме read-only). Маржа с
+        рекомендованными ценами (та же логика, что _compute_margin_rows / /margin) уже есть на
+        вкладке «Дашборд» как net_margin (NetMarginTable) — отдельную таблицу под «Каталог»
+        не заводим, чтобы не рассинхронить два расчёта одного и того же; ProductsTable
+        ссылается на net_margin вместо дублирования.
+
+        KPI магазина бьёт живой API WB/Ozon (как /shop_kpi) — кэш в Redis на 5 минут, чтобы
+        частые обновления дашборда не долбили API продавца.
+        """
+        cache_key = f"dashboard_catalog:{chat_id}"
+        cached = await self._redis_get(cache_key)
+        if cached:
+            try:
+                return json.loads(cached)
+            except Exception:
+                pass
+
+        rows = await self._get_catalog_products()
+        products = [{
+            "name": r["display_name"],
+            "wb_article": r["wb_article"],
+            "ozon_offer_id": r["ozon_offer_id"],
+            "wb_price": float(r["wb_price"]) if r["wb_price"] is not None else None,
+            "ozon_price": float(r["ozon_price"]) if r["ozon_price"] is not None else None,
+            "has_cost_wb": r["cost_wb"] is not None,
+            "has_cost_ozon": r["cost_ozon"] is not None,
+        } for r in rows]
+
+        shop_kpi: dict = {}
+        try:
+            results = await self.sync_shop_kpi(chat_id)
+            for mp, kpi in results.items():
+                if not kpi:
+                    continue
+                shop_kpi[mp] = {
+                    "rating": kpi.get("rating"),
+                    "return_pct": kpi.get("return_pct"),
+                    "cancellation_pct": kpi.get("cancellation_pct"),
+                    "penalty_count": kpi.get("penalty_count") or 0,
+                    "is_proxy": bool(kpi.get("_proxy")),
+                }
+        except Exception as e:
+            logger.error(f"[dashboard/catalog] shop_kpi error: {e}")
+
+        result = {"products": products, "shop_kpi": shop_kpi}
+        await self._redis_set(cache_key, json.dumps(result), ttl=300)
         return result
 
     async def _apply_wb_bid_raw(self, chat_id: int, campaign_id: str, direction: str, delta_pct: int) -> dict:

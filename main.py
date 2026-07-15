@@ -840,6 +840,13 @@ async def run_all_async() -> None:
             except Exception as e:
                 logger.error(f"[dashboard] bid_suggestions error: {e}")
 
+        data["catalog"] = {"products": [], "shop_kpi": {}}
+        if max_agent is not None:
+            try:
+                data["catalog"] = await max_agent._collect_catalog_for_dashboard(chat_id)
+            except Exception as e:
+                logger.error(f"[dashboard] catalog error: {e}")
+
         return web.json_response(_to_json_safe({**data, **adv}), headers=cors)
 
     async def _handle_timeline(request: web.Request) -> web.Response:
