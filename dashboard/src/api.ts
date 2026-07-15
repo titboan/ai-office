@@ -246,6 +246,67 @@ export async function setCost(
   return res.json()
 }
 
+// Тот же принцип, что и setCost — только настоящий Telegram initData, без ?token=.
+// Заменяет /map и текстовую часть /add у Макса (agents/max.py). name — обязателен и
+// является натуральным ключом (совпадение с уже существующим товаром обновляет его,
+// как ON CONFLICT (display_name) в /map) — wb_article/ozon_offer_id/category опциональны.
+export async function createProduct(
+  name: string, wbArticle: string, ozonOfferId: string, category: string
+): Promise<{ ok: boolean }> {
+  const tg = (window as any).Telegram?.WebApp
+  const res = await fetch(`${API_URL}/api/product`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Telegram-Init-Data': tg?.initData ?? '',
+    },
+    body: JSON.stringify({
+      name, wb_article: wbArticle, ozon_offer_id: ozonOfferId, category,
+    }),
+  })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json()
+}
+
+// Заменяет /merge_products (inline-пикер mergewiz:* у Макса) — та же db.merge_product_rows,
+// но по натуральным ключам вместо внутренних id (catalog.products их и так отдаёт).
+export async function mergeProduct(
+  wbArticle: string, ozonOfferId: string
+): Promise<{ ok: boolean; error?: string }> {
+  const tg = (window as any).Telegram?.WebApp
+  const res = await fetch(`${API_URL}/api/merge_product`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Telegram-Init-Data': tg?.initData ?? '',
+    },
+    body: JSON.stringify({ wb_article: wbArticle, ozon_offer_id: ozonOfferId }),
+  })
+  if (!res.ok && res.status !== 404) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json()
+}
+
+// Заменяет /add_shop у Макса. apiToken — чувствительное поле (полный доступ к аккаунту
+// продавца на маркетплейсе) — никогда не логируем в консоль, только в JSON body запроса
+// (как и остальные POST здесь), поле в форме — type="password".
+export async function addShop(
+  marketplace: 'wb' | 'ozon', apiToken: string, clientId: string, shopName: string
+): Promise<{ ok: boolean }> {
+  const tg = (window as any).Telegram?.WebApp
+  const res = await fetch(`${API_URL}/api/add_shop`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Telegram-Init-Data': tg?.initData ?? '',
+    },
+    body: JSON.stringify({
+      marketplace, api_token: apiToken, client_id: clientId, shop_name: shopName,
+    }),
+  })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json()
+}
+
 export async function fetchTimeline(): Promise<TimelineData> {
   const urlToken = new URLSearchParams(window.location.search).get('token') ?? ''
   const headers: Record<string, string> = {}

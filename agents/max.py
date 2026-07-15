@@ -143,6 +143,12 @@ MAX_SYSTEM = """Ты — Макс, менеджер маркетплейсов W
 _MP_LABELS = {"wb": "Wildberries", "ozon": "Ozon"}
 _ONBOARD_TTL = 60 * 60 * 24  # 24 часа
 
+# Ненавязчивая подсказка после /map, /add, /merge_products, /add_shop — формы в дашборде
+# делают то же самое без key=value синтаксиса и пошаговых мастеров (Фаза 5,
+# plans/2026-07-15-miniapp-full-expansion.md). Команды продолжают работать как раньше —
+# это просто строка после успешного ответа, не блокирует и не меняет сам ввод.
+_DASHBOARD_FORM_HINT = "\n\n💡 Удобнее в дашборде: /dashboard"
+
 WB_CLUSTERS: dict[str, list[str]] = {
     "Центральный": [
         "Москва", "МО", "Коледино", "Подольск", "Электросталь", "Краснодар",
@@ -3672,7 +3678,9 @@ class MaxAgent(BaseAgent):
         from db import add_marketplace_shop
         await add_marketplace_shop(chat_id, mp, token, client_id=client_id, shop_name=shop_name)
         label = shop_name or _MP_LABELS.get(mp, mp)
-        await update.message.reply_text(f"✅ Магазин <b>{label}</b> подключён.", parse_mode="HTML")
+        await update.message.reply_text(
+            f"✅ Магазин <b>{label}</b> подключён.{_DASHBOARD_FORM_HINT}", parse_mode="HTML"
+        )
 
     async def _shops_text(self, chat_id: int) -> str:
         from db import get_marketplace_shops
@@ -4318,6 +4326,7 @@ class MaxAgent(BaseAgent):
             await update.message.reply_text(
                 f"✅ Товар '{name}' сохранён.\nWB={wb or '—'} OZ={ozon or '—'}{cat_str}\n"
                 f"Себестоимость: /cost {name} <сумма>"
+                f"{_DASHBOARD_FORM_HINT}"
             )
         except Exception as e:
             logger.error(f"[Макс/map] ошибка: {e}", exc_info=True)
@@ -4780,7 +4789,7 @@ class MaxAgent(BaseAgent):
                 from db import merge_product_rows
                 await merge_product_rows(wb_id, ozon_id)
                 await self._redis_set(f"merge_wizard:{chat_id}", "", ttl=1)
-                await query.edit_message_text("✅ Товары объединены в каталоге.")
+                await query.edit_message_text(f"✅ Товары объединены в каталоге.{_DASHBOARD_FORM_HINT}")
             except Exception as e:
                 logger.error(f"[Макс/merge_wizard] ошибка: {e}", exc_info=True)
                 await query.edit_message_text(f"❌ Ошибка: {e}")
@@ -4940,7 +4949,10 @@ class MaxAgent(BaseAgent):
                     """, row["id"], cost)
             cost_str = f", с/с {cost} ₽" if cost else " (с/с не задана)"
             cat_str  = f", категория: {category}" if category else ""
-            text = f"✅ {name} сохранён{cost_str}{cat_str}\nWB={wb or '—'} OZ={ozon or '—'}"
+            text = (
+                f"✅ {name} сохранён{cost_str}{cat_str}\nWB={wb or '—'} OZ={ozon or '—'}"
+                f"{_DASHBOARD_FORM_HINT}"
+            )
             if edit:
                 await update_or_query.edit_message_text(text)
             else:

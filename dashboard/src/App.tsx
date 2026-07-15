@@ -20,6 +20,9 @@ import KwTable from './charts/KwTable'
 import SupplyPlan from './charts/SupplyPlan'
 import ProductsTable from './charts/ProductsTable'
 import ShopKpiCard from './charts/ShopKpiCard'
+import ProductForm from './charts/ProductForm'
+import MergeProductForm from './charts/MergeProductForm'
+import AddShopForm from './charts/AddShopForm'
 import CardSkeleton from './components/CardSkeleton'
 
 type Days = 7 | 14 | 30
@@ -263,6 +266,10 @@ export default function App() {
           <ProductsTable data={data?.catalog?.products ?? []} />
           {/* Рейтинг и штрафы магазина на WB/Ozon */}
           <ShopKpiCard data={data?.catalog?.shop_kpi ?? {}} />
+          {/* Форма вместо /map и текстовой части /add — добавить/обновить товар */}
+          <ProductForm />
+          {/* Форма вместо /merge_products (inline-пикер mergewiz:*) */}
+          <MergeProductForm data={data?.catalog?.products ?? []} />
         </div>
       )}
 
@@ -270,6 +277,8 @@ export default function App() {
         <div className="space-y-3">
           {/* Себестоимость — редактируемая таблица (замена Excel-юнитки) */}
           <CostEditor />
+          {/* Форма вместо /add_shop — подключение магазина (чувствительный токен) */}
+          <AddShopForm />
         </div>
       )}
     </div>
