@@ -49,6 +49,30 @@ export interface FunnelRow {
   view_to_cart_pct: number; cart_to_order_pct: number
 }
 
+export interface SupplyCluster {
+  cluster: string
+  stock: number
+  cluster_dr: number   // темп продаж кластера, шт/день
+  days_left: number
+  need: number          // нужно отправить в кластер, чтобы выйти на целевой запас
+}
+export interface SupplyRow {
+  name: string
+  marketplace: 'wb' | 'ozon'
+  category: string
+  daily_rate: number
+  total_stock: number
+  total_days_left: number
+  to_order: number       // заказать у поставщика сверх того, что в пути/оформлено
+  urgency: 'КРИТИЧНО' | 'СРОЧНО' | 'НОРМА'
+  clusters: SupplyCluster[]
+}
+export interface SupplyPlan {
+  products: SupplyRow[]
+  lead_days: number
+  safety_days: number
+}
+
 export interface BidSuggestionRow {
   marketplace: 'wb' | 'ozon'
   campaign_id: string
@@ -81,6 +105,7 @@ export interface DashboardData {
   funnel: FunnelRow[]
   abc_data: AbcRow[]
   bid_suggestions: BidSuggestionRow[]
+  supply_plan: SupplyPlan
 }
 
 export interface TimelineEvent {

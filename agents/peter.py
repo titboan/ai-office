@@ -8,7 +8,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from config import config
 from utils.tg_rich import send_rich_or_fallback as _send_rich
-from utils.mp_format import mp_emoji as _mp_emoji, split_by_marketplace
+from utils.mp_format import mp_emoji as _mp_emoji
 from task_queue import create_task as enqueue_task
 from .base_agent import BaseAgent, with_company_context
 
@@ -619,6 +619,23 @@ class PeterAgent(BaseAgent):
                 GROUP BY marketplace
             """, chat_id, date_from)
 
+        # Поставки: план по регионам/кластерам для вкладки «Отчёты» — та же функция и та же
+        # классификация срочности, что в /supply (agents/peter.py::cmd_supply), просто без
+        # Rich Markdown обёртки. Изолируем ошибками, чтобы сбой в поставках не ронял весь дашборд.
+        try:
+            supply_data = await self._collect_supply_data(chat_id, days=days)
+            supply_lead = await self._get_lead_days(chat_id)
+            supply_safety = await self._get_safety_days(chat_id)
+            self._classify_supply_urgency(supply_data["products"], supply_lead, supply_safety)
+            supply_plan = {
+                "products":    supply_data["products"],
+                "lead_days":   supply_lead,
+                "safety_days": supply_safety,
+            }
+        except Exception as exc:
+            logger.error(f"[Питер/_collect_data] supply_plan: {exc}")
+            supply_plan = {"products": [], "lead_days": 0, "safety_days": 0}
+
         return {
             "period_days":      days,
             "date_from":        date_from,
@@ -645,6 +662,7 @@ class PeterAgent(BaseAgent):
             ],
             "regions_wb":       [dict(r) for r in regions_wb],
             "infographic_ctr":  [dict(r) for r in infographic_ctr],
+            "supply_plan":      supply_plan,
         }
 
     async def _collect_advanced_data(self, chat_id: int, days: int = 14) -> dict:
@@ -1587,6 +1605,20 @@ class PeterAgent(BaseAgent):
                 pass
         return config.SUPPLY_SAFETY_STOCK_DAYS
 
+    @staticmethod
+    def _classify_supply_urgency(products: list[dict], lead: int, safety: int) -> None:
+        """Помечает каждый товар полем urgency (КРИТИЧНО/СРОЧНО/НОРМА) по total_days_left.
+        Считаем в Python, не доверяем это Claude — используется и в cmd_supply (чат),
+        и в _collect_data (дашборд), чтобы срочность не рассинхронилась между ними."""
+        for p in products:
+            tl = p["total_days_left"]
+            if tl < lead:
+                p["urgency"] = "КРИТИЧНО"   # кончится до прихода партии
+            elif tl < lead + safety:
+                p["urgency"] = "СРОЧНО"     # пора заказывать
+            else:
+                p["urgency"] = "НОРМА"
+
     async def _get_ozon_warehouse_demand(self, chat_id: int, days: int) -> dict[tuple, float]:
         """Per-(offer_id, cluster) спрос Ozon из аналитики по складам (кеш 6ч).
 
@@ -1904,173 +1936,50 @@ class PeterAgent(BaseAgent):
         lead = await self._get_lead_days(chat_id)
         safety = await self._get_safety_days(chat_id)
 
-        # Классифицируем срочность в Python — не доверяем это Claude
         products = supply_data["products"]
-        for p in products:
-            tl = p["total_days_left"]
-            if tl < lead:
-                p["urgency"] = "КРИТИЧНО"   # кончится до прихода партии
-            elif tl < lead + safety:
-                p["urgency"] = "СРОЧНО"     # пора заказывать
-            else:
-                p["urgency"] = "НОРМА"
-
-        wb_products, ozon_products = split_by_marketplace(products)
-
-        wb_open = supply_data.get("wb_open_warehouses")
-        if wb_open:
-            wb_wh_block = (
-                "СКЛАДЫ WB ОТКРЫТЫ СЕЙЧАС (WB API, коэф. приёмки короба > 0):\n"
-                + "\n".join(f"  • {name} (коэф. {coeff})" for name, coeff in sorted(wb_open.items()))
-                + "\n⚠️ Используй ТОЛЬКО эти точные названия складов из списка выше. "
-                "Не пиши 'Коледино', 'Подольск', 'Шушары' и др. — только имена из API."
-            )
-        else:
-            wb_wh_block = (
-                "СКЛАДЫ WB: API недоступен. Используй кластеры из поля clusters."
-            )
-
-        threshold_note = (
-            f"Срок поставки = {lead} дн, буфер = {safety} дн → "
-            f"КРИТИЧНО если < {lead} дн, СРОЧНО если < {lead + safety} дн."
-        )
+        self._classify_supply_urgency(products, lead, safety)
 
         n_critical = sum(1 for p in products if p["urgency"] == "КРИТИЧНО")
         n_urgent   = sum(1 for p in products if p["urgency"] == "СРОЧНО")
         n_ok       = sum(1 for p in products if p["urgency"] == "НОРМА")
 
-        prompt = f"""Составь план поставок. Срочность уже рассчитана в поле urgency.
-{threshold_note}
-Всего позиций: {len(products)} ({n_critical} КРИТИЧНО, {n_urgent} СРОЧНО, {n_ok} НОРМА).
-НЕ добавляй пагинацию. Показывай ВСЕ {len(products)} позиций полностью.
+        # Полный план по регионам/кластерам (все статусы, все clusters/mkt_supplies) —
+        # теперь в дашборде (вкладка «Отчёты», data.supply_plan). В чат — короткое summary:
+        # самые срочные позиции по to_order, отсортированные КРИТИЧНО → СРОЧНО.
+        priority = sorted(
+            (p for p in products if p["urgency"] in ("КРИТИЧНО", "СРОЧНО") and p["to_order"] > 0),
+            key=lambda p: (p["urgency"] != "КРИТИЧНО", -p["to_order"]),
+        )[:5]
 
-══════════════════════════
-ДАННЫЕ WB ({len(wb_products)} товаров, период {days} дней):
-{json.dumps(wb_products, ensure_ascii=False, indent=2)}
+        lines = [
+            f"📦 **План поставок за {days} дней** — "
+            f"{n_critical} КРИТИЧНО, {n_urgent} СРОЧНО, {n_ok} норма\n"
+        ]
+        if priority:
+            lines.append("**Самое срочное:**")
+            for p in priority:
+                icon = "🔴" if p["urgency"] == "КРИТИЧНО" else "🟡"
+                lines.append(
+                    f"{icon} `{p['name']}` [{p['marketplace']}] — "
+                    f"запас {p['total_days_left']} дн, заказать {p['to_order']} шт"
+                )
+        else:
+            lines.append("> Срочных поставок не требуется.")
+        answer = "\n".join(lines)
 
-{wb_wh_block}
+        await self._send_answer(answer, update=update)
 
-══════════════════════════
-ДАННЫЕ OZON ({len(ozon_products)} товаров, период {days} дней):
-{json.dumps(ozon_products, ensure_ascii=False, indent=2)}
-
-OZON FBO: поставка на конкретный склад Ozon. Рекомендуй по кластерам — куда
-отправить и сколько, основываясь на days_left и need каждого кластера.
-cluster_dr для Ozon — из аналитики Ozon /v1/analytics/data (если есть); иначе пропорция стока.
-
-ПОЛЯ:
-- stock — на складе МП сейчас
-- in_transit — товары в пути к складу МП (из аналитики остатков WB/Ozon, агрегат)
-- supply_committed — сумма qty из mkt_supplies с активными статусами (уже оформлено в поставках)
-- mkt_supplies — поставки из ЛК МП: [{status, qty, warehouse_name}]
-  warehouse_name — склад куда идёт поставка (WB: officeName, Ozon: warehouse.name если есть)
-  Возможные статусы WB: "Запланировано", "Отгрузка разрешена", "В пути", "Транзит", "Идёт приёмка", "Принято"
-  Ozon: "Черновик", "Новая", "Готова к отгрузке", "В пути", "Принята на склад"
-  Показывай КАЖДЫЙ статус отдельно с эмодзи-иконкой и складом (если есть)
-- to_order — заказать у поставщика СВЕРХ (in_transit + supply_committed), уже рассчитано
-- total_days_left — суммарный запас в днях продаж
-- clusters[].cluster_dr — точный темп продаж кластера (шт/день):
-    WB — из регионов заказов; Ozon — из аналитики по складам API (/v1/analytics/data)
-    Если данных по кластеру нет, cluster_dr рассчитан пропорционально стоку (≈приближение)
-- clusters[].days_left — запас кластера в днях (по cluster_dr)
-- clusters[].need — нужно отправить в кластер для цели TARGET_DAYS (по cluster_dr)
-- ozon_warehouses — текущий FBO сток по складам Ozon: [{warehouse_name, stock}]
-  Если НЕ пуст — используй эти данные для рекомендаций.
-  Если ПУСТ — FBO данных нет (товар FBS или ещё не поставлен на Ozon FBO).
-- urgency — КРИТИЧНО / СРОЧНО / НОРМА (уже рассчитано, не пересчитывай)
-
-Эмодзи для mkt_supplies.status:
-  📝 Запланировано / Черновик
-  ✅ Отгрузка разрешена / Готова к отгрузке
-  🚛 В пути
-  🔄 Транзит
-  📥 Идёт приёмка / Принята на склад
-  ✔️ Принято / Новая
-  ❓ прочие
-
-ФОРМАТ (Rich Markdown, мобильно, ВСЕ позиции):
-
-## 📦 WB
-
-🔴 **КРИТИЧНО** — *кончится до прихода партии*
-
-**[Название]**
-`[X] шт/день суммарно` · запас [N] дн
-*Кластеры WB (только принимающие склады):*
-  📦 [Кластер/Склад]: [N] шт · [X] шт/день · [N] дн → нужно [N] шт
-  📦 [Кластер/Склад]: [N] шт · [X] шт/день · [N] дн → нужно [N] шт
-🚚 В пути (аналитика): [N] шт *(если есть)*
-[эмодзи] [Статус] → [склад если есть]: [N] шт *(для каждого mkt_supplies, если есть)*
-**→ заказать [N] шт (распред.: [Кластер1] [N] шт, [Кластер2] [N] шт)**
-
----
-
-🟡 **СРОЧНО** — *пора размещать заказ*
-
-**[Название]**
-`[X] шт/день суммарно` · запас [N] дн
-*Кластеры:*
-  📦 [Кластер]: [N] шт · [X] шт/день · [N] дн → нужно [N] шт
-🚚 В пути (аналитика): [N] шт *(если есть)*
-[эмодзи] [Статус] → [склад]: [N] шт *(если есть)*
-**→ заказать [N] шт**
-
----
-
-🟢 **НОРМА**
-**[Название]** — [N] дн суммарно *(слабый кластер: [Кластер] [N] дн)* · заказ не нужен
-
----
-
-## 🔵 Ozon
-
-ПРАВИЛО по ozon_warehouses:
-• Если ozon_warehouses НЕ пуст → показывай реальные склады из этого поля.
-• Если ozon_warehouses ПУСТ → пиши "данных по складам Ozon нет". Не используй WB-данные как замену.
-• Никогда не сравнивай WB и Ozon данные, не используй один МП как прокси для другого.
-  Сравнение между МП — только если пользователь явно об этом попросил.
-
-Формат для каждого Ozon-товара КРИТИЧНО/СРОЧНО:
-
-**[Название]**
-`[X] шт/день суммарно` · запас [N] дн
-*Склады Ozon (из ozon_warehouses):*
-  🏭 [warehouse_name]: [N] шт
-Для mkt_supplies Ozon показывай склад назначения (warehouse_name) если он есть:
-  ✅ Готова к отгрузке → [склад]: [N] шт
-  🚛 В пути → [склад]: [N] шт
-**→ заказать [N] шт** *(на склад с наибольшим спросом/наименьшим запасом)*
-
-🟢 **НОРМА**
-**[Название]** — [N] дн суммарно · склады: [wh1] [N] шт, [wh2] [N] шт
-
----
-
-## 📋 Итого к заказу
-
-*(только позиции с to_order > 0)*
-**[Название]** (WB/Ozon) · 🔴/🟡 · **[N] шт** → куда: [склад/кластер] [N]"""
-
-        await update.message.reply_text("🤔 Составляю план поставки…")
-        try:
-            from anthropic import AsyncAnthropic
-            client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
-            resp = await client.messages.create(
-                model=config.CLAUDE_MODEL,
-                max_tokens=8000,
-                system=self._effective_system,
-                messages=[{"role": "user", "content": prompt}],
+        if config.DASHBOARD_URL:
+            dash_url = (
+                f"{config.DASHBOARD_URL}?token={config.DASHBOARD_TOKEN}&tab=reports"
+                if config.DASHBOARD_TOKEN else
+                f"{config.DASHBOARD_URL}?tab=reports"
             )
-            answer = resp.content[0].text
-        except Exception as e:
-            logger.error(f"[Питер/supply] ошибка Claude: {e}", exc_info=True)
-            await update.message.reply_text(f"❌ Ошибка анализа: {e}")
-            return
-
-        await self._send_answer(
-            answer,
-            update=update,
-        )
+            dash_btn = InlineKeyboardButton("📦 Полный план в дашборде", web_app=WebAppInfo(url=dash_url))
+            await update.message.reply_text(
+                "Полный план по регионам/кластерам, все статусы поставок — в дашборде:",
+                reply_markup=InlineKeyboardMarkup([[dash_btn]]),
+            )
 
     async def _collect_order_advice_data(self, chat_id: int, days: int = 30) -> list[dict]:
         """Суммарный сток по товару (все склады) + темп продаж → совет заказывать или нет."""

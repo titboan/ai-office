@@ -17,6 +17,7 @@ import MomChart from './charts/MomChart'
 import AbcTable from './charts/AbcTable'
 import ChainTimeline from './charts/ChainTimeline'
 import KwTable from './charts/KwTable'
+import SupplyPlan from './charts/SupplyPlan'
 import CardSkeleton from './components/CardSkeleton'
 import EmptyState from './components/EmptyState'
 import Card from './components/Card'
@@ -251,6 +252,8 @@ export default function App() {
         <div className="space-y-3">
           {/* SEO: позиции ключевых слов WB, приоритет просевшим */}
           <KwTable data={data?.kw_top ?? []} />
+          {/* Поставки: план по регионам/кластерам, срочность по остаткам */}
+          <SupplyPlan data={data?.supply_plan ?? { products: [], lead_days: 0, safety_days: 0 }} />
         </div>
       )}
 
