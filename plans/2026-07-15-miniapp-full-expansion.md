@@ -1,6 +1,7 @@
 # Мини-апп: вкладки, отчёты, каталог, формы вместо мастеров Макса
 
-Статус: в работе
+Статус: завершён (2026-07-15) — все 5 фаз реализованы, продиффены и запушены в
+`claude/telegram-miniapp-optimization-p0n0tb`.
 
 ## Контекст
 
@@ -88,26 +89,23 @@
   рекомендованными ценами) — только флаги `has_cost_*` и текстовая ссылка на вкладку
   «Дашборд».
 
-## Фаза 5 — Формы вместо мастеров Макса
+## Фаза 5 — Формы вместо мастеров Макса — ЗАВЕРШЕНА (2026-07-15)
 
-- [ ] Эндпоинты (POST, валидация `X-Telegram-Init-Data` по `MARTA_BOT_TOKEN`, тот же паттерн, что
-  `/api/set_cost`):
-  - `/api/product` — создать/обновить товар (name, wb_article, ozon_offer_id, category) —
-    заменяет `/map` (`agents/max.py:4171`) и текстовую часть `/add` (`agents/max.py:4711`,
-    Redis-wizard `catalog_add:{chat_id}` — удалить после переноса).
-  - `/api/merge_product` — связать WB-товар без пары с Ozon-товаром — заменяет `/merge_products`
-    (`agents/max.py:4526`, inline-кнопочный пикер `mergewiz:*`).
-  - `/api/add_shop` — подключить магазин (marketplace, api_token, client_id, название) —
-    заменяет `/add_shop` (`agents/max.py:3646`). Токен — `type="password"` в форме, не логировать
-    в `logger.info`/`logger.error` (только факт успеха/ошибки, не значение).
-- [ ] `dashboard/src/charts/ProductForm.tsx`, `MergeProductForm.tsx`, `AddShopForm.tsx` (новые) —
-  в разделе «Каталог»/«Настройки».
-- [ ] Старые Telegram-команды `/map`, `/add`, `/merge_products`, `/add_shop` — оставить рабочими
-  (не ломаем то, что уже работает через Марту), но добавить в ответ подсказку «удобнее в
-  дашборде» со ссылкой — не заставляем переучиваться резко.
-- [ ] После переноса — реально мёртвые `ConversationHandler`/Redis-wizard регистрации в
-  `agents/max.py` можно удалить отдельным заходом (см. `ROADMAP.md`, секция Phase 10 «Осталось») —
-  не в этой фазе, чтобы не смешивать новую фичу с чисткой старого кода.
+- [x] `/api/product`, `/api/merge_product`, `/api/add_shop` — тот же паттерн валидации
+  `X-Telegram-Init-Data` по `MARTA_BOT_TOKEN`, что у `/api/set_cost`. SQL 1:1 из `/map`,
+  `mergewiz:confirm`, `/add_shop`. Токен `/add_shop` — только JSON body, password-поле,
+  не логируется даже в except (только тип исключения), rate limit 5/60.
+- [x] `dashboard/src/charts/ProductForm.tsx`, `MergeProductForm.tsx`, `AddShopForm.tsx` — в
+  разделах «Каталог»/«Настройки».
+- [x] Старые команды `/map`, `/add`, `/merge_products`, `/add_shop` не тронуты, работают как
+  раньше — добавлена ненавязчивая подсказка про дашборд после успеха.
+- [ ] Мёртвые `ConversationHandler`/Redis-wizard регистрации в `agents/max.py` — сознательно НЕ
+  удалены в этой фазе (см. пункт про отдельный заход в `ROADMAP.md`, Phase 10 «Осталось»).
+
+Развилка, решена по факту кода, а не по букве плана: `/api/merge_product` — не простой
+`UPDATE ozon_offer_id`, а полноценный `merge_product_rows` (перенос `product_costs`,
+штрихкодов, удаление дублирующей строки) — воспроизводит реальный `mergewiz:confirm`, а не
+предполагаемое упрощённое поведение.
 
 ---
 
