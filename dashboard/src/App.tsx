@@ -9,6 +9,7 @@ import StockTable from './charts/StockTable'
 import WowTrend from './charts/WowTrend'
 import MarginChart from './charts/MarginChart'
 import NetMarginTable from './charts/NetMarginTable'
+import CostEditor from './charts/CostEditor'
 import BidSuggestions from './charts/BidSuggestions'
 import FunnelChart from './charts/FunnelChart'
 import ReturnsTable from './charts/ReturnsTable'
@@ -176,6 +177,9 @@ export default function App() {
 
             {/* NET маржа из реальных выплат */}
             <NetMarginTable data={data.net_margin ?? []} abcData={data.abc_data ?? []} />
+
+            {/* Себестоимость — редактируемая таблица (замена Excel-юнитки) */}
+            <CostEditor />
 
             {/* Предложения по ставкам рекламы (ДРР) */}
             <BidSuggestions data={data.bid_suggestions ?? []} />
