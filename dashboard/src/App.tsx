@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { LayoutDashboard, AlertCircle, Sun, Moon } from 'lucide-react'
+import { LayoutDashboard, FileBarChart, Package, Settings, AlertCircle, Sun, Moon } from 'lucide-react'
 import { fetchDashboard, fetchTimeline, DashboardData, TimelineData } from './api'
 import RevenueChart from './charts/RevenueChart'
 import TopProducts from './charts/TopProducts'
@@ -16,10 +16,25 @@ import ReturnsTable from './charts/ReturnsTable'
 import MomChart from './charts/MomChart'
 import AbcTable from './charts/AbcTable'
 import ChainTimeline from './charts/ChainTimeline'
+import KwTable from './charts/KwTable'
+import SupplyPlan from './charts/SupplyPlan'
+import ProductsTable from './charts/ProductsTable'
+import ShopKpiCard from './charts/ShopKpiCard'
+import ProductForm from './charts/ProductForm'
+import MergeProductForm from './charts/MergeProductForm'
+import AddShopForm from './charts/AddShopForm'
 import CardSkeleton from './components/CardSkeleton'
 
 type Days = 7 | 14 | 30
 type Theme = 'light' | 'dark'
+type Tab = 'dashboard' | 'reports' | 'catalog' | 'settings'
+
+const TABS: { key: Tab; label: string; icon: typeof LayoutDashboard }[] = [
+  { key: 'dashboard', label: 'Дашборд', icon: LayoutDashboard },
+  { key: 'reports', label: 'Отчёты', icon: FileBarChart },
+  { key: 'catalog', label: 'Каталог', icon: Package },
+  { key: 'settings', label: 'Настройки', icon: Settings },
+]
 
 const THEME_STORAGE_KEY = 'dashboard-theme'
 
@@ -35,6 +50,12 @@ function getInitialTheme(): Theme {
   return 'light'
 }
 
+// Позволяет кнопкам в чате открывать мини-апп сразу на нужной вкладке (?tab=reports и т.п.)
+function getInitialTab(): Tab {
+  const t = new URLSearchParams(window.location.search).get('tab')
+  return t === 'reports' || t === 'catalog' || t === 'settings' ? t : 'dashboard'
+}
+
 export default function App() {
   const [data, setData] = useState<DashboardData | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -42,6 +63,7 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [timeline, setTimeline] = useState<TimelineData | null>(null)
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
+  const [tab, setTab] = useState<Tab>(getInitialTab)
 
   useEffect(() => {
     const tg = (window as any).Telegram?.WebApp
@@ -96,6 +118,9 @@ export default function App() {
     },
   ] : []
 
+  const activeTabInfo = TABS.find(t => t.key === tab) ?? TABS[0]
+  const ActiveTabIcon = activeTabInfo.icon
+
   return (
     <div
       className="min-h-screen p-3 space-y-3 md:max-w-3xl lg:max-w-5xl md:mx-auto"
@@ -103,9 +128,11 @@ export default function App() {
     >
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-base font-bold flex items-center gap-1.5"><LayoutDashboard size={18} /> Дашборд</h1>
+        <h1 className="text-base font-bold flex items-center gap-1.5">
+          <ActiveTabIcon size={18} /> {activeTabInfo.label}
+        </h1>
         <div className="flex gap-1 items-center">
-          {([7, 14, 30] as Days[]).map(d => (
+          {tab === 'dashboard' && ([7, 14, 30] as Days[]).map(d => (
             <button
               key={d}
               onClick={() => setDays(d)}
@@ -126,7 +153,22 @@ export default function App() {
         </div>
       </div>
 
-      {loading && (
+      {/* Таб-бар — переключение разделов мини-аппа */}
+      <div className="grid grid-cols-4 gap-1">
+        {TABS.map(({ key, label, icon: Icon }) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
+            className={`flex items-center justify-center gap-1 px-1.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              tab === key ? 'bg-purple-600 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+            }`}
+          >
+            <Icon size={13} /> <span className="truncate">{label}</span>
+          </button>
+        ))}
+      </div>
+
+      {tab === 'dashboard' && loading && (
         <>
           <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
             {Array.from({ length: 6 }).map((_, i) => (
@@ -139,13 +181,13 @@ export default function App() {
         </>
       )}
 
-      {error && (
+      {tab === 'dashboard' && error && (
         <div className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-xl p-4 text-sm flex items-center gap-1.5">
           <AlertCircle size={16} className="shrink-0" /> {error}
         </div>
       )}
 
-      {data && !loading && (
+      {tab === 'dashboard' && data && !loading && (
         <>
           {/* KPI cards — 6 штук: 2 строки по 3 на мобильном, 1 строка на десктопе */}
           <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
@@ -178,9 +220,6 @@ export default function App() {
             {/* NET маржа из реальных выплат */}
             <NetMarginTable data={data.net_margin ?? []} abcData={data.abc_data ?? []} />
 
-            {/* Себестоимость — редактируемая таблица (замена Excel-юнитки) */}
-            <CostEditor />
-
             {/* Предложения по ставкам рекламы (ДРР) */}
             <BidSuggestions data={data.bid_suggestions ?? []} />
 
@@ -210,6 +249,37 @@ export default function App() {
             За {data.period_days} дней с {data.date_from}
           </div>
         </>
+      )}
+
+      {tab === 'reports' && (
+        <div className="space-y-3">
+          {/* SEO: позиции ключевых слов WB, приоритет просевшим */}
+          <KwTable data={data?.kw_top ?? []} />
+          {/* Поставки: план по регионам/кластерам, срочность по остаткам */}
+          <SupplyPlan data={data?.supply_plan ?? { products: [], lead_days: 0, safety_days: 0 }} />
+        </div>
+      )}
+
+      {tab === 'catalog' && (
+        <div className="space-y-3">
+          {/* Товары: цены WB/Ozon, привязка артикулов, факт заданной с/с */}
+          <ProductsTable data={data?.catalog?.products ?? []} />
+          {/* Рейтинг и штрафы магазина на WB/Ozon */}
+          <ShopKpiCard data={data?.catalog?.shop_kpi ?? {}} />
+          {/* Форма вместо /map и текстовой части /add — добавить/обновить товар */}
+          <ProductForm />
+          {/* Форма вместо /merge_products (inline-пикер mergewiz:*) */}
+          <MergeProductForm data={data?.catalog?.products ?? []} />
+        </div>
+      )}
+
+      {tab === 'settings' && (
+        <div className="space-y-3">
+          {/* Себестоимость — редактируемая таблица (замена Excel-юнитки) */}
+          <CostEditor />
+          {/* Форма вместо /add_shop — подключение магазина (чувствительный токен) */}
+          <AddShopForm />
+        </div>
       )}
     </div>
   )

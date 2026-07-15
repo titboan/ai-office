@@ -840,6 +840,13 @@ async def run_all_async() -> None:
             except Exception as e:
                 logger.error(f"[dashboard] bid_suggestions error: {e}")
 
+        data["catalog"] = {"products": [], "shop_kpi": {}}
+        if max_agent is not None:
+            try:
+                data["catalog"] = await max_agent._collect_catalog_for_dashboard(chat_id)
+            except Exception as e:
+                logger.error(f"[dashboard] catalog error: {e}")
+
         return web.json_response(_to_json_safe({**data, **adv}), headers=cors)
 
     async def _handle_timeline(request: web.Request) -> web.Response:
@@ -1136,6 +1143,178 @@ async def run_all_async() -> None:
             result = await max_agent._apply_ozon_bid_raw(chat_id, str(shop_id), campaign_id, direction, delta_pct)
         return web.json_response(result, headers=cors)
 
+    async def _handle_create_product(request: web.Request) -> web.Response:
+        """POST /api/product — создать/обновить товар в реестре прямо с дашборда.
+
+        Заменяет /map (agents/max.py::cmd_map) и текстовую часть пошагового Redis-wizard
+        /add (agents/max.py::cmd_add, `catalog_add:{chat_id}`) — тот же
+        INSERT ... ON CONFLICT (display_name) DO UPDATE, что и там. Поведение 1:1: name —
+        уникальный ключ (совпадение по display_name перезаписывает существующую строку),
+        wb_article/ozon_offer_id перезаписываются присланным значением (в т.ч. пустым —
+        как и в /map), category — COALESCE (пустое значение не затирает уже сохранённую
+        категорию). Не переносит себестоимость — она уже отдельно в /api/set_cost.
+        """
+        cors = {"Access-Control-Allow-Origin": _CORS_ORIGIN}
+        if request.method == "OPTIONS":
+            return web.Response(headers={
+                **cors,
+                "Access-Control-Allow-Headers": "X-Telegram-Init-Data, Content-Type",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+            })
+        init_data = request.headers.get("X-Telegram-Init-Data", "")
+        parsed = _validate_init_data(init_data, config.MARTA_BOT_TOKEN)
+        if parsed is None:
+            return web.Response(status=401, text="Unauthorized", headers=cors)
+        try:
+            user = _json.loads(parsed.get("user", "{}"))
+            chat_id = int(user["id"])
+        except Exception:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if await _rate_limited(chat_id, "product", limit=10, window_sec=60):
+            return web.Response(status=429, text="Too Many Requests", headers=cors)
+        try:
+            body = await request.json()
+            name = str(body.get("name", "")).strip()
+            wb_article = str(body.get("wb_article", "")).strip() or None
+            ozon_offer_id = str(body.get("ozon_offer_id", "")).strip() or None
+            category = str(body.get("category", "")).strip() or None
+        except Exception:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if not name:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        try:
+            from db import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO product_mapping (display_name, wb_article, ozon_offer_id, category)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (display_name)
+                    DO UPDATE SET wb_article    = EXCLUDED.wb_article,
+                                  ozon_offer_id = EXCLUDED.ozon_offer_id,
+                                  category      = COALESCE(EXCLUDED.category, product_mapping.category)
+                    """,
+                    name, wb_article, ozon_offer_id, category,
+                )
+        except Exception as e:
+            logger.error(f"[product] error: {e}", exc_info=True)
+            return web.Response(status=500, text="Internal Error", headers=cors)
+        return web.json_response({"ok": True}, headers=cors)
+
+    async def _handle_merge_product(request: web.Request) -> web.Response:
+        """POST /api/merge_product — связать WB-товар без Ozon-пары с уже существующим в
+        реестре Ozon-товаром без WB-пары (например, автоматически подтянутым синком заказов).
+
+        Заменяет /merge_products (agents/max.py::cmd_merge_products, inline-пикер
+        mergewiz:*) — воспроизводит финальный шаг того же wizard'a: находит обе строки
+        product_mapping (WB-только и Ozon-только) и сливает их db.merge_product_rows()
+        (COALESCE-приоритет у WB-строки, конкатенация штрихкодов, удаление дублирующей
+        Ozon-строки) — идентичная SQL-логика, что и у mergewiz:confirm:.
+        Идентификаторы — натуральные ключи (wb_article/ozon_offer_id), а не внутренние id:
+        catalog.products (вкладка «Каталог») их и так отдаёт, отдельный mapping_id туда не
+        заводили ради одной формы.
+        """
+        cors = {"Access-Control-Allow-Origin": _CORS_ORIGIN}
+        if request.method == "OPTIONS":
+            return web.Response(headers={
+                **cors,
+                "Access-Control-Allow-Headers": "X-Telegram-Init-Data, Content-Type",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+            })
+        init_data = request.headers.get("X-Telegram-Init-Data", "")
+        parsed = _validate_init_data(init_data, config.MARTA_BOT_TOKEN)
+        if parsed is None:
+            return web.Response(status=401, text="Unauthorized", headers=cors)
+        try:
+            user = _json.loads(parsed.get("user", "{}"))
+            chat_id = int(user["id"])
+        except Exception:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if await _rate_limited(chat_id, "merge_product", limit=10, window_sec=60):
+            return web.Response(status=429, text="Too Many Requests", headers=cors)
+        try:
+            body = await request.json()
+            wb_article = str(body.get("wb_article", "")).strip()
+            ozon_offer_id = str(body.get("ozon_offer_id", "")).strip()
+        except Exception:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if not wb_article or not ozon_offer_id:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        try:
+            from db import get_pool, merge_product_rows
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                wb_row = await conn.fetchrow(
+                    "SELECT id FROM product_mapping WHERE wb_article = $1 AND ozon_offer_id IS NULL",
+                    wb_article,
+                )
+                ozon_row = await conn.fetchrow(
+                    "SELECT id FROM product_mapping WHERE ozon_offer_id = $1 AND wb_article IS NULL",
+                    ozon_offer_id,
+                )
+            if not wb_row or not ozon_row:
+                return web.json_response({"ok": False, "error": "not_found"}, status=404, headers=cors)
+            await merge_product_rows(wb_row["id"], ozon_row["id"])
+        except Exception as e:
+            logger.error(f"[merge_product] error: {e}", exc_info=True)
+            return web.Response(status=500, text="Internal Error", headers=cors)
+        return web.json_response({"ok": True}, headers=cors)
+
+    async def _handle_add_shop(request: web.Request) -> web.Response:
+        """POST /api/add_shop — подключить магазин WB/Ozon (API-токен продавца) с дашборда.
+
+        Заменяет /add_shop (agents/max.py::cmd_add_shop) — тот же db.add_marketplace_shop.
+
+        Токен — чувствительное поле (полный доступ к аккаунту продавца на маркетплейсе):
+        приходит только в JSON body (POST, не query/URL, как и остальные write-эндпоинты
+        здесь), никогда не логируется — даже в except ниже пишем только тип исключения,
+        не str(e)/exc_info, чтобы значение не просочилось в agent_logs, если драйвер вдруг
+        отразит переданный параметр в тексте ошибки. Rate limit жёстче обычного (5/60 —
+        остальные write-эндпоинты 10/60), т.к. риск при злоупотреблении выше.
+        """
+        cors = {"Access-Control-Allow-Origin": _CORS_ORIGIN}
+        if request.method == "OPTIONS":
+            return web.Response(headers={
+                **cors,
+                "Access-Control-Allow-Headers": "X-Telegram-Init-Data, Content-Type",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+            })
+        init_data = request.headers.get("X-Telegram-Init-Data", "")
+        parsed = _validate_init_data(init_data, config.MARTA_BOT_TOKEN)
+        if parsed is None:
+            return web.Response(status=401, text="Unauthorized", headers=cors)
+        try:
+            user = _json.loads(parsed.get("user", "{}"))
+            chat_id = int(user["id"])
+        except Exception:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if await _rate_limited(chat_id, "add_shop", limit=5, window_sec=60):
+            return web.Response(status=429, text="Too Many Requests", headers=cors)
+        try:
+            body = await request.json()
+            mp = body.get("marketplace")
+            api_token = str(body.get("api_token", "")).strip()
+            client_id = str(body.get("client_id", "")).strip() or None
+            shop_name = str(body.get("shop_name", "")).strip() or None
+        except Exception:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if mp not in ("wb", "ozon") or not api_token:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if mp == "ozon" and not client_id:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        try:
+            from db import add_marketplace_shop
+            await add_marketplace_shop(chat_id, mp, api_token, client_id=client_id, shop_name=shop_name)
+        except Exception as e:
+            # Токен нигде не логируем — даже str(e) намеренно не пишем, только тип
+            # исключения, на случай если ошибка драйвера/БД отразит значение параметра.
+            logger.error(
+                f"[add_shop] chat_id={chat_id} marketplace={mp} не удалось сохранить: {type(e).__name__}"
+            )
+            return web.Response(status=500, text="Internal Error", headers=cors)
+        return web.json_response({"ok": True}, headers=cors)
+
     dash_app = web.Application()
     dash_app.router.add_get("/api/dashboard", _handle_dashboard)
     dash_app.router.add_route("OPTIONS", "/api/dashboard", _handle_dashboard)
@@ -1149,6 +1328,12 @@ async def run_all_async() -> None:
     dash_app.router.add_route("OPTIONS", "/api/costs", _handle_get_costs)
     dash_app.router.add_post("/api/set_cost", _handle_set_cost)
     dash_app.router.add_route("OPTIONS", "/api/set_cost", _handle_set_cost)
+    dash_app.router.add_post("/api/product", _handle_create_product)
+    dash_app.router.add_route("OPTIONS", "/api/product", _handle_create_product)
+    dash_app.router.add_post("/api/merge_product", _handle_merge_product)
+    dash_app.router.add_route("OPTIONS", "/api/merge_product", _handle_merge_product)
+    dash_app.router.add_post("/api/add_shop", _handle_add_shop)
+    dash_app.router.add_route("OPTIONS", "/api/add_shop", _handle_add_shop)
     dash_app.router.add_get("/health", lambda r: web.Response(text="ok"))
     dash_runner = web.AppRunner(dash_app)
     await dash_runner.setup()
