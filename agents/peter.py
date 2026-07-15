@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from loguru import logger
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from config import config
@@ -545,14 +545,33 @@ class PeterAgent(BaseAgent):
                 LIMIT 10
             """, chat_id)
 
-            # 9. Топ ключевых слов WB (для SEO-контекста)
-            kw_top = await _q(conn, "kw_top", """
-                SELECT DISTINCT ON (keyword) keyword, position, search_count, ctr
-                FROM product_search_keywords
-                WHERE chat_id = $1 AND marketplace = 'wb'
-                ORDER BY keyword, search_count DESC NULLS LAST
-                LIMIT 15
+            # 9. Топ ключевых слов WB (для SEO-контекста) — приоритет ключам с просевшей
+            # позицией (>= config.SEO_POSITION_DROP_THRESHOLD мест), тот же принцип сравнения
+            # двух последних stat_date, что в MaxAgent._check_seo_drops (agents/max.py).
+            kw_dates = await _q(conn, "kw_dates", """
+                SELECT DISTINCT stat_date FROM product_search_keywords
+                WHERE chat_id = $1 AND marketplace = 'wb' AND position IS NOT NULL
+                ORDER BY stat_date DESC LIMIT 2
             """, chat_id)
+            kw_date_old = kw_dates[1]["stat_date"] if len(kw_dates) > 1 else None
+            kw_top = await _q(conn, "kw_top", """
+                WITH latest AS (
+                    SELECT DISTINCT ON (keyword) keyword, position, search_count, ctr,
+                           stat_date, product_id
+                    FROM product_search_keywords
+                    WHERE chat_id = $1 AND marketplace = 'wb'
+                    ORDER BY keyword, stat_date DESC
+                )
+                SELECT l.keyword, l.position, l.search_count, l.ctr,
+                       (l.position - o.position) AS position_drop
+                FROM latest l
+                LEFT JOIN product_search_keywords o
+                       ON o.chat_id = $1 AND o.marketplace = 'wb'
+                      AND o.product_id = l.product_id AND o.keyword = l.keyword
+                      AND o.stat_date = $2
+                ORDER BY position_drop DESC NULLS LAST, l.search_count DESC NULLS LAST
+                LIMIT 20
+            """, chat_id, kw_date_old)
 
             # 10. Региональная аналитика WB (откуда заказывают)
             regions_wb = await _q(conn, "regions_wb", """
@@ -615,7 +634,15 @@ class PeterAgent(BaseAgent):
             "low_stocks":       [dict(r) for r in low_stocks],
             "mom_trends":       [dict(r) for r in mom],
             "returns_top":      [dict(r) for r in returns_top],
-            "kw_top":           [dict(r) for r in kw_top],
+            "kw_top":           [
+                dict(r) | {
+                    "priority": bool(
+                        r["position_drop"] is not None
+                        and r["position_drop"] >= config.SEO_POSITION_DROP_THRESHOLD
+                    )
+                }
+                for r in kw_top
+            ],
             "regions_wb":       [dict(r) for r in regions_wb],
             "infographic_ctr":  [dict(r) for r in infographic_ctr],
         }
@@ -2380,56 +2407,32 @@ cluster_dr для Ozon — из аналитики Ozon /v1/analytics/data (ес
             )
             return
 
-        avg_ctr           = sum(p["ctr"] for p in data) / len(data)
         products_w_issues = sum(1 for p in data if p["issues"])
-        no_card_data      = sum(1 for p in data if p["title_len"] == 0 and "нет данных" in " ".join(p["issues"]))
+        # data уже отсортирован по urgency (показы × 1/CTR) — берём топ-3 самых проблемных
+        # для короткого summary в чат; полная таблица со всеми карточками — в дашборде.
+        top3 = [p for p in data if p["issues"]][:3]
 
-        prompt = f"""Период: {days} дней. Всего товаров: {len(data)}.
-Средний CTR: {avg_ctr:.1f}%. Товаров с SEO-проблемами: {products_w_issues}.
-{f'Без данных карточки (нужен /sync_cards): {no_card_data}.' if no_card_data else ''}
+        lines = [f"🔍 **SEO-аудит за {days} дней** — {products_w_issues} из {len(data)} товаров нужно переделать\n"]
+        if top3:
+            lines.append("**Самые проблемные:**")
+            for p in top3:
+                issue = p["issues"][0] if p["issues"] else "—"
+                lines.append(f"`{p['article']}` [{p['marketplace']}] — {issue}, показов {p['views']}")
+        else:
+            lines.append("> Серьёзных SEO-проблем не найдено.")
+        answer = "\n".join(lines)
 
-SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сортировка по убыванию):
-{json.dumps(data[:25], ensure_ascii=False, indent=2)}
+        await self._send_answer(answer, update=update)
 
-Составь чёткий список товаров для переделки SEO.
-Для каждого: что конкретно слабо + одно действие.
-В рекомендациях пиши артикул для команды /seo у Элины.
-
-Формат ответа (Rich Markdown, до 35 строк):
-
-🔍 **SEO-аудит за {days} дней** — X товаров нужно переделать
-
-**🔴 Срочно (высокие показы, плохой CTR):**
-`АРТИКУЛ` [МП] — CTR X%, показов N: [что слабо]
-→ `/seo АРТИКУЛ` у Элины
-
-**🟡 Улучшить (контент неполный):**
-`АРТИКУЛ` — заголовок Xсимв., [что добавить]
-
-**🟢 Низкая видимость (мало показов):**
-`АРТИКУЛ` — позиция X, нужны ключевые слова
-
-> Главный вывод одной строкой."""
-
-        try:
-            from anthropic import AsyncAnthropic
-            client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
-            resp = await client.messages.create(
-                model=config.CLAUDE_MODEL,
-                max_tokens=2048,
-                system=self._effective_system,
-                messages=[{"role": "user", "content": prompt}],
+        # Кнопка на полную таблицу ключевых слов/карточек в мини-аппе (вкладка «Отчёты»)
+        dash_btn = None
+        if config.DASHBOARD_URL:
+            dash_url = (
+                f"{config.DASHBOARD_URL}?token={config.DASHBOARD_TOKEN}&tab=reports"
+                if config.DASHBOARD_TOKEN else
+                f"{config.DASHBOARD_URL}?tab=reports"
             )
-            answer = resp.content[0].text
-        except Exception as e:
-            logger.error(f"[Питер/seo_audit] ошибка Claude: {e}", exc_info=True)
-            await update.message.reply_text(f"❌ Ошибка анализа: {e}")
-            return
-
-        await self._send_answer(
-            answer,
-            update=update,
-        )
+            dash_btn = InlineKeyboardButton("📊 Подробности в дашборде", web_app=WebAppInfo(url=dash_url))
 
         # Offer to dispatch SEO tasks to Elina for problematic products
         problematic = [p for p in data if p["issues"]]
@@ -2440,13 +2443,20 @@ SEO-ДАННЫЕ ПО ТОВАРАМ (urgency = показы × 1/CTR, сорт�
             ])
             await self._redis_set(f"seo_audit:{chat_id}", articles_payload, ttl=3600)
             n = len(problematic)
-            keyboard = InlineKeyboardMarkup([[
+            rows = [[
                 InlineKeyboardButton("🚀 SEO топ-3", callback_data=f"pseo:top3:{chat_id}"),
                 InlineKeyboardButton(f"🚀 SEO все ({n})", callback_data=f"pseo:all:{chat_id}"),
-            ]])
+            ]]
+            if dash_btn:
+                rows.append([dash_btn])
             await update.message.reply_text(
                 f"Запустить SEO-задачи у Элины для {n} товаров?",
-                reply_markup=keyboard,
+                reply_markup=InlineKeyboardMarkup(rows),
+            )
+        elif dash_btn:
+            await update.message.reply_text(
+                "Подробнее — в дашборде:",
+                reply_markup=InlineKeyboardMarkup([[dash_btn]]),
             )
 
     async def _handle_seo_audit_callback(

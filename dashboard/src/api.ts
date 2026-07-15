@@ -28,7 +28,11 @@ export interface ReturnRow {
   product_id: string; product_name: string
   returns_count: number; return_amount: number; return_rate: number
 }
-export interface KwRow { keyword: string; position: number; search_count: number; ctr: number }
+export interface KwRow {
+  keyword: string; position: number; search_count: number; ctr: number
+  position_drop: number | null   // (позиция сейчас − позиция на прошлом снапшоте), null если истории нет
+  priority: boolean              // просадка >= config.SEO_POSITION_DROP_THRESHOLD (10 мест)
+}
 export interface AbcRow {
   product_id: string
   name: string

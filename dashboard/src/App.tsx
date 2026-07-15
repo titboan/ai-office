@@ -16,6 +16,7 @@ import ReturnsTable from './charts/ReturnsTable'
 import MomChart from './charts/MomChart'
 import AbcTable from './charts/AbcTable'
 import ChainTimeline from './charts/ChainTimeline'
+import KwTable from './charts/KwTable'
 import CardSkeleton from './components/CardSkeleton'
 import EmptyState from './components/EmptyState'
 import Card from './components/Card'
@@ -45,6 +46,12 @@ function getInitialTheme(): Theme {
   return 'light'
 }
 
+// Позволяет кнопкам в чате открывать мини-апп сразу на нужной вкладке (?tab=reports и т.п.)
+function getInitialTab(): Tab {
+  const t = new URLSearchParams(window.location.search).get('tab')
+  return t === 'reports' || t === 'catalog' || t === 'settings' ? t : 'dashboard'
+}
+
 export default function App() {
   const [data, setData] = useState<DashboardData | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -52,7 +59,7 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [timeline, setTimeline] = useState<TimelineData | null>(null)
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
-  const [tab, setTab] = useState<Tab>('dashboard')
+  const [tab, setTab] = useState<Tab>(getInitialTab)
 
   useEffect(() => {
     const tg = (window as any).Telegram?.WebApp
@@ -241,9 +248,10 @@ export default function App() {
       )}
 
       {tab === 'reports' && (
-        <Card title="Отчёты">
-          <EmptyState message="Скоро: SEO, план поставок" />
-        </Card>
+        <div className="space-y-3">
+          {/* SEO: позиции ключевых слов WB, приоритет просевшим */}
+          <KwTable data={data?.kw_top ?? []} />
+        </div>
       )}
 
       {tab === 'catalog' && (
