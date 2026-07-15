@@ -185,12 +185,19 @@ product_mapping` упал бы с "current transaction is aborted", и весь 
 
 Файл: `agents/max.py`.
 
-- [ ] Команда (например `/merge_products`) или кнопка в `/products` —
+- [x] Команда (например `/merge_products`) или кнопка в `/products` —
       двухшаговый визард по паттерну уже существующих button-driven
       визардов (`costpick:`, `addcat:`): список WB-only товаров → выбор →
       список Ozon-only товаров → выбор → подтверждение → `db.merge_product_rows`.
       Redis-состояние `merge_wizard:{chat_id}`, TTL как у остальных визардов.
-- [ ] `/cancel` — умеет прерывать и этот визард (по аналогии с `cost_wizard`).
+- [x] `/cancel` — умеет прерывать и этот визард (по аналогии с `cost_wizard`).
+
+Готово: `cmd_merge_products`/`_handle_merge_wizard_callback` (agents/max.py:4522,
+4540), callback-префикс `mergewiz:` (не пересекается с `merge:` из Фазы 3 —
+проверено, `^merge:` не матчит `mergewiz:...`), регистрация в
+`_register_extra_handlers`, `/cancel` чистит `merge_wizard:{chat_id}`. SQL —
+прямые запросы в командах (по образцу `_handle_catalog_cost_callback`), не
+через новую функцию в `db.py` — файл не трогался в этой фазе.
 
 ## Фаза 5 — Документация
 

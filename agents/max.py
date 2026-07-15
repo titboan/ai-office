@@ -4519,6 +4519,158 @@ class MaxAgent(BaseAgent):
                 logger.error(f"[Макс/cost_callback] ошибка: {e}", exc_info=True)
                 await query.edit_message_text(f"❌ Ошибка: {e}")
 
+    # ------------------------------------------------------------------ #
+    #  Ручной мастер объединения товаров без штрихкода (Фаза 4)           #
+    # ------------------------------------------------------------------ #
+
+    async def cmd_merge_products(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from telegram import Chat, InlineKeyboardButton, InlineKeyboardMarkup
+        if update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
+            await update.message.reply_text("Управление каталогом — только в личке.")
+            return
+        try:
+            from db import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT id, display_name FROM product_mapping "
+                    "WHERE wb_article IS NOT NULL AND ozon_offer_id IS NULL "
+                    "ORDER BY display_name"
+                )
+            if not rows:
+                await update.message.reply_text("Нет товаров с WB-артикулом без пары на Ozon.")
+                return
+            kb_rows = []
+            row_pair = []
+            for r in rows:
+                row_pair.append(InlineKeyboardButton(
+                    r["display_name"],
+                    callback_data=f"mergewiz:pick_wb:{r['id']}"
+                ))
+                if len(row_pair) == 2:
+                    kb_rows.append(row_pair)
+                    row_pair = []
+            if row_pair:
+                kb_rows.append(row_pair)
+            kb_rows.append([InlineKeyboardButton("❌ Отмена", callback_data="mergewiz:cancel")])
+            await update.message.reply_text(
+                "🔗 Объединить товары — выбери товар WB:",
+                reply_markup=InlineKeyboardMarkup(kb_rows)
+            )
+        except Exception as e:
+            logger.error(f"[Макс/merge_products] ошибка: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+
+    async def _handle_merge_wizard_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        import json as _json
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        query = update.callback_query
+        await query.answer()
+        chat_id = query.message.chat_id
+        data = query.data
+
+        if data == "mergewiz:cancel":
+            await self._redis_set(f"merge_wizard:{chat_id}", "", ttl=1)
+            await query.edit_message_text("Отменено.")
+            return
+
+        # Шаг 1: выбор WB-товара → показать Ozon-товары
+        if data.startswith("mergewiz:pick_wb:"):
+            wb_id = int(data.split(":")[-1])
+            try:
+                from db import get_pool
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        "SELECT id, display_name FROM product_mapping "
+                        "WHERE ozon_offer_id IS NOT NULL AND wb_article IS NULL "
+                        "ORDER BY display_name"
+                    )
+                if not rows:
+                    await query.edit_message_text("Нет товаров с Ozon-артикулом без пары на WB.")
+                    return
+                state = _json.dumps({"wb_id": wb_id})
+                await self._redis_set(f"merge_wizard:{chat_id}", state, ttl=_ONBOARD_TTL)
+                kb_rows = []
+                row_pair = []
+                for r in rows:
+                    row_pair.append(InlineKeyboardButton(
+                        r["display_name"],
+                        callback_data=f"mergewiz:pick_ozon:{r['id']}"
+                    ))
+                    if len(row_pair) == 2:
+                        kb_rows.append(row_pair)
+                        row_pair = []
+                if row_pair:
+                    kb_rows.append(row_pair)
+                kb_rows.append([InlineKeyboardButton("❌ Отмена", callback_data="mergewiz:cancel")])
+                await query.edit_message_text(
+                    "🔗 Теперь выбери товар Ozon:",
+                    reply_markup=InlineKeyboardMarkup(kb_rows)
+                )
+            except Exception as e:
+                logger.error(f"[Макс/merge_wizard] ошибка: {e}", exc_info=True)
+                await query.edit_message_text(f"❌ Ошибка: {e}")
+            return
+
+        # Шаг 2: выбор Ozon-товара → подтверждение
+        if data.startswith("mergewiz:pick_ozon:"):
+            ozon_id = int(data.split(":")[-1])
+            try:
+                raw = await self._redis_get(f"merge_wizard:{chat_id}")
+                if not raw:
+                    await query.edit_message_text("Сессия истекла, начни заново: /merge_products")
+                    return
+                state = _json.loads(raw)
+                wb_id = state["wb_id"]
+                from db import get_pool
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    wb_row = await conn.fetchrow(
+                        "SELECT display_name FROM product_mapping WHERE id = $1", wb_id
+                    )
+                    ozon_row = await conn.fetchrow(
+                        "SELECT display_name FROM product_mapping WHERE id = $1", ozon_id
+                    )
+                if not wb_row or not ozon_row:
+                    await query.edit_message_text("Товар не найден.")
+                    return
+                state["ozon_id"] = ozon_id
+                await self._redis_set(f"merge_wizard:{chat_id}", _json.dumps(state), ttl=_ONBOARD_TTL)
+                kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ Объединить", callback_data=f"mergewiz:confirm:{ozon_id}"),
+                    InlineKeyboardButton("❌ Отмена", callback_data="mergewiz:cancel"),
+                ]])
+                await query.edit_message_text(
+                    f"Объединить «{wb_row['display_name']}» (WB) и «{ozon_row['display_name']}» "
+                    f"(Ozon) в один товар в каталоге? Это действие нельзя отменить кнопкой — "
+                    f"при ошибке используй /map чтобы поправить вручную.",
+                    reply_markup=kb
+                )
+            except Exception as e:
+                logger.error(f"[Макс/merge_wizard] ошибка: {e}", exc_info=True)
+                await query.edit_message_text(f"❌ Ошибка: {e}")
+            return
+
+        # Шаг 3: подтверждение → слияние
+        if data.startswith("mergewiz:confirm:"):
+            try:
+                raw = await self._redis_get(f"merge_wizard:{chat_id}")
+                if not raw:
+                    await query.edit_message_text("Сессия истекла, начни заново: /merge_products")
+                    return
+                state = _json.loads(raw)
+                wb_id = state["wb_id"]
+                ozon_id = int(data.split(":")[-1])
+                from db import merge_product_rows
+                await merge_product_rows(wb_id, ozon_id)
+                await self._redis_set(f"merge_wizard:{chat_id}", "", ttl=1)
+                await query.edit_message_text("✅ Товары объединены в каталоге.")
+            except Exception as e:
+                logger.error(f"[Макс/merge_wizard] ошибка: {e}", exc_info=True)
+                await query.edit_message_text(f"❌ Ошибка: {e}")
+            return
+
     async def _handle_catalog_cost_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         from telegram import Chat
         if update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
@@ -4762,6 +4914,7 @@ class MaxAgent(BaseAgent):
         await self._redis_set(f"catalog_add:{chat_id}",  "", ttl=1)
         await self._redis_set(f"catalog_cost:{chat_id}", "", ttl=1)
         await self._redis_set(f"cost_wizard:{chat_id}",  "", ttl=1)
+        await self._redis_set(f"merge_wizard:{chat_id}", "", ttl=1)
         await update.message.reply_text("Отменено.")
 
     # ------------------------------------------------------------------ #
@@ -7156,6 +7309,7 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("questions",     self.cmd_questions))
         self.app.add_handler(CommandHandler("bid_adjust",    self.cmd_bid_adjust))
         self.app.add_handler(CommandHandler("add",           self.cmd_add))
+        self.app.add_handler(CommandHandler("merge_products", self.cmd_merge_products))
         self.app.add_handler(CommandHandler("cancel",        self.cmd_cancel))
         self.app.add_handler(
             CallbackQueryHandler(self._handle_menu_callback, pattern=r"^menu_")
@@ -7198,6 +7352,9 @@ class MaxAgent(BaseAgent):
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_merge_callback, pattern=r"^merge:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_merge_wizard_callback, pattern=r"^mergewiz:")
         )
         self.app.add_handler(CommandHandler("campaigns",    self.cmd_campaigns))
         self.app.add_handler(CommandHandler("promotions",   self.cmd_promotions))
