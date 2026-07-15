@@ -1480,6 +1480,7 @@ class MaxAgent(BaseAgent):
             client = make_client(shop)
 
             # Остатки
+            stocks: list[dict] = []
             try:
                 stocks = await client.get_stocks(statistics_token=stats_token)
                 ozon_in_transit: dict[str, int] = {}
@@ -1513,6 +1514,14 @@ class MaxAgent(BaseAgent):
                         logger.info(f"[Макс/sync] Ozon: {len(ozon_in_transit)} товаров в пути на склад")
             except Exception as e:
                 logger.error(f"[Макс/sync] get_stocks {mp_label}: {e}")
+
+            # Штрихкоды из уже полученных остатков (без новых API-вызовов) —
+            # см. plans/2026-07-14-cross-marketplace-product-merge.md, Фаза 1
+            try:
+                from db import collect_and_save_barcodes
+                await collect_and_save_barcodes(mp, stocks)
+            except Exception as e:
+                logger.error(f"[Макс/sync] штрихкоды {mp_label}: {e}", exc_info=True)
 
             # WB: синхронизируем поставки в пути через Marketplace API
             if mp == "wb":

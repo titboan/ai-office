@@ -45,14 +45,14 @@
 
 Файлы: `db.py`, `tools/marketplace.py`, `agents/max.py`.
 
-- [ ] `ALTER TABLE product_mapping ADD COLUMN IF NOT EXISTS wb_barcodes TEXT[], ADD COLUMN IF NOT EXISTS ozon_barcodes TEXT[]`
+- [x] `ALTER TABLE product_mapping ADD COLUMN IF NOT EXISTS wb_barcodes TEXT[], ADD COLUMN IF NOT EXISTS ozon_barcodes TEXT[]`
       (массив — у WB один `wb_article` может иметь несколько штрихкодов на
       разные размеры/цвета одной карточки; матчинг потом идёт по пересечению
       множеств, не по одному значению).
-- [ ] `WBClient.get_stocks()` (`tools/marketplace.py:221`) — добавить в каждый
+- [x] `WBClient.get_stocks()` (`tools/marketplace.py:221`) — добавить в каждый
       элемент `results` поле `"barcode": item.get("barcode", "")` (сырой
       штрихкод из ответа `/api/v1/supplier/stocks`, пустая строка если нет).
-- [ ] `OzonClient._get_sku_to_offer_id` (`tools/marketplace.py:1747`) —
+- [x] `OzonClient._get_sku_to_offer_id` (`tools/marketplace.py:1747`) —
       расширить (или добавить соседнюю функцию, если исходную используют ещё
       где-то — проверить перед правкой), чтобы дополнительно вытаскивать
       штрихкод(ы) из ответа `/v3/product/info/list`. Поле в реальном ответе
@@ -63,7 +63,7 @@
       Прокинуть штрихкод(ы) в `OzonClient.get_stocks()` — поле `"barcode"`
       в каждом элементе `results` (аналогично WB, можно объединить несколько
       штрихкодов через запятую если их больше одного на offer_id).
-- [ ] Новая функция `db.py::collect_and_save_barcodes(marketplace: str, stock_items: list[dict]) -> None`:
+- [x] Новая функция `db.py::collect_and_save_barcodes(marketplace: str, stock_items: list[dict]) -> None`:
       группирует `barcode` по `product_id` из уже полученного списка остатков,
       для каждого product_id делает `UPDATE product_mapping SET wb_barcodes =
       (SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(wb_barcodes, '{}') ||
@@ -73,9 +73,26 @@
       (первый синк, `auto_populate_product_mapping` ещё не создал строку) —
       `UPDATE` просто не находит строк, штрихкод подхватится на следующем
       синке — не критично, не нужно городить сложную синхронизацию порядка.
-- [ ] Вызвать `collect_and_save_barcodes` из `agents/max.py::sync_marketplace_data`
+- [x] Вызвать `collect_and_save_barcodes` из `agents/max.py::sync_marketplace_data`
       (max.py:1437) сразу после цикла `upsert_stock` для каждой площадки —
       данные уже есть в памяти (`stocks`), новый DB-запрос не нужен.
+
+Готово: `db.py:504` (ALTER), `db.py:2367` (`collect_and_save_barcodes`),
+`tools/marketplace.py:258` (WB barcode), `tools/marketplace.py:1748-1791`
+(`_get_sku_to_offer_id` теперь возвращает `{offer_id, barcodes}` — проверено,
+вызывается только из `get_stocks`, второго вызывающего нет), `agents/max.py:1518-1524`.
+
+⚠️ Основной вариант поля штрихкода в реальном ответе Ozon НЕ подтверждён —
+код пробует `barcodes` (массив) первым, `barcode` (строка) вторым, добавлен
+`logger.info` с ключами первой строки ответа для проверки на живых данных
+после первого реального синка Ozon-магазина.
+
+Побочный фикс субагента (не баг этой фичи, но найден по пути): `stocks`
+объявлялась только внутри `try` в `sync_marketplace_data` — при ошибке
+`get_stocks()` на первой итерации цикла по магазинам это `UnboundLocalError`,
+а на второй и далее итерациях — использование `stocks` от ПРЕДЫДУЩЕГО
+магазина (Python не создаёт новую область видимости на итерацию цикла).
+Добавлено `stocks: list[dict] = []` перед `try`.
 
 ## Фаза 2 — Общий merge-примитив + список "не сливать снова"
 

@@ -502,6 +502,11 @@ async def _create_schema() -> None:
             ADD COLUMN IF NOT EXISTS recommended_price_ozon NUMERIC(10,2)
         """)
         await conn.execute("""
+            ALTER TABLE product_mapping
+            ADD COLUMN IF NOT EXISTS wb_barcodes   TEXT[],
+            ADD COLUMN IF NOT EXISTS ozon_barcodes TEXT[]
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS competitor_snapshots (
                 id            SERIAL PRIMARY KEY,
                 keyword       TEXT          NOT NULL,
@@ -2357,6 +2362,54 @@ async def _auto_populate_side(
             )
 
     return created, merged
+
+
+async def collect_and_save_barcodes(marketplace: str, stock_items: list[dict]) -> None:
+    """Группирует barcode по product_id из уже полученного списка остатков
+    (WBClient.get_stocks/OzonClient.get_stocks) и аппендит (не перезаписывает)
+    в product_mapping.wb_barcodes/ozon_barcodes. Штрихкоды копятся между
+    синками — размерные варианты одного wb_article могут иметь разные
+    штрихкоды, все они нужны для матчинга по пересечению множеств.
+
+    Если товара с таким product_id ещё нет в product_mapping (первый синк,
+    auto_populate_product_mapping ещё не создал строку) — UPDATE просто не
+    находит строк, это ожидаемое поведение, штрихкод подхватится на
+    следующем синке."""
+    by_product: dict[str, set[str]] = {}
+    for item in stock_items:
+        pid = (item.get("product_id") or "").strip()
+        bc = (item.get("barcode") or "").strip()
+        if not pid or not bc:
+            continue
+        by_product.setdefault(pid, set()).update(
+            b.strip() for b in bc.split(",") if b.strip()
+        )
+    if not by_product:
+        return
+
+    if marketplace == "wb":
+        id_col, barcode_col = "wb_article", "wb_barcodes"
+    else:
+        id_col, barcode_col = "ozon_offer_id", "ozon_barcodes"
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        for pid, barcodes in by_product.items():
+            try:
+                await conn.execute(
+                    f"""
+                    UPDATE product_mapping
+                       SET {barcode_col} = (
+                           SELECT ARRAY(SELECT DISTINCT unnest(COALESCE({barcode_col}, '{{}}') || $2::text[]))
+                       )
+                     WHERE {id_col} = $1
+                    """,
+                    pid, list(barcodes),
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[collect_and_save_barcodes] ошибка на товаре {id_col}={pid}: {e}"
+                )
 
 
 async def auto_populate_product_mapping(chat_id: int) -> dict:
