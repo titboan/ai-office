@@ -1,0 +1,166 @@
+# Один товар — разные артикулы на WB и Ozon: верные выдачи по аналитике
+
+Статус: в работе
+
+## Проблема
+
+`db.auto_populate_product_mapping` (см. `plans/2026-07-14-guided-onboarding-analytics.md`)
+намеренно заводит WB и Ozon версии товара ОТДЕЛЬНЫМИ строками в `product_mapping`,
+если их `display_name` не совпадает текстом — потому что у реального продавца
+может быть `wb_article="БК50гр"` и `ozon_offer_id="КБ50"` для одного и того же
+физического товара, и сопоставлять их по названию ненадёжно (риск склеить
+себестоимость разных товаров). В итоге для такого товара:
+- себестоимость приходится задавать дважды, в двух разных карточках каталога
+- ABC-анализ, дашборд, отчёты Питера показывают ДВЕ строки вместо одной
+  реальной позиции — искажают картину (два "средних" товара вместо одного топового)
+
+Нужен способ сопоставлять такие пары надёжно — без риска ложного слияния (это
+испортит себестоимость/маржу), но и без необходимости помнить руками, что
+"КБ50 (WB)" и "КБ50 (Ozon)" — один и тот же товар.
+
+## Решение (согласовано с пользователем)
+
+1. **Штрихкод (barcode) как физический идентификатор.** Один и тот же товар
+   почти всегда имеет одинаковый штрихкод на обеих площадках (требование
+   самих МП при создании карточки) — надёжнее сравнения текста названий.
+   Источники **без новых API-интеграций** (уточнено при разборе кода — обе
+   ссылки уже вызываются в обычном синке):
+   - WB: `/api/v1/supplier/stocks` (Statistics-токен, `WBClient.get_stocks`,
+     вызывается в каждом `/sync`) — отдаёт `barcode` в каждой строке остатка,
+     сейчас не парсится. НЕ через Content API `get_nm_ids` — тот требует
+     отдельную категорию токена "Контент", которую текущий онбординг не
+     запрашивает, штрихкод там был бы недоступен большинству пользователей.
+   - Ozon: `/v3/product/info/list` (`OzonClient._get_sku_to_offer_id`,
+     вызывается внутри `get_stocks`) — отдаёт `barcodes` (нужно проверить
+     точное имя поля на живом ответе, задокументировать в коде), сейчас не
+     парсится.
+2. **Не сливать втихую.** Кандидат на слияние (совпал штрихкод) — не
+   авто-мёрдж, а вопрос пользователю с кнопками Да/Нет. Ошибка слияния бьёт
+   по себестоимости/марже — риск выше, чем неудобство лишнего вопроса.
+3. **Ручной инструмент-fallback.** Для товаров без штрихкода (не все
+   продавцы его аккуратно заполняют) — отдельная команда/визард "объединить
+   два товара из каталога вручную".
+
+## Фаза 1 — Штрихкоды: схема + сбор (без новых API-вызовов)
+
+Файлы: `db.py`, `tools/marketplace.py`, `agents/max.py`.
+
+- [ ] `ALTER TABLE product_mapping ADD COLUMN IF NOT EXISTS wb_barcodes TEXT[], ADD COLUMN IF NOT EXISTS ozon_barcodes TEXT[]`
+      (массив — у WB один `wb_article` может иметь несколько штрихкодов на
+      разные размеры/цвета одной карточки; матчинг потом идёт по пересечению
+      множеств, не по одному значению).
+- [ ] `WBClient.get_stocks()` (`tools/marketplace.py:221`) — добавить в каждый
+      элемент `results` поле `"barcode": item.get("barcode", "")` (сырой
+      штрихкод из ответа `/api/v1/supplier/stocks`, пустая строка если нет).
+- [ ] `OzonClient._get_sku_to_offer_id` (`tools/marketplace.py:1747`) —
+      расширить (или добавить соседнюю функцию, если исходную используют ещё
+      где-то — проверить перед правкой), чтобы дополнительно вытаскивать
+      штрихкод(ы) из ответа `/v3/product/info/list`. Поле в реальном ответе
+      Ozon может называться `barcode` (строка) или `barcodes` (массив) —
+      обработать defensively оба варианта, залогировать пример строки как
+      уже делает `get_stocks` (`logger.info(f"[Ozon.get_stocks] пример
+      строки (ключи): ...")`) для последующей проверки на живых данных.
+      Прокинуть штрихкод(ы) в `OzonClient.get_stocks()` — поле `"barcode"`
+      в каждом элементе `results` (аналогично WB, можно объединить несколько
+      штрихкодов через запятую если их больше одного на offer_id).
+- [ ] Новая функция `db.py::collect_and_save_barcodes(marketplace: str, stock_items: list[dict]) -> None`:
+      группирует `barcode` по `product_id` из уже полученного списка остатков,
+      для каждого product_id делает `UPDATE product_mapping SET wb_barcodes =
+      (SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(wb_barcodes, '{}') ||
+      $2::text[]))) WHERE wb_article = $1` (аппенд-дедуп, не перезапись —
+      штрихкоды копятся, не пропадают между синками). Симметрично для Ozon
+      (`ozon_offer_id`/`ozon_barcodes`). Если товара ещё нет в `product_mapping`
+      (первый синк, `auto_populate_product_mapping` ещё не создал строку) —
+      `UPDATE` просто не находит строк, штрихкод подхватится на следующем
+      синке — не критично, не нужно городить сложную синхронизацию порядка.
+- [ ] Вызвать `collect_and_save_barcodes` из `agents/max.py::sync_marketplace_data`
+      (max.py:1437) сразу после цикла `upsert_stock` для каждой площадки —
+      данные уже есть в памяти (`stocks`), новый DB-запрос не нужен.
+
+## Фаза 2 — Общий merge-примитив + список "не сливать снова"
+
+Файл: `db.py`.
+
+- [ ] Новая таблица `product_merge_dismissed (wb_mapping_id BIGINT, ozon_mapping_id BIGINT, dismissed_at TIMESTAMPTZ DEFAULT now(), UNIQUE(wb_mapping_id, ozon_mapping_id))` —
+      запоминает пары, которые пользователь пометил "нет, это разные товары",
+      чтобы не спрашивать снова на каждом синке.
+- [ ] `db.py::merge_product_rows(keep_id: int, remove_id: int) -> None`:
+      единственная связанная FK-таблица — `product_costs.mapping_id`
+      (проверено — `product_adv_stats`/`product_funnel_stats`/
+      `marketplace_financial_report`/`marketplace_stocks`/`marketplace_orders`
+      джойнятся по сырым `wb_article`/`wb_nm_id`/`ozon_offer_id`/`ozon_sku`,
+      НЕ по `mapping_id` — их трогать не нужно). Логика в одной транзакции:
+      1. `COALESCE`-слияние полей (`wb_article`, `wb_nm_id`, `wb_price`,
+         `wb_barcodes` [конкатенация+дедуп массивов], `ozon_offer_id`,
+         `ozon_sku`, `ozon_price`, `ozon_barcodes`, `category`,
+         `recommended_price_wb`, `recommended_price_ozon`) из `remove_id` в
+         `keep_id` — брать значение `keep_id`, если оно не NULL, иначе из
+         `remove_id`.
+      2. `UPDATE product_costs SET mapping_id = $keep_id WHERE mapping_id =
+         $remove_id` (конфликт `UNIQUE(mapping_id, marketplace)` не должен
+         возникать — keep_id/remove_id по построению относятся к разным
+         площадкам, но обернуть в `ON CONFLICT DO NOTHING` на всякий случай).
+      3. `DELETE FROM product_mapping WHERE id = $remove_id`.
+- [ ] `db.py::find_barcode_merge_candidates() -> list[dict]`: джойн
+      `product_mapping a` (wb-товар, `ozon_offer_id IS NULL`,
+      `wb_barcodes` не пусто) с `product_mapping b` (ozon-товар,
+      `wb_article IS NULL`, `ozon_barcodes` не пусто) по `a.wb_barcodes &&
+      b.ozon_barcodes` (пересечение массивов), исключая пары из
+      `product_merge_dismissed`. Возвращает `{wb_id, wb_name, ozon_id,
+      ozon_name, matched_barcode}`.
+
+## Фаза 3 — Проактивное предложение слияния (подтверждение кнопками)
+
+Файл: `agents/max.py`.
+
+- [ ] После шага "заказы/остатки" в `_run_full_sync_with_progress`
+      (там уже вызывается `_auto_populate_products`, штрихкоды к этому
+      моменту сохранены Фазой 1) — вызвать `db.find_barcode_merge_candidates()`.
+      Если есть кандидаты — по каждому отдельное сообщение: «По штрихкоду
+      похоже, что «{wb_name}» (WB) и «{ozon_name}» (Ozon) — один товар.
+      Объединить?» с кнопками Да/Нет (`InlineKeyboardButton`,
+      `callback_data="merge:yes:{wb_id}:{ozon_id}"` / `"merge:no:..."`).
+      Не блокировать этим синк — отправить сообщения и продолжить (сам синк
+      уже фоновая задача с Фазы 4 прошлой фичи, `_run_post_onboarding_flow`).
+- [ ] Тот же вызов имеет смысл и в обычном `/sync` (не только при онбординге) —
+      кандидаты могут появиться позже (штрихкоды дозаполняются по мере
+      синков). Само по себе безопасно вызывать на каждом синке — уже
+      смёрженные и уже отклонённые пары не всплывут снова.
+- [ ] Новый `CallbackQueryHandler(self._handle_merge_callback, pattern=r"^merge:")`
+      в `_register_extra_handlers`. На "Да" → `db.merge_product_rows`,
+      подтверждение с объединённым названием. На "Нет" → запись в
+      `product_merge_dismissed`.
+
+## Фаза 4 — Ручной инструмент «Объединить два товара» (fallback без штрихкода)
+
+Файл: `agents/max.py`.
+
+- [ ] Команда (например `/merge_products`) или кнопка в `/products` —
+      двухшаговый визард по паттерну уже существующих button-driven
+      визардов (`costpick:`, `addcat:`): список WB-only товаров → выбор →
+      список Ozon-only товаров → выбор → подтверждение → `db.merge_product_rows`.
+      Redis-состояние `merge_wizard:{chat_id}`, TTL как у остальных визардов.
+- [ ] `/cancel` — умеет прерывать и этот визард (по аналогии с `cost_wizard`).
+
+## Фаза 5 — Документация
+
+- [ ] `.claude/skills/db-schema/SKILL.md`: описать `wb_barcodes`/`ozon_barcodes`,
+      `product_merge_dismissed`, `merge_product_rows`, `find_barcode_merge_candidates`.
+- [ ] `.claude/skills/max-api/SKILL.md`: раздел про слияние товаров —
+      автоматическое предложение по штрихкоду + ручной fallback.
+
+## Проверка в конце
+
+- [ ] Живой тест на реальных токенах: проверить точное имя поля штрихкода в
+      ответе Ozon `/v3/product/info/list` (barcode vs barcodes) — в песочнице
+      недоступно, разница между заглушкой и реальным полем может тихо
+      обнулить весь Ozon-мэтчинг.
+- [ ] Граничный случай: у товара несколько штрихкодов и они пересекаются
+      ЧАСТИЧНО с другим товаром (например, опечатка в стороннем штрихкоде) —
+      не страшно, т.к. финальное решение всегда за пользователем (кнопка).
+- [ ] Граничный случай: `merge_product_rows` вызван для уже слитой/удалённой
+      строки (двойной клик по кнопке Да) — обернуть в проверку существования
+      строк перед UPDATE/DELETE, не падать.
+- [ ] Грепнуть `parse_mode=`/`reply_text(`/`send_message(` на новых
+      сообщениях — название товара с площадки не экранировано, тот же риск
+      `&`/`<` что чинили в прошлой фиче.
