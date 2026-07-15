@@ -152,6 +152,49 @@ export async function applyBid(
   return res.json()
 }
 
+export interface CostRow {
+  mapping_id: number
+  display_name: string
+  wb_article: string | null
+  ozon_offer_id: string | null
+  cost_wb: number | null
+  purchase_logistics_wb: number | null
+  packaging_marking_wb: number | null
+  cost_ozon: number | null
+  purchase_logistics_ozon: number | null
+  packaging_marking_ozon: number | null
+}
+
+// Себестоимость — чувствительные бизнес-данные, тот же принцип, что и applyPrice:
+// только настоящий Telegram initData, без ?token= (та ссылка read-only для коллег).
+export async function getCosts(): Promise<CostRow[]> {
+  const tg = (window as any).Telegram?.WebApp
+  const res = await fetch(`${API_URL}/api/costs`, {
+    headers: { 'X-Telegram-Init-Data': tg?.initData ?? '' },
+  })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json().then(d => d.costs)
+}
+
+export async function setCost(
+  marketplace: 'wb' | 'ozon', productId: string, purchaseLogistics: number, packagingMarking: number
+): Promise<{ ok: boolean }> {
+  const tg = (window as any).Telegram?.WebApp
+  const res = await fetch(`${API_URL}/api/set_cost`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Telegram-Init-Data': tg?.initData ?? '',
+    },
+    body: JSON.stringify({
+      marketplace, product_id: productId,
+      purchase_logistics: purchaseLogistics, packaging_marking: packagingMarking,
+    }),
+  })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json()
+}
+
 export async function fetchTimeline(): Promise<TimelineData> {
   const urlToken = new URLSearchParams(window.location.search).get('token') ?? ''
   const headers: Record<string, string> = {}

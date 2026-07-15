@@ -574,6 +574,18 @@ async def _create_schema() -> None:
             WHERE mapping_id IS NOT NULL AND marketplace IS NOT NULL
         """)
 
+        # product_costs: статьи расходов (закупка+логистика, упаковка+маркировка) —
+        # Фаза 1, plans/2026-07-15-cost-price-dashboard-editor.md. NULL = итог внесён
+        # вручную одним числом через /cost или мастер, без разбивки на статьи.
+        await conn.execute("""
+            ALTER TABLE product_costs
+            ADD COLUMN IF NOT EXISTS purchase_logistics NUMERIC
+        """)
+        await conn.execute("""
+            ALTER TABLE product_costs
+            ADD COLUMN IF NOT EXISTS packaging_marking NUMERIC
+        """)
+
         # 2. Добавить shop_id в критичные таблицы
         await conn.execute("""
             ALTER TABLE marketplace_stocks
@@ -2590,6 +2602,62 @@ async def set_product_cost(mapping_id: int, marketplace: str, cost: float) -> No
             """,
             mapping_id, marketplace, cost,
         )
+
+
+async def set_product_cost_breakdown(
+    mapping_id: int, marketplace: str, purchase_logistics: float, packaging_marking: float
+) -> None:
+    """Задать себестоимость товара на площадке через две статьи расходов
+    (закупка+логистика, упаковка+маркировка) — дашборд-редактор (Фаза 1,
+    plans/2026-07-15-cost-price-dashboard-editor.md). cost = сумма статей,
+    пишется в ту же колонку product_costs.cost, что и set_product_cost."""
+    pool = await get_pool()
+    cost = purchase_logistics + packaging_marking
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO product_costs
+                (mapping_id, marketplace, cost, purchase_logistics, packaging_marking, updated_at)
+            VALUES ($1, $2, $3, $4, $5, now())
+            ON CONFLICT (mapping_id, marketplace)
+            DO UPDATE SET cost = $3, purchase_logistics = $4, packaging_marking = $5, updated_at = now()
+            """,
+            mapping_id, marketplace, cost, purchase_logistics, packaging_marking,
+        )
+
+
+async def get_product_costs_for_dashboard(chat_id: int) -> list[dict]:
+    """Товары с себестоимостью (и разбивкой по статьям, если есть) для
+    редактируемой таблицы дашборда (Фаза 1,
+    plans/2026-07-15-cost-price-dashboard-editor.md). Одна строка на товар,
+    поля по площадкам плоские: cost_wb/purchase_logistics_wb/packaging_marking_wb,
+    аналогично для ozon.
+
+    ПРИМЕЧАНИЕ: product_mapping нигде в проекте не фильтруется по chat_id
+    (см. Фаза 2 плана) — параметр chat_id пока не используется, оставлен
+    для совместимости на будущее."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT m.id AS mapping_id,
+                   m.display_name,
+                   m.wb_article,
+                   m.ozon_offer_id,
+                   cw.cost AS cost_wb,
+                   cw.purchase_logistics AS purchase_logistics_wb,
+                   cw.packaging_marking AS packaging_marking_wb,
+                   co.cost AS cost_ozon,
+                   co.purchase_logistics AS purchase_logistics_ozon,
+                   co.packaging_marking AS packaging_marking_ozon
+              FROM product_mapping m
+              LEFT JOIN product_costs cw ON cw.mapping_id = m.id AND cw.marketplace = 'wb'
+              LEFT JOIN product_costs co ON co.mapping_id = m.id AND co.marketplace = 'ozon'
+             WHERE m.wb_article IS NOT NULL OR m.ozon_offer_id IS NOT NULL
+             ORDER BY m.display_name
+            """
+        )
+        return [dict(r) for r in rows]
 
 
 async def get_products_without_cost(chat_id: int | None = None) -> list[dict]:
