@@ -981,6 +981,108 @@ async def run_all_async() -> None:
         ok = await max_agent._apply_price(chat_id, mp, product_id, new_price)
         return web.json_response({"ok": ok}, headers=cors)
 
+    async def _handle_get_costs(request: web.Request) -> web.Response:
+        """GET /api/costs — таблица себестоимости (закупка+логистика, упаковка+маркировка) для дашборда.
+
+        Только настоящий Telegram initData, без ?token= — та же логика, что у apply_price/apply_bid.
+        """
+        cors = {"Access-Control-Allow-Origin": _CORS_ORIGIN}
+        if request.method == "OPTIONS":
+            return web.Response(headers={
+                **cors,
+                "Access-Control-Allow-Headers": "X-Telegram-Init-Data",
+                "Access-Control-Allow-Methods": "GET, OPTIONS",
+            })
+        init_data = request.headers.get("X-Telegram-Init-Data", "")
+        parsed = _validate_init_data(init_data, config.MARTA_BOT_TOKEN)
+        if parsed is None:
+            return web.Response(status=401, text="Unauthorized", headers=cors)
+        try:
+            user = _json.loads(parsed.get("user", "{}"))
+            chat_id = int(user["id"])
+        except Exception:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if await _rate_limited(chat_id, "costs", limit=30, window_sec=60):
+            return web.Response(status=429, text="Too Many Requests", headers=cors)
+        try:
+            from db import get_product_costs_for_dashboard
+            rows = await get_product_costs_for_dashboard(chat_id)
+            numeric_fields = (
+                "cost_wb", "purchase_logistics_wb", "packaging_marking_wb",
+                "cost_ozon", "purchase_logistics_ozon", "packaging_marking_ozon",
+            )
+            costs = []
+            for row in rows:
+                item = dict(row)
+                for field in numeric_fields:
+                    val = item.get(field)
+                    item[field] = float(val) if val is not None else None
+                costs.append(item)
+        except Exception as e:
+            logger.error(f"[costs] error: {e}", exc_info=True)
+            return web.Response(status=500, text="Internal Error", headers=cors)
+        return web.json_response({"costs": costs}, headers=cors)
+
+    async def _handle_set_cost(request: web.Request) -> web.Response:
+        """POST /api/set_cost — сохранить разбивку себестоимости (закупка+логистика,
+        упаковка+маркировка) прямо с дашборда.
+
+        Только настоящий Telegram initData, без ?token=. Лок не нужен — upsert одной
+        строки в свою БД идемпотентен, в отличие от apply_price/apply_bid не ходит во
+        внешний API маркетплейса.
+        """
+        cors = {"Access-Control-Allow-Origin": _CORS_ORIGIN}
+        if request.method == "OPTIONS":
+            return web.Response(headers={
+                **cors,
+                "Access-Control-Allow-Headers": "X-Telegram-Init-Data, Content-Type",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+            })
+        init_data = request.headers.get("X-Telegram-Init-Data", "")
+        parsed = _validate_init_data(init_data, config.MARTA_BOT_TOKEN)
+        if parsed is None:
+            return web.Response(status=401, text="Unauthorized", headers=cors)
+        try:
+            user = _json.loads(parsed.get("user", "{}"))
+            chat_id = int(user["id"])
+        except Exception:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if await _rate_limited(chat_id, "set_cost", limit=10, window_sec=60):
+            return web.Response(status=429, text="Too Many Requests", headers=cors)
+        try:
+            body = await request.json()
+            mp = body.get("marketplace")
+            product_id = str(body.get("product_id", "")).strip()
+            purchase_logistics = float(body.get("purchase_logistics"))
+            packaging_marking = float(body.get("packaging_marking"))
+        except Exception:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if mp not in ("wb", "ozon") or not product_id:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if purchase_logistics < 0 or packaging_marking < 0:
+            return web.Response(status=400, text="Bad Request", headers=cors)
+
+        try:
+            from db import get_pool, set_product_cost_breakdown
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                if mp == "wb":
+                    row = await conn.fetchrow(
+                        "SELECT id FROM product_mapping WHERE wb_article = $1", product_id,
+                    )
+                else:
+                    row = await conn.fetchrow(
+                        "SELECT id FROM product_mapping WHERE ozon_offer_id = $1", product_id,
+                    )
+            if not row:
+                return web.Response(status=404, text="Not Found", headers=cors)
+            mapping_id = row["id"]
+            await set_product_cost_breakdown(mapping_id, mp, purchase_logistics, packaging_marking)
+        except Exception as e:
+            logger.error(f"[set_cost] error: {e}", exc_info=True)
+            return web.Response(status=500, text="Internal Error", headers=cors)
+        return web.json_response({"ok": True}, headers=cors)
+
     async def _handle_apply_bid(request: web.Request) -> web.Response:
         """POST /api/apply_bid — применить корректировку рекламной ставки прямо с дашборда.
 
@@ -1043,6 +1145,10 @@ async def run_all_async() -> None:
     dash_app.router.add_route("OPTIONS", "/api/apply_price", _handle_apply_price)
     dash_app.router.add_post("/api/apply_bid", _handle_apply_bid)
     dash_app.router.add_route("OPTIONS", "/api/apply_bid", _handle_apply_bid)
+    dash_app.router.add_get("/api/costs", _handle_get_costs)
+    dash_app.router.add_route("OPTIONS", "/api/costs", _handle_get_costs)
+    dash_app.router.add_post("/api/set_cost", _handle_set_cost)
+    dash_app.router.add_route("OPTIONS", "/api/set_cost", _handle_set_cost)
     dash_app.router.add_get("/health", lambda r: web.Response(text="ok"))
     dash_runner = web.AppRunner(dash_app)
     await dash_runner.setup()
