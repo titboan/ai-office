@@ -255,6 +255,7 @@ class WBClient:
                 "warehouse_name": item.get("warehouseName", ""),
                 "stock":         int(item.get("quantity", 0)),
                 "reserved":      int(item.get("inWayToClient", 0)) + int(item.get("inWayFromClient", 0)),
+                "barcode":       str(item.get("barcode") or "").strip(),
             })
         return results
 
@@ -1744,8 +1745,14 @@ class OzonClient:
         logger.info(f"[Ozon.get_returns_analytics] {len(results)} товаров с возвратами")
         return results
 
-    async def _get_sku_to_offer_id(self, skus: list[int]) -> dict[int, str]:
-        """Получить маппинг SKU → offer_id через /v3/product/info/list."""
+    async def _get_sku_to_offer_id(self, skus: list[int]) -> dict[int, dict]:
+        """Получить маппинг SKU → {offer_id, barcodes} через /v3/product/info/list.
+
+        Имя поля штрихкода в реальном ответе Ozon не подтверждено на живых
+        данных (нет доступа к рабочему API в этой сессии) — обрабатываем
+        defensively оба варианта: "barcodes" (массив) и "barcode" (строка).
+        См. plans/2026-07-14-cross-marketplace-product-merge.md, Фаза 1.
+        """
         import json as _json
         if not skus:
             return {}
@@ -1767,13 +1774,23 @@ class OzonClient:
             logger.error(f"[Ozon.get_stocks] product/info/list exception: {e}")
             return {}
 
-        mapping: dict[int, str] = {}
+        items = data.get("items") or []
+        if items:
+            sample_keys = list(items[0].keys())
+            logger.info(f"[Ozon.product/info/list] пример строки (ключи): {sample_keys}")
+
+        mapping: dict[int, dict] = {}
         # v3 возвращает {"items": [...]} напрямую, без обёртки result
-        for item in (data.get("items") or []):
+        for item in items:
             sku = item.get("sku")
             offer_id = str(item.get("offer_id") or "").strip()
-            if sku and offer_id:
-                mapping[int(sku)] = offer_id
+            if not (sku and offer_id):
+                continue
+            raw_bc = item.get("barcodes") or item.get("barcode") or []
+            if isinstance(raw_bc, str):
+                raw_bc = [raw_bc]
+            barcodes = [str(b).strip() for b in raw_bc if str(b or "").strip()]
+            mapping[int(sku)] = {"offer_id": offer_id, "barcodes": barcodes}
         return mapping
 
     async def get_product_categories(self, offer_ids: list[str]) -> dict[str, str]:
@@ -1875,7 +1892,7 @@ class OzonClient:
             return []
         rows = data.get("result", {}).get("rows", [])
 
-        # Шаг 2: собрать уникальные SKU и получить маппинг → offer_id
+        # Шаг 2: собрать уникальные SKU и получить маппинг → {offer_id, barcodes}
         all_skus = list({int(r["sku"]) for r in rows if r.get("sku")})
         sku_map = await self._get_sku_to_offer_id(all_skus)
         mapped = sum(1 for s in all_skus if s in sku_map)
@@ -1894,7 +1911,9 @@ class OzonClient:
         skipped = 0
         for item in rows:
             sku = item.get("sku")
-            offer_id = sku_map.get(int(sku), "") if sku else ""
+            sku_info = sku_map.get(int(sku), {}) if sku else {}
+            offer_id = sku_info.get("offer_id", "")
+            barcodes_for_this_item = sku_info.get("barcodes", [])
             if not offer_id:
                 # item_code в ответе Ozon — это offer_id продавца
                 offer_id = str(item.get("item_code") or "").strip()
@@ -1913,6 +1932,7 @@ class OzonClient:
                 "stock":         int(item.get("free_to_sell_amount", 0) or item.get("for_sale", 0)),
                 "reserved":      int(item.get("reserved_amount", 0)),
                 "in_transit":    int(item.get("incoming_amount", 0)),
+                "barcode":       ",".join(barcodes_for_this_item) if barcodes_for_this_item else "",
             })
         if skipped:
             logger.warning(f"[Ozon.get_stocks] пропущено записей без offer_id: {skipped}")

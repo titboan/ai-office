@@ -502,6 +502,20 @@ async def _create_schema() -> None:
             ADD COLUMN IF NOT EXISTS recommended_price_ozon NUMERIC(10,2)
         """)
         await conn.execute("""
+            ALTER TABLE product_mapping
+            ADD COLUMN IF NOT EXISTS wb_barcodes   TEXT[],
+            ADD COLUMN IF NOT EXISTS ozon_barcodes TEXT[]
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS product_merge_dismissed (
+                id              BIGSERIAL   PRIMARY KEY,
+                wb_mapping_id   BIGINT      NOT NULL,
+                ozon_mapping_id BIGINT      NOT NULL,
+                dismissed_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE(wb_mapping_id, ozon_mapping_id)
+            )
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS competitor_snapshots (
                 id            SERIAL PRIMARY KEY,
                 keyword       TEXT          NOT NULL,
@@ -2357,6 +2371,173 @@ async def _auto_populate_side(
             )
 
     return created, merged
+
+
+async def collect_and_save_barcodes(marketplace: str, stock_items: list[dict]) -> None:
+    """Группирует barcode по product_id из уже полученного списка остатков
+    (WBClient.get_stocks/OzonClient.get_stocks) и аппендит (не перезаписывает)
+    в product_mapping.wb_barcodes/ozon_barcodes. Штрихкоды копятся между
+    синками — размерные варианты одного wb_article могут иметь разные
+    штрихкоды, все они нужны для матчинга по пересечению множеств.
+
+    Если товара с таким product_id ещё нет в product_mapping (первый синк,
+    auto_populate_product_mapping ещё не создал строку) — UPDATE просто не
+    находит строк, это ожидаемое поведение, штрихкод подхватится на
+    следующем синке."""
+    by_product: dict[str, set[str]] = {}
+    for item in stock_items:
+        pid = (item.get("product_id") or "").strip()
+        bc = (item.get("barcode") or "").strip()
+        if not pid or not bc:
+            continue
+        by_product.setdefault(pid, set()).update(
+            b.strip() for b in bc.split(",") if b.strip()
+        )
+    if not by_product:
+        return
+
+    if marketplace == "wb":
+        id_col, barcode_col = "wb_article", "wb_barcodes"
+    else:
+        id_col, barcode_col = "ozon_offer_id", "ozon_barcodes"
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        for pid, barcodes in by_product.items():
+            try:
+                await conn.execute(
+                    f"""
+                    UPDATE product_mapping
+                       SET {barcode_col} = (
+                           SELECT ARRAY(SELECT DISTINCT unnest(COALESCE({barcode_col}, '{{}}') || $2::text[]))
+                       )
+                     WHERE {id_col} = $1
+                    """,
+                    pid, list(barcodes),
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[collect_and_save_barcodes] ошибка на товаре {id_col}={pid}: {e}"
+                )
+
+
+async def merge_product_rows(keep_id: int, remove_id: int) -> None:
+    """Сливает две строки product_mapping (одна wb-only, другая ozon-only —
+    физически один товар, сопоставлены по совпавшему штрихкоду или вручную)
+    в одну (keep_id), удаляя remove_id. Одна транзакция.
+
+    Скалярные поля — COALESCE-приоритет у keep_id (если у keep_id значение
+    уже задано — remove_id его не перезаписывает). Массивы штрихкодов —
+    конкатенация с дедупом (не COALESCE), т.к. обе строки могут нести
+    непустые массивы одновременно.
+
+    Идемпотентно на случай повторного вызова (двойной клик по кнопке
+    подтверждения) — если keep_id или remove_id уже не существует
+    (удалена предыдущим слиянием), просто логирует и выходит, не падает."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                "SELECT id FROM product_mapping WHERE id = ANY($1::bigint[])",
+                [keep_id, remove_id],
+            )
+            found_ids = {r["id"] for r in rows}
+            if keep_id not in found_ids or remove_id not in found_ids:
+                logger.warning(
+                    f"[merge_product_rows] keep_id={keep_id} или remove_id={remove_id} "
+                    f"не найдены (уже слиты/удалены ранее) — пропуск"
+                )
+                return
+
+            await conn.execute(
+                """
+                UPDATE product_mapping AS keep
+                   SET wb_article  = COALESCE(keep.wb_article,  rem.wb_article),
+                       wb_nm_id    = COALESCE(keep.wb_nm_id,    rem.wb_nm_id),
+                       wb_price    = COALESCE(keep.wb_price,    rem.wb_price),
+                       wb_barcodes = ARRAY(
+                           SELECT DISTINCT unnest(
+                               COALESCE(keep.wb_barcodes, '{}') || COALESCE(rem.wb_barcodes, '{}')
+                           )
+                       ),
+                       ozon_offer_id = COALESCE(keep.ozon_offer_id, rem.ozon_offer_id),
+                       ozon_sku      = COALESCE(keep.ozon_sku,      rem.ozon_sku),
+                       ozon_price    = COALESCE(keep.ozon_price,    rem.ozon_price),
+                       ozon_barcodes = ARRAY(
+                           SELECT DISTINCT unnest(
+                               COALESCE(keep.ozon_barcodes, '{}') || COALESCE(rem.ozon_barcodes, '{}')
+                           )
+                       ),
+                       category = COALESCE(keep.category, rem.category),
+                       recommended_price_wb   = COALESCE(keep.recommended_price_wb,   rem.recommended_price_wb),
+                       recommended_price_ozon = COALESCE(keep.recommended_price_ozon, rem.recommended_price_ozon)
+                  FROM product_mapping AS rem
+                 WHERE keep.id = $1 AND rem.id = $2
+                """,
+                keep_id, remove_id,
+            )
+
+            try:
+                async with conn.transaction():  # savepoint — конфликт тут не должен
+                    # рушить уже выполненный COALESCE-UPDATE и следующий DELETE
+                    await conn.execute(
+                        "UPDATE product_costs SET mapping_id = $1 WHERE mapping_id = $2",
+                        keep_id, remove_id,
+                    )
+            except asyncpg.UniqueViolationError as e:
+                logger.warning(
+                    f"[merge_product_rows] конфликт product_costs при переносе "
+                    f"mapping_id {remove_id} → {keep_id} (обе строки cost уже есть "
+                    f"на одном marketplace?) — пропуск переноса cost: {e}"
+                )
+
+            await conn.execute(
+                "DELETE FROM product_mapping WHERE id = $1", remove_id,
+            )
+            logger.info(f"[merge_product_rows] слито remove_id={remove_id} в keep_id={keep_id}")
+
+
+async def find_barcode_merge_candidates() -> list[dict]:
+    """Ищет пары строк product_mapping (одна wb-only, другая ozon-only) с
+    пересекающимися штрихкодами — кандидаты на объединение (Фаза 3 предлагает
+    их пользователю кнопками Да/Нет). Исключает пары, уже отклонённые через
+    product_merge_dismissed."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT a.id AS wb_id, a.display_name AS wb_name,
+                   b.id AS ozon_id, b.display_name AS ozon_name,
+                   (SELECT x FROM unnest(a.wb_barcodes) AS t(x)
+                     WHERE x = ANY(b.ozon_barcodes) LIMIT 1) AS matched_barcode
+              FROM product_mapping a
+              JOIN product_mapping b
+                ON a.wb_barcodes && b.ozon_barcodes
+             WHERE a.wb_article IS NOT NULL AND a.ozon_offer_id IS NULL
+               AND b.ozon_offer_id IS NOT NULL AND b.wb_article IS NULL
+               AND a.wb_barcodes IS NOT NULL AND array_length(a.wb_barcodes, 1) > 0
+               AND b.ozon_barcodes IS NOT NULL AND array_length(b.ozon_barcodes, 1) > 0
+               AND NOT EXISTS (
+                   SELECT 1 FROM product_merge_dismissed d
+                    WHERE d.wb_mapping_id = a.id AND d.ozon_mapping_id = b.id
+               )
+        """)
+        return [dict(r) for r in rows]
+
+
+async def dismiss_merge_candidate(wb_mapping_id: int, ozon_mapping_id: int) -> None:
+    """Отмечает пару строк product_mapping как отклонённую пользователем
+    («это разные товары») — find_barcode_merge_candidates больше не будет
+    предлагать её повторно."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO product_merge_dismissed (wb_mapping_id, ozon_mapping_id)
+            VALUES ($1, $2)
+            ON CONFLICT (wb_mapping_id, ozon_mapping_id) DO NOTHING
+            """,
+            wb_mapping_id, ozon_mapping_id,
+        )
 
 
 async def auto_populate_product_mapping(chat_id: int) -> dict:

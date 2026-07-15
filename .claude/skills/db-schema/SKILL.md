@@ -61,6 +61,37 @@ product_mapping          -- реестр товаров
   чем две отдельные строки. При коллизии display_name с другим товаром —
   суффикс " (WB)"/" (Ozon)", существующая строка не перезаписывается.
 
+  wb_barcodes/ozon_barcodes  -- TEXT[], штрихкоды товара на каждой площадке
+    Собираются db.collect_and_save_barcodes() из данных, которые уже
+    приходят при каждом /sync (без новых API-вызовов): WB — поле barcode в
+    ответе /api/v1/supplier/stocks (Statistics-токен), Ozon — из
+    /v3/product/info/list (уже вызывается для offer_id-маппинга; точное имя
+    поля barcode vs barcodes не подтверждено на живых данных, код пробует
+    оба варианта — см. logger.info("[Ozon.product/info/list] пример строки
+    (ключи): ...") в tools/marketplace.py). Аппенд-дедуп между синками
+    (массив, не перезапись) — у одного wb_article может быть несколько
+    штрихкодов на размерные варианты.
+    Используются для сопоставления WB/Ozon версий одного физического товара
+    с РАЗНЫМИ артикулами продавца, когда текстовое сравнение display_name
+    не работает (штрихкод на упаковке — надёжный физический идентификатор).
+    См. plans/2026-07-14-cross-marketplace-product-merge.md.
+
+product_merge_dismissed  -- пары строк product_mapping, отклонённые
+  пользователем ("это разные товары", не сливать). wb_mapping_id,
+  ozon_mapping_id, UNIQUE(wb_mapping_id, ozon_mapping_id).
+  db.find_barcode_merge_candidates() их исключает — не предлагает повторно.
+
+db.merge_product_rows(keep_id, remove_id)  -- атомарно сливает две строки
+  product_mapping в одну. Единственная связанная FK-таблица —
+  product_costs.mapping_id (перепривязывается); product_adv_stats/
+  product_funnel_stats/marketplace_financial_report/marketplace_stocks/
+  marketplace_orders джойнятся по сырым wb_article/wb_nm_id/ozon_offer_id/
+  ozon_sku, не по mapping_id — трогать их не нужно, join сам заработает,
+  как только объединённая строка понесёт оба идентификатора. Скалярные поля
+  — COALESCE-приоритет у keep_id (одним атомарным UPDATE...FROM, не
+  Python-сборкой). Идемпотентна — повторный вызов на уже удалённой строке
+  не падает, просто логирует и выходит.
+
 product_costs            -- себестоимость
   mapping_id → cost (₽), updated_at, marketplace ('wb'/'ozon')
   ключ на product_mapping.id, НЕ на артикул МП
