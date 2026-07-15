@@ -98,10 +98,10 @@
 
 Файл: `db.py`.
 
-- [ ] Новая таблица `product_merge_dismissed (wb_mapping_id BIGINT, ozon_mapping_id BIGINT, dismissed_at TIMESTAMPTZ DEFAULT now(), UNIQUE(wb_mapping_id, ozon_mapping_id))` —
+- [x] Новая таблица `product_merge_dismissed (wb_mapping_id BIGINT, ozon_mapping_id BIGINT, dismissed_at TIMESTAMPTZ DEFAULT now(), UNIQUE(wb_mapping_id, ozon_mapping_id))` —
       запоминает пары, которые пользователь пометил "нет, это разные товары",
       чтобы не спрашивать снова на каждом синке.
-- [ ] `db.py::merge_product_rows(keep_id: int, remove_id: int) -> None`:
+- [x] `db.py::merge_product_rows(keep_id: int, remove_id: int) -> None`:
       единственная связанная FK-таблица — `product_costs.mapping_id`
       (проверено — `product_adv_stats`/`product_funnel_stats`/
       `marketplace_financial_report`/`marketplace_stocks`/`marketplace_orders`
@@ -118,13 +118,31 @@
          возникать — keep_id/remove_id по построению относятся к разным
          площадкам, но обернуть в `ON CONFLICT DO NOTHING` на всякий случай).
       3. `DELETE FROM product_mapping WHERE id = $remove_id`.
-- [ ] `db.py::find_barcode_merge_candidates() -> list[dict]`: джойн
+- [x] `db.py::find_barcode_merge_candidates() -> list[dict]`: джойн
       `product_mapping a` (wb-товар, `ozon_offer_id IS NULL`,
       `wb_barcodes` не пусто) с `product_mapping b` (ozon-товар,
       `wb_article IS NULL`, `ozon_barcodes` не пусто) по `a.wb_barcodes &&
       b.ozon_barcodes` (пересечение массивов), исключая пары из
       `product_merge_dismissed`. Возвращает `{wb_id, wb_name, ozon_id,
       ozon_name, matched_barcode}`.
+
+Готово: `product_merge_dismissed` (db.py:509), `merge_product_rows`
+(db.py:2424), `find_barcode_merge_candidates` (db.py:2498). COALESCE-слияние
+скалярных полей — одним атомарным SQL `UPDATE ... FROM product_mapping AS rem`
+(self-join на вторую строку внутри той же транзакции), не Python-сборкой —
+исключает гонки между чтением и записью.
+
+⚠️ Критичный фикс оркестратора после ревью: `except asyncpg.UniqueViolationError`
+вокруг `UPDATE product_costs` был БЕЗ вложенного `async with conn.transaction()`
+(savepoint). В Postgres/asyncpg ошибка одного `execute` внутри транзакции
+переводит её в aborted-состояние — простого `try/except` в Python
+недостаточно, чтобы транзакция могла продолжиться: следующий `DELETE FROM
+product_mapping` упал бы с "current transaction is aborted", и весь мерж
+(включая уже выполненный COALESCE-UPDATE) откатился бы целиком, а исключение
+улетело бы наружу необработанным — комментарий кода утверждал обратное. Та
+же категория бага, что уже правильно чинили в `_auto_populate_side`
+(guided-onboarding фича) — там вложенный savepoint был, здесь его забыли.
+Обернул `UPDATE product_costs` в `async with conn.transaction():`.
 
 ## Фаза 3 — Проактивное предложение слияния (подтверждение кнопками)
 
