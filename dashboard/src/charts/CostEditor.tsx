@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { ChangeEvent, KeyboardEvent, useEffect, useRef, useState } from 'react'
 import { CostRow, getCosts, setCost } from '../api'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
@@ -20,11 +20,85 @@ function sumLabel(a: string, b: string): string {
 const CARD_TITLE = 'Себестоимость'
 const CARD_SUBTITLE = 'Закупка+логистика и упаковка+маркировка по каждой площадке · Итого = сумма статей'
 
+const tableInputClass =
+  'w-16 text-right bg-transparent border-b border-dashed border-gray-300 dark:border-gray-600 focus:outline-none focus:border-purple-500'
+const cardInputClass =
+  'w-full text-base bg-transparent border-b border-dashed border-gray-300 dark:border-gray-600 focus:outline-none focus:border-purple-500 py-1'
+
+type CostFieldsProps = {
+  field: Field | undefined
+  keyName: string
+  marketplace: 'wb' | 'ozon'
+  productId: string
+  save: (key: string, marketplace: 'wb' | 'ozon', productId: string) => void
+  updateField: (key: string, part: Partial<Field>) => void
+  status: RowStatus | undefined
+  compact: boolean
+}
+
+// Рендер пары полей (закупка+логистика, упаковка+маркировка) + итого для одной площадки.
+// compact=true — три <td> для десктопной таблицы, compact=false — подписанные поля для карточки.
+function CostFields({ field, keyName, marketplace, productId, save, updateField, status, compact }: CostFieldsProps) {
+  const commonProps = (part: keyof Field) => ({
+    type: 'number' as const,
+    min: '0',
+    value: field?.[part] ?? '',
+    onChange: (e: ChangeEvent<HTMLInputElement>) => updateField(keyName, { [part]: e.target.value }),
+    onBlur: () => save(keyName, marketplace, productId),
+    onKeyDown: (e: KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter') e.currentTarget.blur() },
+  })
+
+  const totalNode = (
+    <>
+      {sumLabel(field?.purchaseLogistics ?? '', field?.packagingMarking ?? '')}
+      {status === 'applied' && <span className="text-green-600 ml-1">✓</span>}
+      {status === 'error' && (
+        <span className="text-red-500 ml-1" title="Не удалось сохранить, попробуй ещё раз">⚠</span>
+      )}
+    </>
+  )
+
+  if (compact) {
+    return (
+      <>
+        <td className="text-right py-1.5">
+          <input className={tableInputClass} {...commonProps('purchaseLogistics')} />
+        </td>
+        <td className="text-right py-1.5">
+          <input className={tableInputClass} {...commonProps('packagingMarking')} />
+        </td>
+        <td className="text-right py-1.5 font-medium">{totalNode}</td>
+      </>
+    )
+  }
+
+  return (
+    <div>
+      <label className="text-xs text-gray-500 dark:text-gray-400">Закупка+логистика</label>
+      <input className={cardInputClass} {...commonProps('purchaseLogistics')} />
+      <label className="text-xs text-gray-500 dark:text-gray-400 mt-2 block">Упаковка+маркировка</label>
+      <input className={cardInputClass} {...commonProps('packagingMarking')} />
+      <div className="text-sm font-medium mt-2">Итого: {totalNode}</div>
+    </div>
+  )
+}
+
 export default function CostEditor() {
   const [rows, setRows] = useState<CostRow[] | null>(null)
   const [loadError, setLoadError] = useState(false)
   const [fields, setFields] = useState<Record<string, Field>>({})
   const [status, setStatus] = useState<Record<string, RowStatus>>({})
+  const statusTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+
+  // Мобильная клавиатура (Telegram Mini App) не закрывается сама при скролле —
+  // снимаем фокус вручную, это триггерит существующий onBlur/save.
+  useEffect(() => {
+    const handleScroll = () => {
+      (document.activeElement as HTMLElement)?.blur()
+    }
+    window.addEventListener('scroll', handleScroll, { capture: true, passive: true })
+    return () => window.removeEventListener('scroll', handleScroll, true)
+  }, [])
 
   useEffect(() => {
     getCosts()
@@ -64,13 +138,26 @@ export default function CostEditor() {
     try {
       const res = await setCost(marketplace, productId, pl, pm)
       setStatus(s => ({ ...s, [key]: res.ok ? 'applied' : 'error' }))
+      scheduleStatusClear(key, res.ok)
     } catch {
       setStatus(s => ({ ...s, [key]: 'error' }))
+      scheduleStatusClear(key, false)
     }
   }
 
-  const inputClass =
-    'w-16 text-right bg-transparent border-b border-dashed border-gray-300 dark:border-gray-600 focus:outline-none focus:border-purple-500'
+  // 'applied' исчезает через ~2с, чтобы не залипал навсегда; 'error' остаётся до следующей попытки.
+  const scheduleStatusClear = (key: string, applied: boolean) => {
+    if (statusTimers.current[key]) clearTimeout(statusTimers.current[key])
+    if (!applied) return
+    statusTimers.current[key] = setTimeout(() => {
+      setStatus(s => {
+        if (s[key] !== 'applied') return s
+        const next = { ...s }
+        delete next[key]
+        return next
+      })
+    }, 2000)
+  }
 
   if (rows === null) {
     return (
@@ -90,7 +177,7 @@ export default function CostEditor() {
 
   return (
     <Card title={CARD_TITLE} subtitle={CARD_SUBTITLE}>
-      <div className="overflow-x-auto">
+      <div className="hidden sm:block overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
             <tr className="text-gray-400 dark:text-gray-500 border-b dark:border-gray-700">
@@ -107,37 +194,14 @@ export default function CostEditor() {
             {rows.map(r => {
               const keyWb = `${r.mapping_id}-wb`
               const keyOzon = `${r.mapping_id}-ozon`
-              const fWb = fields[keyWb]
-              const fOzon = fields[keyOzon]
               return (
                 <tr key={r.mapping_id} className="border-b border-gray-100 dark:border-gray-700">
                   <td className="py-1.5 pr-2 font-medium">{r.display_name}</td>
                   {r.wb_article ? (
-                    <>
-                      <td className="text-right py-1.5">
-                        <input
-                          type="number" min="0" className={inputClass}
-                          value={fWb?.purchaseLogistics ?? ''}
-                          onChange={e => updateField(keyWb, { purchaseLogistics: e.target.value })}
-                          onBlur={() => save(keyWb, 'wb', r.wb_article!)}
-                        />
-                      </td>
-                      <td className="text-right py-1.5">
-                        <input
-                          type="number" min="0" className={inputClass}
-                          value={fWb?.packagingMarking ?? ''}
-                          onChange={e => updateField(keyWb, { packagingMarking: e.target.value })}
-                          onBlur={() => save(keyWb, 'wb', r.wb_article!)}
-                        />
-                      </td>
-                      <td className="text-right py-1.5 font-medium">
-                        {sumLabel(fWb?.purchaseLogistics ?? '', fWb?.packagingMarking ?? '')}
-                        {status[keyWb] === 'applied' && <span className="text-green-600 ml-1">✓</span>}
-                        {status[keyWb] === 'error' && (
-                          <span className="text-red-500 ml-1" title="Не удалось сохранить, попробуй ещё раз">⚠</span>
-                        )}
-                      </td>
-                    </>
+                    <CostFields
+                      field={fields[keyWb]} keyName={keyWb} marketplace="wb" productId={r.wb_article}
+                      save={save} updateField={updateField} status={status[keyWb]} compact
+                    />
                   ) : (
                     <>
                       <td className="text-right py-1.5 text-gray-400 dark:text-gray-500">—</td>
@@ -146,31 +210,10 @@ export default function CostEditor() {
                     </>
                   )}
                   {r.ozon_offer_id ? (
-                    <>
-                      <td className="text-right py-1.5">
-                        <input
-                          type="number" min="0" className={inputClass}
-                          value={fOzon?.purchaseLogistics ?? ''}
-                          onChange={e => updateField(keyOzon, { purchaseLogistics: e.target.value })}
-                          onBlur={() => save(keyOzon, 'ozon', r.ozon_offer_id!)}
-                        />
-                      </td>
-                      <td className="text-right py-1.5">
-                        <input
-                          type="number" min="0" className={inputClass}
-                          value={fOzon?.packagingMarking ?? ''}
-                          onChange={e => updateField(keyOzon, { packagingMarking: e.target.value })}
-                          onBlur={() => save(keyOzon, 'ozon', r.ozon_offer_id!)}
-                        />
-                      </td>
-                      <td className="text-right py-1.5 font-medium">
-                        {sumLabel(fOzon?.purchaseLogistics ?? '', fOzon?.packagingMarking ?? '')}
-                        {status[keyOzon] === 'applied' && <span className="text-green-600 ml-1">✓</span>}
-                        {status[keyOzon] === 'error' && (
-                          <span className="text-red-500 ml-1" title="Не удалось сохранить, попробуй ещё раз">⚠</span>
-                        )}
-                      </td>
-                    </>
+                    <CostFields
+                      field={fields[keyOzon]} keyName={keyOzon} marketplace="ozon" productId={r.ozon_offer_id}
+                      save={save} updateField={updateField} status={status[keyOzon]} compact
+                    />
                   ) : (
                     <>
                       <td className="text-right py-1.5 text-gray-400 dark:text-gray-500">—</td>
@@ -183,6 +226,35 @@ export default function CostEditor() {
             })}
           </tbody>
         </table>
+      </div>
+      <div className="sm:hidden space-y-3">
+        {rows.map(r => {
+          const keyWb = `${r.mapping_id}-wb`
+          const keyOzon = `${r.mapping_id}-ozon`
+          return (
+            <div key={r.mapping_id} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+              <div className="font-medium mb-2">{r.display_name}</div>
+              {r.wb_article && (
+                <div className="mb-3">
+                  <div className="text-xs text-gray-400 uppercase mb-1">WB</div>
+                  <CostFields
+                    field={fields[keyWb]} keyName={keyWb} marketplace="wb" productId={r.wb_article}
+                    save={save} updateField={updateField} status={status[keyWb]} compact={false}
+                  />
+                </div>
+              )}
+              {r.ozon_offer_id && (
+                <div>
+                  <div className="text-xs text-gray-400 uppercase mb-1">Ozon</div>
+                  <CostFields
+                    field={fields[keyOzon]} keyName={keyOzon} marketplace="ozon" productId={r.ozon_offer_id}
+                    save={save} updateField={updateField} status={status[keyOzon]} compact={false}
+                  />
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
     </Card>
   )
