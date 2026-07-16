@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
-import { LayoutDashboard, FileBarChart, Package, Settings, AlertCircle, Sun, Moon } from 'lucide-react'
-import { fetchDashboard, fetchTimeline, DashboardData, TimelineData } from './api'
+import { useEffect, useState, useMemo } from 'react'
+import { LayoutDashboard, FileBarChart, Package, Settings, AlertCircle, Sun, Moon, RefreshCw } from 'lucide-react'
+import { fetchDashboard, fetchTimeline, DashboardData, DayRevenue, TimelineData } from './api'
 import RevenueChart from './charts/RevenueChart'
 import TopProducts from './charts/TopProducts'
 import DrrGauge from './charts/DrrGauge'
@@ -24,10 +24,20 @@ import ProductForm from './charts/ProductForm'
 import MergeProductForm from './charts/MergeProductForm'
 import AddShopForm from './charts/AddShopForm'
 import CardSkeleton from './components/CardSkeleton'
+import AlertBanner from './components/AlertBanner'
 
 type Days = 7 | 14 | 30
 type Theme = 'light' | 'dark'
 type Tab = 'dashboard' | 'reports' | 'catalog' | 'settings'
+type MpFilter = 'all' | 'wb' | 'ozon'
+
+interface KpiCardData {
+  label: string
+  value: string
+  color: string
+  delta?: string | null
+  deltaPositive?: boolean
+}
 
 const TABS: { key: Tab; label: string; icon: typeof LayoutDashboard }[] = [
   { key: 'dashboard', label: 'Дашборд', icon: LayoutDashboard },
@@ -39,8 +49,6 @@ const TABS: { key: Tab; label: string; icon: typeof LayoutDashboard }[] = [
 const THEME_STORAGE_KEY = 'dashboard-theme'
 
 // Порядок: сохранённый вручную выбор → тема Telegram → системная тема браузера.
-// Без сохранённого выбора дашборд вне Telegram (по прямой ссылке) раньше всегда
-// был светлым — теперь учитывает prefers-color-scheme.
 function getInitialTheme(): Theme {
   const saved = localStorage.getItem(THEME_STORAGE_KEY)
   if (saved === 'light' || saved === 'dark') return saved
@@ -56,6 +64,32 @@ function getInitialTab(): Tab {
   return t === 'reports' || t === 'catalog' || t === 'settings' ? t : 'dashboard'
 }
 
+function zeroDayRevenue(rows: DayRevenue[], mp: 'wb' | 'ozon'): DayRevenue[] {
+  return rows.map(r => ({ ...r, wb: mp === 'wb' ? r.wb : 0, ozon: mp === 'ozon' ? r.ozon : 0 }))
+}
+
+function filterDataByMp(data: DashboardData, mp: 'wb' | 'ozon'): DashboardData {
+  return {
+    ...data,
+    revenue: data.revenue.filter(r => r.marketplace === mp),
+    top_products: data.top_products.filter(r => r.marketplace === mp),
+    adv: data.adv.filter(r => r.marketplace === mp),
+    low_stocks: data.low_stocks.filter(r => r.marketplace === mp),
+    trend: data.trend.filter(r => r.marketplace === mp),
+    product_metrics: data.product_metrics.filter(r => r.marketplace === mp),
+    stock_velocity: data.stock_velocity.filter(r => r.marketplace === mp),
+    funnel: (data.funnel ?? []).filter(r => r.marketplace === mp),
+    bid_suggestions: (data.bid_suggestions ?? []).filter(r => r.marketplace === mp),
+    supply_plan: {
+      ...data.supply_plan,
+      products: (data.supply_plan?.products ?? []).filter(r => r.marketplace === mp),
+    },
+    revenue_by_day: zeroDayRevenue(data.revenue_by_day, mp),
+    orders_by_day: zeroDayRevenue(data.orders_by_day ?? [], mp),
+    sales_by_day: zeroDayRevenue(data.sales_by_day ?? [], mp),
+  }
+}
+
 export default function App() {
   const [data, setData] = useState<DashboardData | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -64,6 +98,9 @@ export default function App() {
   const [timeline, setTimeline] = useState<TimelineData | null>(null)
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [tab, setTab] = useState<Tab>(getInitialTab)
+  const [mpFilter, setMpFilter] = useState<MpFilter>('all')
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
 
   useEffect(() => {
     const tg = (window as any).Telegram?.WebApp
@@ -83,24 +120,32 @@ export default function App() {
 
   useEffect(() => {
     fetchTimeline().then(setTimeline).catch(() => {})
-  }, [])
+  }, [refreshKey])
 
   useEffect(() => {
     setLoading(true)
     setError(null)
     fetchDashboard(days)
-      .then(setData)
+      .then(d => { setData(d); setUpdatedAt(new Date()) })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
-  }, [days])
+  }, [days, refreshKey])
 
-  const totalRevenue = data?.revenue.reduce((s, r) => s + r.revenue, 0) ?? 0
-  const totalOrders = data?.revenue.reduce((s, r) => s + r.orders, 0) ?? 0
+  const handleRefresh = () => setRefreshKey(k => k + 1)
+
+  // Фильтрация данных по маркетплейсу (для компонентов, где это применимо)
+  const displayData = useMemo(
+    () => data && mpFilter !== 'all' ? filterDataByMp(data, mpFilter) : data,
+    [data, mpFilter]
+  )
+
+  const totalRevenue = displayData?.revenue.reduce((s, r) => s + r.revenue, 0) ?? 0
+  const totalOrders = displayData?.revenue.reduce((s, r) => s + r.orders, 0) ?? 0
   const avgCheck = totalOrders > 0 ? Math.round(totalRevenue / totalOrders) : 0
-  const totalSpend = data?.adv.reduce((s, r) => s + r.spend, 0) ?? 0
+  const totalSpend = displayData?.adv.reduce((s, r) => s + r.spend, 0) ?? 0
   const drr = totalRevenue > 0 ? (totalSpend / totalRevenue * 100).toFixed(1) : '—'
 
-  const wowTotal = data?.trend.reduce(
+  const wowTotal = displayData?.trend.reduce(
     (acc, r) => ({ cur: acc.cur + r.week_current, prev: acc.prev + r.week_prev }),
     { cur: 0, prev: 0 }
   )
@@ -108,8 +153,14 @@ export default function App() {
     ? ((wowTotal.cur - wowTotal.prev) / wowTotal.prev * 100)
     : null
 
-  const kpiCards = data ? [
-    { label: 'Выручка', value: `${(totalRevenue / 1000).toFixed(0)}к ₽`, color: '' },
+  const kpiCards: KpiCardData[] = displayData ? [
+    {
+      label: 'Выручка',
+      value: `${(totalRevenue / 1000).toFixed(0)}к ₽`,
+      color: '',
+      delta: wowPct !== null ? `${wowPct >= 0 ? '+' : ''}${wowPct.toFixed(1)}%` : null,
+      deltaPositive: wowPct !== null ? wowPct >= 0 : undefined,
+    },
     { label: 'Заказов', value: totalOrders.toLocaleString(), color: '' },
     { label: 'Ср. чек', value: `${(avgCheck / 1000).toFixed(1)}к ₽`, color: '' },
     { label: 'Реклама', value: `${(totalSpend / 1000).toFixed(0)}к ₽`, color: '' },
@@ -125,6 +176,11 @@ export default function App() {
 
   const activeTabInfo = TABS.find(t => t.key === tab) ?? TABS[0]
   const ActiveTabIcon = activeTabInfo.icon
+  const updatedAtStr = updatedAt
+    ? updatedAt.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })
+    : null
+
+  const showFilters = tab === 'dashboard' || tab === 'reports'
 
   return (
     <div
@@ -137,17 +193,14 @@ export default function App() {
           <ActiveTabIcon size={18} /> {activeTabInfo.label}
         </h1>
         <div className="flex gap-1 items-center">
-          {tab === 'dashboard' && ([7, 14, 30] as Days[]).map(d => (
-            <button
-              key={d}
-              onClick={() => setDays(d)}
-              className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
-                days === d ? 'bg-purple-600 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300'
-              }`}
-            >
-              {d}д
-            </button>
-          ))}
+          <button
+            onClick={handleRefresh}
+            disabled={loading}
+            aria-label="Обновить данные"
+            className="p-1.5 rounded bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 disabled:opacity-40"
+          >
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          </button>
           <button
             onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
             aria-label="Переключить тему"
@@ -158,7 +211,39 @@ export default function App() {
         </div>
       </div>
 
-      {/* Таб-бар — переключение разделов мини-аппа */}
+      {/* Фильтры: маркетплейс + период */}
+      {showFilters && (
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex gap-1">
+            {(['all', 'wb', 'ozon'] as MpFilter[]).map(mp => (
+              <button
+                key={mp}
+                onClick={() => setMpFilter(mp)}
+                className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                  mpFilter === mp ? 'bg-purple-600 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+                }`}
+              >
+                {mp === 'all' ? 'Все' : mp === 'wb' ? 'WB' : 'Ozon'}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-1">
+            {([7, 14, 30] as Days[]).map(d => (
+              <button
+                key={d}
+                onClick={() => setDays(d)}
+                className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                  days === d ? 'bg-purple-600 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+                }`}
+              >
+                {d}д
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Таб-бар */}
       <div className="grid grid-cols-4 gap-1">
         {TABS.map(({ key, label, icon: Icon }) => (
           <button
@@ -192,97 +277,77 @@ export default function App() {
         </div>
       )}
 
-      {tab === 'dashboard' && data && !loading && (
+      {tab === 'dashboard' && displayData && !loading && (
         <>
+          {/* Статус / алерты — всегда по сырым данным, не по фильтру МП */}
+          <AlertBanner data={data!} />
+
           {/* KPI cards — 6 штук: 2 строки по 3 на мобильном, 1 строка на десктопе */}
           <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
-            {kpiCards.map(({ label, value, color }) => (
+            {kpiCards.map(({ label, value, color, delta, deltaPositive }) => (
               <div key={label} className="bg-white dark:bg-gray-800 rounded-xl p-3 shadow-sm text-center">
                 <div className="text-xs text-gray-500 dark:text-gray-400">{label}</div>
                 <div className={`text-xl font-bold mt-0.5 tracking-tight ${color || 'text-gray-800 dark:text-gray-100'}`}>{value}</div>
+                {delta && (
+                  <div className={`text-[10px] font-medium mt-0.5 ${deltaPositive ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400'}`}>
+                    {delta}
+                  </div>
+                )}
               </div>
             ))}
           </div>
 
-          {/* На мобильном — один столбец (как раньше); от md — сетка в 2-3 колонки,
-              чтобы широкий экран не растягивал узкую телефонную вёрстку. */}
+          {/* На мобильном — один столбец; от md — сетка в 2-3 колонки */}
           <div className="space-y-3 md:space-y-0 md:grid md:grid-cols-2 lg:grid-cols-3 md:gap-3 md:items-start">
-            {/* WoW тренд по маркетплейсам */}
-            <WowTrend data={data.trend} />
-
-            {/* Выручка по дням (линия заказов + область выкупов) */}
-            <RevenueChart data={data.revenue_by_day} sales={data.sales_by_day ?? []} />
-
-            {/* Топ товаров */}
-            <TopProducts data={data.top_products} />
-
-            {/* ДРР по площадкам */}
-            <DrrGauge adv={data.adv} salesByDay={data.revenue_by_day ?? []} />
-
-            {/* Рентабельность (NET-маржа) */}
-            <MarginChart data={data.net_margin ?? []} />
-
-            {/* NET маржа из реальных выплат */}
-            <NetMarginTable data={data.net_margin ?? []} abcData={data.abc_data ?? []} />
-
-            {/* Предложения по ставкам рекламы (ДРР) */}
-            <BidSuggestions data={data.bid_suggestions ?? []} />
-
-            {/* Воронка конверсии */}
-            <FunnelChart data={data.funnel ?? []} />
-
-            {/* CTR и ROAS по товарам */}
-            <CtrRoas data={data.product_metrics} />
-
-            {/* Возвраты */}
-            <ReturnsTable data={data.returns_top ?? []} />
-
-            {/* Остатки */}
-            <StockTable data={data.stock_velocity} />
-
-            {/* ABC-анализ */}
-            <AbcTable data={data.abc_data ?? []} />
-
-            {/* MoM динамика */}
-            <MomChart data={data.mom_trends ?? []} />
-
-            {/* Таймлайн цепочек агентов */}
+            <WowTrend data={displayData.trend} />
+            <RevenueChart data={displayData.revenue_by_day} sales={displayData.sales_by_day ?? []} />
+            <TopProducts data={displayData.top_products} />
+            <DrrGauge adv={displayData.adv} salesByDay={displayData.revenue_by_day ?? []} />
+            <MarginChart data={displayData.net_margin ?? []} />
+            <NetMarginTable data={displayData.net_margin ?? []} abcData={displayData.abc_data ?? []} />
+            <BidSuggestions data={displayData.bid_suggestions ?? []} />
+            <FunnelChart data={displayData.funnel ?? []} />
+            <CtrRoas data={displayData.product_metrics} />
+            <ReturnsTable data={displayData.returns_top ?? []} />
+            <StockTable data={displayData.stock_velocity} />
+            <AbcTable data={displayData.abc_data ?? []} />
+            <MomChart data={displayData.mom_trends ?? []} />
             {timeline && <ChainTimeline chains={timeline.chains} />}
           </div>
 
           <div className="text-center text-xs text-gray-400 dark:text-gray-500 pb-2">
-            За {data.period_days} дней с {data.date_from}
+            За {displayData.period_days} дней с {displayData.date_from}
+            {updatedAtStr && <> · обновлено в {updatedAtStr}</>}
           </div>
         </>
       )}
 
       {tab === 'reports' && (
         <div className="space-y-3">
-          {/* SEO: позиции ключевых слов WB, приоритет просевшим */}
+          {updatedAtStr && (
+            <div className="text-xs text-gray-400 dark:text-gray-500 px-1">
+              Данные за {days} дней · обновлено в {updatedAtStr}
+            </div>
+          )}
+          {/* SEO: позиции ключевых слов WB */}
           <KwTable data={data?.kw_top ?? []} />
-          {/* Поставки: план по регионам/кластерам, срочность по остаткам */}
-          <SupplyPlan data={data?.supply_plan ?? { products: [], lead_days: 0, safety_days: 0 }} />
+          {/* Поставки: план по регионам/кластерам */}
+          <SupplyPlan data={displayData?.supply_plan ?? { products: [], lead_days: 0, safety_days: 0 }} />
         </div>
       )}
 
       {tab === 'catalog' && (
         <div className="space-y-3">
-          {/* Товары: цены WB/Ozon, привязка артикулов, факт заданной с/с */}
           <ProductsTable data={data?.catalog?.products ?? []} />
-          {/* Рейтинг и штрафы магазина на WB/Ozon */}
           <ShopKpiCard data={data?.catalog?.shop_kpi ?? {}} />
-          {/* Форма вместо /map и текстовой части /add — добавить/обновить товар */}
           <ProductForm />
-          {/* Форма вместо /merge_products (inline-пикер mergewiz:*) */}
           <MergeProductForm data={data?.catalog?.products ?? []} />
         </div>
       )}
 
       {tab === 'settings' && (
         <div className="space-y-3">
-          {/* Себестоимость — редактируемая таблица (замена Excel-юнитки) */}
           <CostEditor />
-          {/* Форма вместо /add_shop — подключение магазина (чувствительный токен) */}
           <AddShopForm />
         </div>
       )}

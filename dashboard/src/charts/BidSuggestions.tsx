@@ -9,7 +9,7 @@ import { useMainButtonAction } from '../hooks/useMainButtonAction'
 
 type Pending = {
   key: string; marketplace: 'wb' | 'ozon'; campaignId: string; shopId: string | null
-  direction: 'up' | 'down'; deltaPct: number
+  direction: 'up' | 'down'; deltaPct: number; name: string
 }
 type RowStatus = 'applied' | 'error'
 
@@ -19,7 +19,7 @@ export default function BidSuggestions({ data }: { data: BidSuggestionRow[] }) {
 
   useMainButtonAction(
     pending,
-    p => `${p.direction === 'down' ? 'Снизить' : 'Поднять'} ставку на ${p.deltaPct}%`,
+    p => `${p.direction === 'down' ? '↓ Снизить' : '↑ Поднять'} "${p.name}" (${p.marketplace.toUpperCase()}) на ${p.deltaPct}%`,
     async p => {
       try {
         const res = await applyBid(p.marketplace, p.campaignId, p.direction, p.deltaPct, p.shopId)
@@ -93,7 +93,7 @@ export default function BidSuggestions({ data }: { data: BidSuggestionRow[] }) {
                   <button
                     onClick={() => setPending({
                       key, marketplace: r.marketplace, campaignId: r.campaign_id, shopId: r.shop_id,
-                      direction: r.direction, deltaPct: r.delta_pct,
+                      direction: r.direction, deltaPct: r.delta_pct, name: r.name,
                     })}
                     className={`ml-auto text-xs font-medium underline decoration-dotted ${
                       selected ? 'text-blue-800 dark:text-blue-300' : 'text-blue-600 dark:text-blue-400'

@@ -15,7 +15,7 @@ export default function MarginChart({ data }: { data: NetMarginRow[] }) {
   if (!combined.length) {
     return (
       <Card title="Рентабельность по товарам (%)" subtitle="NET-маржа: выплата МП − себестоимость − налог, по обеим площадкам">
-        <EmptyState />
+        <EmptyState message="Нет данных — заполни себестоимость в Настройках" />
       </Card>
     )
   }

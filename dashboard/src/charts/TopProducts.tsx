@@ -1,6 +1,7 @@
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 import { ProductRow } from '../api'
 import Card from '../components/Card'
+import EmptyState from '../components/EmptyState'
 import { TOOLTIP_STYLE } from '../theme'
 
 const COLORS = ['#7c3aed', '#2563eb', '#059669', '#d97706', '#dc2626',
@@ -8,6 +9,9 @@ const COLORS = ['#7c3aed', '#2563eb', '#059669', '#d97706', '#dc2626',
 
 export default function TopProducts({ data }: { data: ProductRow[] }) {
   const top10 = [...data].sort((a, b) => b.revenue - a.revenue).slice(0, 10)
+  if (!top10.length) {
+    return <Card title="Топ товаров по выручке"><EmptyState message="Нет продаж за период" /></Card>
+  }
   return (
     <Card title="Топ товаров по выручке">
       <ResponsiveContainer width="100%" height={220}>

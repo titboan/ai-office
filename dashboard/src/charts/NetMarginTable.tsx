@@ -24,7 +24,7 @@ function bestAbcGroupByName(abcData: AbcRow[]): Record<string, 'A' | 'B' | 'C'> 
   return result
 }
 
-type Pending = { key: string; marketplace: 'wb' | 'ozon'; productId: string; price: number }
+type Pending = { key: string; marketplace: 'wb' | 'ozon'; productId: string; price: number; productName: string }
 type RowStatus = 'applied' | 'error'
 
 function MarginCell({ pct, atTarget, recPrice, selectable, selected, applied, failed, onSelect }: {
@@ -71,7 +71,7 @@ export default function NetMarginTable({ data, abcData = [] }: { data: NetMargin
 
   useMainButtonAction(
     pending,
-    p => `Применить цену ${p.marketplace === 'wb' ? 'WB' : 'Ozon'}: ${p.price.toLocaleString()} ₽`,
+    p => `${p.marketplace === 'wb' ? 'WB' : 'Ozon'} "${p.productName}" → ${p.price.toLocaleString()} ₽`,
     async p => {
       try {
         const res = await applyPrice(p.marketplace, p.productId, p.price)
@@ -99,11 +99,11 @@ export default function NetMarginTable({ data, abcData = [] }: { data: NetMargin
           <thead>
             <tr className="text-gray-400 dark:text-gray-500 border-b dark:border-gray-700">
               <th className="text-left pb-2 font-medium">Товар</th>
-              <th className="text-right pb-2 font-medium">WB шт</th>
+              <th className="text-right pb-2 font-medium hidden md:table-cell">WB шт</th>
               <th className="text-right pb-2 font-medium">WB маржа</th>
-              <th className="text-right pb-2 font-medium">Ozon шт</th>
+              <th className="text-right pb-2 font-medium hidden md:table-cell">Ozon шт</th>
               <th className="text-right pb-2 font-medium">Ozon маржа</th>
-              <th className="text-right pb-2 font-medium">Прибыль</th>
+              <th className="text-right pb-2 font-medium hidden md:table-cell">Прибыль</th>
               <th className="text-right pb-2 font-medium">Итого %</th>
             </tr>
           </thead>
@@ -118,8 +118,16 @@ export default function NetMarginTable({ data, abcData = [] }: { data: NetMargin
                       {abcGroupByName[r.product_name] && <AbcBadge group={abcGroupByName[r.product_name]} />}
                       {r.product_name}
                     </span>
+                    {/* На мобильном — кол-во под названием вместо отдельных столбцов */}
+                    {(r.qty_wb > 0 || r.qty_ozon > 0) && (
+                      <div className="md:hidden text-[10px] text-gray-400 dark:text-gray-500 mt-0.5 font-normal">
+                        {r.qty_wb > 0 && `WB: ${r.qty_wb} шт`}
+                        {r.qty_wb > 0 && r.qty_ozon > 0 && ' · '}
+                        {r.qty_ozon > 0 && `Ozon: ${r.qty_ozon} шт`}
+                      </div>
+                    )}
                   </td>
-                  <td className="text-right py-1.5">{r.qty_wb || '—'}</td>
+                  <td className="text-right py-1.5 hidden md:table-cell">{r.qty_wb || '—'}</td>
                   <MarginCell
                     pct={r.qty_wb ? r.net_margin_pct_wb : null}
                     atTarget={r.at_target_wb}
@@ -130,9 +138,10 @@ export default function NetMarginTable({ data, abcData = [] }: { data: NetMargin
                     failed={status[keyWb] === 'error'}
                     onSelect={() => r.wb_article && setPending({
                       key: keyWb, marketplace: 'wb', productId: r.wb_article, price: r.recommended_price_wb!,
+                      productName: r.product_name,
                     })}
                   />
-                  <td className="text-right py-1.5">{r.qty_ozon || '—'}</td>
+                  <td className="text-right py-1.5 hidden md:table-cell">{r.qty_ozon || '—'}</td>
                   <MarginCell
                     pct={r.qty_ozon ? r.net_margin_pct_ozon : null}
                     atTarget={r.at_target_ozon}
@@ -143,11 +152,16 @@ export default function NetMarginTable({ data, abcData = [] }: { data: NetMargin
                     failed={status[keyOzon] === 'error'}
                     onSelect={() => r.ozon_offer_id && setPending({
                       key: keyOzon, marketplace: 'ozon', productId: r.ozon_offer_id, price: r.recommended_price_ozon!,
+                      productName: r.product_name,
                     })}
                   />
-                  <td className="text-right py-1.5 font-medium">{fmt(r.net_profit_total)} ₽</td>
+                  <td className="text-right py-1.5 font-medium hidden md:table-cell">{fmt(r.net_profit_total)} ₽</td>
                   <td className={`text-right py-1.5 font-bold ${marginColor(r.net_margin_pct_total)}`}>
                     {r.net_margin_pct_total !== null ? `${r.net_margin_pct_total}%` : '—'}
+                    {/* Прибыль под % на мобильном */}
+                    <div className="md:hidden text-[10px] font-medium text-gray-500 dark:text-gray-400 mt-0.5">
+                      {fmt(r.net_profit_total)} ₽
+                    </div>
                   </td>
                 </tr>
               )

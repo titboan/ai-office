@@ -16,7 +16,7 @@ function arrow(v: number | null) {
 
 export default function WowTrend({ data }: { data: TrendRow[] }) {
   if (!data.length) {
-    return <Card title="Тренд (неделя к неделе)"><EmptyState /></Card>
+    return <Card title="Тренд (неделя к неделе)"><EmptyState message="Нет данных за прошлую неделю" /></Card>
   }
   return (
     <Card title="Тренд (неделя к неделе)">

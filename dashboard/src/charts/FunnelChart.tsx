@@ -11,7 +11,7 @@ export default function FunnelChart({ data }: { data: FunnelRow[] }) {
   const ozonColor = marketplaceChartColor('ozon', isDark)
 
   if (!data.length) {
-    return <Card title="Воронка конверсии" subtitle="Просмотры → Корзина → Заказ"><EmptyState /></Card>
+    return <Card title="Воронка конверсии" subtitle="Просмотры → Корзина → Заказ"><EmptyState message="Нет данных — запусти синк рекламы у Макса" /></Card>
   }
   const top = data.slice(0, 8)
   return (
