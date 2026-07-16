@@ -88,6 +88,7 @@ export default function CostEditor() {
   const [loadError, setLoadError] = useState(false)
   const [fields, setFields] = useState<Record<string, Field>>({})
   const [status, setStatus] = useState<Record<string, RowStatus>>({})
+  const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const statusTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
 
   // Мобильная клавиатура (Telegram Mini App) не закрывается сама при скролле —
@@ -227,29 +228,57 @@ export default function CostEditor() {
           </tbody>
         </table>
       </div>
-      <div className="sm:hidden space-y-3">
+      <div className="sm:hidden divide-y divide-gray-100 dark:divide-gray-700">
         {rows.map(r => {
           const keyWb = `${r.mapping_id}-wb`
           const keyOzon = `${r.mapping_id}-ozon`
+          const isOpen = expanded.has(r.mapping_id)
+          const toggle = () => setExpanded(s => {
+            const next = new Set(s)
+            if (next.has(r.mapping_id)) next.delete(r.mapping_id)
+            else next.add(r.mapping_id)
+            return next
+          })
+          const wbTotal = sumLabel(fields[keyWb]?.purchaseLogistics ?? '', fields[keyWb]?.packagingMarking ?? '')
+          const ozTotal = sumLabel(fields[keyOzon]?.purchaseLogistics ?? '', fields[keyOzon]?.packagingMarking ?? '')
           return (
-            <div key={r.mapping_id} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
-              <div className="font-medium mb-2">{r.display_name}</div>
-              {r.wb_article && (
-                <div className="mb-3">
-                  <div className="text-xs text-gray-400 uppercase mb-1">WB</div>
-                  <CostFields
-                    field={fields[keyWb]} keyName={keyWb} marketplace="wb" productId={r.wb_article}
-                    save={save} updateField={updateField} status={status[keyWb]} compact={false}
-                  />
-                </div>
-              )}
-              {r.ozon_offer_id && (
-                <div>
-                  <div className="text-xs text-gray-400 uppercase mb-1">Ozon</div>
-                  <CostFields
-                    field={fields[keyOzon]} keyName={keyOzon} marketplace="ozon" productId={r.ozon_offer_id}
-                    save={save} updateField={updateField} status={status[keyOzon]} compact={false}
-                  />
+            <div key={r.mapping_id}>
+              <button
+                type="button"
+                onClick={toggle}
+                className="w-full flex items-center justify-between py-2.5 text-left"
+              >
+                <span className="font-medium text-sm truncate pr-2">{r.display_name}</span>
+                <span className="flex items-center gap-2 shrink-0">
+                  {r.wb_article && (
+                    <span className="text-xs text-gray-500 dark:text-gray-400">WB {wbTotal}</span>
+                  )}
+                  {r.ozon_offer_id && (
+                    <span className="text-xs text-gray-500 dark:text-gray-400">Oz {ozTotal}</span>
+                  )}
+                  <span className="text-gray-400 dark:text-gray-500 text-xs">{isOpen ? '▲' : '▼'}</span>
+                </span>
+              </button>
+              {isOpen && (
+                <div className="pb-3 space-y-3">
+                  {r.wb_article && (
+                    <div>
+                      <div className="text-xs text-gray-400 uppercase mb-1">WB</div>
+                      <CostFields
+                        field={fields[keyWb]} keyName={keyWb} marketplace="wb" productId={r.wb_article}
+                        save={save} updateField={updateField} status={status[keyWb]} compact={false}
+                      />
+                    </div>
+                  )}
+                  {r.ozon_offer_id && (
+                    <div>
+                      <div className="text-xs text-gray-400 uppercase mb-1">Ozon</div>
+                      <CostFields
+                        field={fields[keyOzon]} keyName={keyOzon} marketplace="ozon" productId={r.ozon_offer_id}
+                        save={save} updateField={updateField} status={status[keyOzon]} compact={false}
+                      />
+                    </div>
+                  )}
                 </div>
               )}
             </div>
