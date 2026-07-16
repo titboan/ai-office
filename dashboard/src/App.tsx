@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { LayoutDashboard, FileBarChart, Package, Settings, AlertCircle, Sun, Moon, RefreshCw } from 'lucide-react'
 import { fetchDashboard, fetchTimeline, DashboardData, DayRevenue, TimelineData } from './api'
 import RevenueChart from './charts/RevenueChart'
@@ -24,7 +24,7 @@ import ProductForm from './charts/ProductForm'
 import MergeProductForm from './charts/MergeProductForm'
 import AddShopForm from './charts/AddShopForm'
 import CardSkeleton from './components/CardSkeleton'
-import AlertBanner from './components/AlertBanner'
+import AlertBanner, { collectAlerts } from './components/AlertBanner'
 
 type Days = 7 | 14 | 30
 type Theme = 'light' | 'dark'
@@ -47,6 +47,9 @@ const TABS: { key: Tab; label: string; icon: typeof LayoutDashboard }[] = [
 ]
 
 const THEME_STORAGE_KEY = 'dashboard-theme'
+const CACHE_PREFIX = 'dashboard-v1-'
+const AUTO_REFRESH_MS = 10 * 60 * 1000   // 10 минут
+const VISIBILITY_THROTTLE_MS = 5 * 60 * 1000  // минимум 5 мин между авто-обновлениями
 
 // Порядок: сохранённый вручную выбор → тема Telegram → системная тема браузера.
 function getInitialTheme(): Theme {
@@ -62,6 +65,19 @@ function getInitialTheme(): Theme {
 function getInitialTab(): Tab {
   const t = new URLSearchParams(window.location.search).get('tab')
   return t === 'reports' || t === 'catalog' || t === 'settings' ? t : 'dashboard'
+}
+
+function loadCachedData(days: Days): DashboardData | null {
+  try {
+    const raw = localStorage.getItem(CACHE_PREFIX + days)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+
+function saveCachedData(days: Days, d: DashboardData) {
+  try {
+    localStorage.setItem(CACHE_PREFIX + days, JSON.stringify(d))
+  } catch {}
 }
 
 function zeroDayRevenue(rows: DayRevenue[], mp: 'wb' | 'ozon'): DayRevenue[] {
@@ -94,13 +110,16 @@ export default function App() {
   const [data, setData] = useState<DashboardData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [days, setDays] = useState<Days>(14)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(true)      // true только пока нет никаких данных (нет кеша)
+  const [isFetchingFresh, setIsFetchingFresh] = useState(false)  // фоновое обновление
+  const [isStale, setIsStale] = useState(false)     // показаны кешированные данные
   const [timeline, setTimeline] = useState<TimelineData | null>(null)
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [tab, setTab] = useState<Tab>(getInitialTab)
   const [mpFilter, setMpFilter] = useState<MpFilter>('all')
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
+  const lastRefreshAt = useRef(Date.now())
 
   useEffect(() => {
     const tg = (window as any).Telegram?.WebApp
@@ -118,22 +137,61 @@ export default function App() {
     localStorage.setItem(THEME_STORAGE_KEY, theme)
   }, [theme])
 
+  // Auto-refresh: каждые 10 минут пока открыт, плюс при возврате из фона (через 5+ мин)
+  useEffect(() => {
+    const interval = setInterval(() => setRefreshKey(k => k + 1), AUTO_REFRESH_MS)
+
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return
+      if (Date.now() - lastRefreshAt.current > VISIBILITY_THROTTLE_MS) {
+        setRefreshKey(k => k + 1)
+      }
+    }
+    document.addEventListener('visibilitychange', onVisible)
+
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [])
+
   useEffect(() => {
     fetchTimeline().then(setTimeline).catch(() => {})
   }, [refreshKey])
 
+  // Stale-while-revalidate: сначала показываем кеш (если есть), потом тихо подгружаем свежие данные
   useEffect(() => {
-    setLoading(true)
-    setError(null)
+    lastRefreshAt.current = Date.now()
+
+    const cached = loadCachedData(days)
+    if (cached) {
+      setData(cached)
+      setLoading(false)
+      setIsStale(true)
+      setError(null)
+    } else {
+      setLoading(true)
+      setIsStale(false)
+      setData(null)
+      setError(null)
+    }
+
+    setIsFetchingFresh(true)
     fetchDashboard(days)
-      .then(d => { setData(d); setUpdatedAt(new Date()) })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
+      .then(d => {
+        setData(d)
+        setUpdatedAt(new Date())
+        setIsStale(false)
+        setLoading(false)
+        saveCachedData(days, d)
+      })
+      .catch(e => {
+        if (!cached) setError(e.message)
+        setLoading(false)
+      })
+      .finally(() => setIsFetchingFresh(false))
   }, [days, refreshKey])
 
-  const handleRefresh = () => setRefreshKey(k => k + 1)
-
-  // Фильтрация данных по маркетплейсу (для компонентов, где это применимо)
   const displayData = useMemo(
     () => data && mpFilter !== 'all' ? filterDataByMp(data, mpFilter) : data,
     [data, mpFilter]
@@ -174,12 +232,15 @@ export default function App() {
     },
   ] : []
 
+  // Бейджи на вкладках — считаем по сырым данным, не по фильтру МП
+  const criticalAlertCount = data ? collectAlerts(data).filter(a => a.level === 'critical').length : 0
+  const reportsBadgeCount = data?.kw_top?.filter(r => r.priority).length ?? 0
+
   const activeTabInfo = TABS.find(t => t.key === tab) ?? TABS[0]
   const ActiveTabIcon = activeTabInfo.icon
   const updatedAtStr = updatedAt
     ? updatedAt.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })
     : null
-
   const showFilters = tab === 'dashboard' || tab === 'reports'
 
   return (
@@ -194,12 +255,12 @@ export default function App() {
         </h1>
         <div className="flex gap-1 items-center">
           <button
-            onClick={handleRefresh}
-            disabled={loading}
+            onClick={() => setRefreshKey(k => k + 1)}
+            disabled={isFetchingFresh}
             aria-label="Обновить данные"
             className="p-1.5 rounded bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 disabled:opacity-40"
           >
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+            <RefreshCw size={14} className={isFetchingFresh ? 'animate-spin' : ''} />
           </button>
           <button
             onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
@@ -243,19 +304,32 @@ export default function App() {
         </div>
       )}
 
-      {/* Таб-бар */}
+      {/* Таб-бар с бейджами */}
       <div className="grid grid-cols-4 gap-1">
-        {TABS.map(({ key, label, icon: Icon }) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`flex items-center justify-center gap-1 px-1.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-              tab === key ? 'bg-purple-600 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300'
-            }`}
-          >
-            <Icon size={13} /> <span className="truncate">{label}</span>
-          </button>
-        ))}
+        {TABS.map(({ key, label, icon: Icon }) => {
+          const badge = key === 'dashboard' ? criticalAlertCount : key === 'reports' ? reportsBadgeCount : 0
+          return (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={`flex items-center justify-center gap-1 px-1.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                tab === key ? 'bg-purple-600 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+              }`}
+            >
+              <div className="relative shrink-0">
+                <Icon size={13} />
+                {badge > 0 && (
+                  <span className={`absolute -top-1 -right-1.5 flex items-center justify-center rounded-full bg-red-500 text-white font-bold leading-none ${
+                    badge > 9 ? 'min-w-[14px] h-3.5 text-[8px] px-0.5' : 'w-3 h-3 text-[9px]'
+                  }`}>
+                    {badge > 9 ? '9+' : badge}
+                  </span>
+                )}
+              </div>
+              <span className="truncate">{label}</span>
+            </button>
+          )
+        })}
       </div>
 
       {tab === 'dashboard' && loading && (
@@ -279,10 +353,10 @@ export default function App() {
 
       {tab === 'dashboard' && displayData && !loading && (
         <>
-          {/* Статус / алерты — всегда по сырым данным, не по фильтру МП */}
+          {/* Статус / алерты — по сырым данным, без фильтра МП */}
           <AlertBanner data={data!} />
 
-          {/* KPI cards — 6 штук: 2 строки по 3 на мобильном, 1 строка на десктопе */}
+          {/* KPI cards — 2 строки по 3 на мобильном, 1 строка на десктопе */}
           <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
             {kpiCards.map(({ label, value, color, delta, deltaPositive }) => (
               <div key={label} className="bg-white dark:bg-gray-800 rounded-xl p-3 shadow-sm text-center">
@@ -297,19 +371,20 @@ export default function App() {
             ))}
           </div>
 
-          {/* На мобильном — один столбец; от md — сетка в 2-3 колонки */}
+          {/* Чарты: на мобильном — один столбец; от md — сетка в 2-3 колонки */}
           <div className="space-y-3 md:space-y-0 md:grid md:grid-cols-2 lg:grid-cols-3 md:gap-3 md:items-start">
             <WowTrend data={displayData.trend} />
             <RevenueChart data={displayData.revenue_by_day} sales={displayData.sales_by_day ?? []} />
             <TopProducts data={displayData.top_products} />
-            <DrrGauge adv={displayData.adv} salesByDay={displayData.revenue_by_day ?? []} />
+            {/* id для скролла из AlertBanner */}
+            <div id="section-drr"><DrrGauge adv={displayData.adv} salesByDay={displayData.revenue_by_day ?? []} /></div>
             <MarginChart data={displayData.net_margin ?? []} />
             <NetMarginTable data={displayData.net_margin ?? []} abcData={displayData.abc_data ?? []} />
             <BidSuggestions data={displayData.bid_suggestions ?? []} />
             <FunnelChart data={displayData.funnel ?? []} />
             <CtrRoas data={displayData.product_metrics} />
             <ReturnsTable data={displayData.returns_top ?? []} />
-            <StockTable data={displayData.stock_velocity} />
+            <div id="section-stock"><StockTable data={displayData.stock_velocity} /></div>
             <AbcTable data={displayData.abc_data ?? []} />
             <MomChart data={displayData.mom_trends ?? []} />
             {timeline && <ChainTimeline chains={timeline.chains} />}
@@ -317,21 +392,27 @@ export default function App() {
 
           <div className="text-center text-xs text-gray-400 dark:text-gray-500 pb-2">
             За {displayData.period_days} дней с {displayData.date_from}
-            {updatedAtStr && <> · обновлено в {updatedAtStr}</>}
+            {isStale
+              ? ' · из кеша, обновление...'
+              : updatedAtStr ? ` · обновлено в ${updatedAtStr}` : ''
+            }
           </div>
         </>
       )}
 
-      {tab === 'reports' && (
+      {/* Reports: скелетон если нет данных, иначе контент */}
+      {tab === 'reports' && loading && (
         <div className="space-y-3">
-          {updatedAtStr && (
-            <div className="text-xs text-gray-400 dark:text-gray-500 px-1">
-              Данные за {days} дней · обновлено в {updatedAtStr}
-            </div>
-          )}
-          {/* SEO: позиции ключевых слов WB */}
+          {Array.from({ length: 2 }).map((_, i) => <CardSkeleton key={i} />)}
+        </div>
+      )}
+      {tab === 'reports' && !loading && (
+        <div className="space-y-3">
+          <div className="text-xs text-gray-400 dark:text-gray-500 px-1">
+            Данные за {days} дней
+            {isStale ? ' · из кеша, обновление...' : updatedAtStr ? ` · обновлено в ${updatedAtStr}` : ''}
+          </div>
           <KwTable data={data?.kw_top ?? []} />
-          {/* Поставки: план по регионам/кластерам */}
           <SupplyPlan data={displayData?.supply_plan ?? { products: [], lead_days: 0, safety_days: 0 }} />
         </div>
       )}
