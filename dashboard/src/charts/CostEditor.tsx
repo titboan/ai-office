@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { CostRow, getCosts, setCost } from '../api'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
@@ -25,6 +25,17 @@ export default function CostEditor() {
   const [loadError, setLoadError] = useState(false)
   const [fields, setFields] = useState<Record<string, Field>>({})
   const [status, setStatus] = useState<Record<string, RowStatus>>({})
+  const statusTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+
+  // Мобильная клавиатура (Telegram Mini App) не закрывается сама при скролле —
+  // снимаем фокус вручную, это триггерит существующий onBlur/save.
+  useEffect(() => {
+    const handleScroll = () => {
+      (document.activeElement as HTMLElement)?.blur()
+    }
+    window.addEventListener('scroll', handleScroll, { capture: true, passive: true })
+    return () => window.removeEventListener('scroll', handleScroll, true)
+  }, [])
 
   useEffect(() => {
     getCosts()
@@ -64,9 +75,25 @@ export default function CostEditor() {
     try {
       const res = await setCost(marketplace, productId, pl, pm)
       setStatus(s => ({ ...s, [key]: res.ok ? 'applied' : 'error' }))
+      scheduleStatusClear(key, res.ok)
     } catch {
       setStatus(s => ({ ...s, [key]: 'error' }))
+      scheduleStatusClear(key, false)
     }
+  }
+
+  // 'applied' исчезает через ~2с, чтобы не залипал навсегда; 'error' остаётся до следующей попытки.
+  const scheduleStatusClear = (key: string, applied: boolean) => {
+    if (statusTimers.current[key]) clearTimeout(statusTimers.current[key])
+    if (!applied) return
+    statusTimers.current[key] = setTimeout(() => {
+      setStatus(s => {
+        if (s[key] !== 'applied') return s
+        const next = { ...s }
+        delete next[key]
+        return next
+      })
+    }, 2000)
   }
 
   const inputClass =
@@ -120,6 +147,7 @@ export default function CostEditor() {
                           value={fWb?.purchaseLogistics ?? ''}
                           onChange={e => updateField(keyWb, { purchaseLogistics: e.target.value })}
                           onBlur={() => save(keyWb, 'wb', r.wb_article!)}
+                          onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
                         />
                       </td>
                       <td className="text-right py-1.5">
@@ -128,6 +156,7 @@ export default function CostEditor() {
                           value={fWb?.packagingMarking ?? ''}
                           onChange={e => updateField(keyWb, { packagingMarking: e.target.value })}
                           onBlur={() => save(keyWb, 'wb', r.wb_article!)}
+                          onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
                         />
                       </td>
                       <td className="text-right py-1.5 font-medium">
@@ -153,6 +182,7 @@ export default function CostEditor() {
                           value={fOzon?.purchaseLogistics ?? ''}
                           onChange={e => updateField(keyOzon, { purchaseLogistics: e.target.value })}
                           onBlur={() => save(keyOzon, 'ozon', r.ozon_offer_id!)}
+                          onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
                         />
                       </td>
                       <td className="text-right py-1.5">
@@ -161,6 +191,7 @@ export default function CostEditor() {
                           value={fOzon?.packagingMarking ?? ''}
                           onChange={e => updateField(keyOzon, { packagingMarking: e.target.value })}
                           onBlur={() => save(keyOzon, 'ozon', r.ozon_offer_id!)}
+                          onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
                         />
                       </td>
                       <td className="text-right py-1.5 font-medium">
