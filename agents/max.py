@@ -7152,7 +7152,7 @@ class MaxAgent(BaseAgent):
                 UNION ALL
                 SELECT 'Воронка',       COUNT(*), MAX(stat_date)
                 FROM product_funnel_stats WHERE chat_id = $1
-            """, chat_id, chat_id, chat_id, chat_id, chat_id, chat_id)
+            """, chat_id)
         now = datetime.now(_UTC)
         lines = ["<b>📊 Состояние данных</b>\n"]
         for r in rows:
