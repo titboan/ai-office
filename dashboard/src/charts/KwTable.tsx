@@ -13,7 +13,7 @@ export default function KwTable({ data }: { data: KwRow[] }) {
   if (!data || data.length === 0) {
     return (
       <Card title="Ключевые слова WB">
-        <EmptyState message="Нет данных — запусти /sync_keywords у Макса" />
+        <EmptyState message="Недоступно — WB закрыл API ключевых слов (404), синк не поможет" />
       </Card>
     )
   }

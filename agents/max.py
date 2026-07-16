@@ -7138,7 +7138,7 @@ class MaxAgent(BaseAgent):
                        MAX(created_at) AS last_ts
                 FROM marketplace_orders WHERE chat_id = $1
                 UNION ALL
-                SELECT 'Остатки',       COUNT(*), MAX(created_at)
+                SELECT 'Остатки',       COUNT(*), MAX(updated_at)
                 FROM marketplace_stocks WHERE chat_id = $1
                 UNION ALL
                 SELECT 'Отзывы',        COUNT(*), MAX(created_at)
