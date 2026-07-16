@@ -602,7 +602,7 @@ class PeterAgent(BaseAgent):
                        ON (p.product_id = m.wb_nm_id::text OR p.product_id = m.ozon_sku)
                       AND p.chat_id = $1
                       AND p.stat_date >= (m.infographic_updated_at - INTERVAL '14 days')::date
-                WHERE m.chat_id = $1 AND m.infographic_updated_at IS NOT NULL
+                WHERE m.infographic_updated_at IS NOT NULL
                 GROUP BY m.display_name, m.wb_article, m.infographic_updated_at
                 ORDER BY m.infographic_updated_at DESC
                 LIMIT 10
@@ -1648,8 +1648,7 @@ class PeterAgent(BaseAgent):
         async with pool.acquire() as conn:
             sku_rows = await conn.fetch(
                 "SELECT ozon_sku::text AS sku, ozon_offer_id FROM product_mapping "
-                "WHERE chat_id = $1 AND ozon_sku IS NOT NULL AND ozon_offer_id IS NOT NULL",
-                chat_id,
+                "WHERE ozon_sku IS NOT NULL AND ozon_offer_id IS NOT NULL",
             )
         sku_to_offer: dict[str, str] = {r["sku"]: r["ozon_offer_id"] for r in sku_rows}
 
