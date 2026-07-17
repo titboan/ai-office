@@ -413,8 +413,6 @@ class MaxAgent(BaseAgent):
         if task == "__sync_cards__":
             res = await self.sync_cards(chat_id)
             return f"✅ Карточки: WB {res.get('wb', 0)} зап., Ozon {res.get('ozon', 0)} зап."
-        if task == "__sync_keywords__":
-            return "⚠️ WB закрыл API ключевых слов (404). Позиции недоступны — следи вручную в WB Analytics."
         if task == "__sync_sku__":
             return "🔄 /sync_sku требует мастера настройки — запусти напрямую у Макса."
         if task == "__questions__":
@@ -1794,38 +1792,17 @@ class MaxAgent(BaseAgent):
                             agg["spend"] += ps["spend"]
                             agg["orders_count"] += ps.get("orders_count", 0)
 
-                    # Для кампаний без nm-данных: цепочка fallback:
-                    # 1) GET /api/advert/v2/adverts (новый API, возвращает nm_settings + названия)
-                    # 2) POST /adv/v2/promotion/adverts (старый v2, возможно мёртв)
-                    # 3) ручной маппинг из wb_campaigns (/camp команда)
+                    # Для кампаний без nm-данных: ручной маппинг из wb_campaigns (/camp команда)
                     campaigns_no_nm = [
                         s for s in ad_stats if not s.get("product_stats") and s.get("spend", 0) > 0
                     ]
                     if campaigns_no_nm:
-                        from db import get_wb_campaign_nm_ids, set_wb_campaign_nm_ids
+                        from db import get_wb_campaign_nm_ids
                         camp_ids = [s["campaign_id"] for s in campaigns_no_nm]
-
-                        # Шаг 1: новый API /api/advert/v2/adverts — возвращает nm_settings и название
-                        details = await client.get_campaign_details(camp_ids)
-                        v3_nms = {cid: info["nm_ids"] for cid, info in details.items() if info["nm_ids"]}
-                        # Автоматически сохраняем названия и маппинги из нового API
-                        for cid, info in details.items():
-                            if info["nm_ids"] or info["name"]:
-                                await set_wb_campaign_nm_ids(cid, info["nm_ids"], info["name"])
-
-                        # Шаг 2: старый v2 API для тех, кого новый не вернул
-                        missing_v3 = [cid for cid in camp_ids if cid not in v3_nms]
-                        v2_nms = await client.get_campaign_products_v2(missing_v3) if missing_v3 else {}
-
-                        # Шаг 3: ручной маппинг для оставшихся
-                        missing_all = [cid for cid in camp_ids if cid not in v3_nms and cid not in v2_nms]
-                        manual_nms = await get_wb_campaign_nm_ids(missing_all) if missing_all else {}
-
-                        # Объединяем: новый API > старый v2 > ручной маппинг
-                        nm_source = {**manual_nms, **v2_nms, **v3_nms}
+                        manual_nms = await get_wb_campaign_nm_ids(camp_ids) if camp_ids else {}
 
                         for s in campaigns_no_nm:
-                            nms = nm_source.get(s["campaign_id"]) or []
+                            nms = manual_nms.get(s["campaign_id"]) or []
                             if not nms:
                                 continue
                             n = len(nms)
@@ -1841,10 +1818,9 @@ class MaxAgent(BaseAgent):
                                 agg["views"] += s["views"] // n if n else 0
                                 agg["clicks"] += s["clicks"] // n if n else 0
                                 agg["spend"] += spend_each
-                        src = "новый API" if v3_nms else ("v2 API" if v2_nms else ("ручной маппинг" if manual_nms else "нет"))
                         logger.info(
                             f"[Макс/adv] WB nm fallback: {len(campaigns_no_nm)} кампаний без nm, "
-                            f"источник={src}"
+                            f"из ручного маппинга {len(manual_nms)}"
                         )
 
                     for (product_id, stat_date), agg in wb_product_agg.items():
@@ -2349,37 +2325,15 @@ class MaxAgent(BaseAgent):
             await query.edit_message_text(f"❌ Ошибка: {e}")
 
     async def sync_promotions(self, chat_id: int) -> dict:
-        """Синхронизация акционных кампаний WB + Ozon."""
+        """Синхронизация акционных кампаний Ozon."""
         from db import get_marketplace_shops, upsert_promotion
-        from tools.marketplace import WBClient, OzonClient
+        from tools.marketplace import OzonClient
 
         shops = await get_marketplace_shops(chat_id)
-        counts = {"wb": 0, "ozon": 0}
+        counts = {"ozon": 0}
 
         for shop in shops:
             mp = shop["marketplace"]
-
-            if mp == "wb":
-                try:
-                    client = WBClient(shop["api_token"])
-                    promos = await client.get_promotions()
-                    for p in promos:
-                        if not p.get("promotion_id"):
-                            continue
-                        start = p["start_date"] or None
-                        end   = p["end_date"] or None
-                        await upsert_promotion(
-                            chat_id=chat_id, marketplace="wb",
-                            promotion_id=p["promotion_id"],
-                            title=p["title"],
-                            discount_pct=p["discount_pct"],
-                            start_date=start, end_date=end,
-                            product_ids=p["product_ids"],
-                        )
-                    counts["wb"] = len(promos)
-                    logger.info(f"[Макс/promos] WB: {len(promos)} акций")
-                except Exception as e:
-                    logger.error(f"[Макс/promos] WB: {e}", exc_info=True)
 
             if mp == "ozon":
                 try:
@@ -2560,99 +2514,6 @@ class MaxAgent(BaseAgent):
         except Exception as e:
             logger.error(f"[Макс/sync_cards] {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
-
-    async def cmd_sync_keywords(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/sync_keywords — синхронизация ключевых слов и позиций WB."""
-        await update.message.reply_text(
-            "⚠️ <b>Функция временно недоступна</b>\n\n"
-            "WB закрыл публичный API для ключевых слов (/api/v1/analytics/search-keywords → 404).\n"
-            "Данные о позициях доступны только через дашборд WB Analytics в браузере.\n\n"
-            "Следим за обновлениями документации WB API.",
-            parse_mode="HTML",
-        )
-        return
-
-        # ──────── код ниже сохранён до появления рабочего endpoint ────────
-        chat_id = update.effective_user.id
-        await update.message.reply_text("🔑 Синхронизирую ключевые слова WB…")
-        from db import get_marketplace_shops, upsert_search_keyword, get_pool
-        from tools.marketplace import WBClient
-        from datetime import date as _date, timedelta as _td
-
-        shops = await get_marketplace_shops(chat_id)
-        wb_shops = [s for s in shops if s["marketplace"] == "wb"]
-        if not wb_shops:
-            await update.message.reply_text("⚠️ WB магазин не подключён.")
-            return
-
-        date_to   = _date.today().strftime("%Y-%m-%d")
-        date_from = (_date.today() - _td(days=7)).strftime("%Y-%m-%d")
-        total = 0
-
-        last_status = 0
-        for shop in wb_shops:
-            try:
-                client = WBClient(shop["api_token"])
-                stats_token = shop.get("statistics_token") or ""
-                pool = await get_pool()
-                async with pool.acquire() as conn:
-                    # marketplace_sales хранит nmId как строку — надёжный источник
-                    rows = await conn.fetch(
-                        """SELECT DISTINCT product_id FROM marketplace_sales
-                           WHERE chat_id=$1 AND marketplace='wb'
-                             AND product_id ~ E'^\\\\d+$'
-                           LIMIT 50""",
-                        chat_id,
-                    )
-                nm_ids = [int(r["product_id"]) for r in rows if r["product_id"]]
-                if not nm_ids:
-                    await update.message.reply_text(
-                        "⚠️ Нет данных о продажах WB в базе. Сначала запусти /sync."
-                    )
-                    return
-                keywords, last_status = await client.get_search_keywords(
-                    nm_ids, date_from, date_to, statistics_token=stats_token
-                )
-                for kw in keywords:
-                    await upsert_search_keyword(
-                        chat_id=chat_id, marketplace="wb",
-                        product_id=kw["product_id"],
-                        keyword=kw["keyword"],
-                        position=kw.get("position"),
-                        search_count=kw.get("search_count"),
-                        ctr=kw.get("ctr"),
-                        conv_rate=kw.get("conv_rate"),
-                        stat_date=kw.get("stat_date") or date_to,
-                    )
-                total += len(keywords)
-                logger.info(f"[Макс/sync_keywords] WB: {len(keywords)} ключей для {len(nm_ids)} товаров")
-            except Exception as e:
-                logger.error(f"[Макс/sync_keywords] WB: {e}", exc_info=True)
-                await update.message.reply_text(f"❌ Ошибка: {e}")
-                return
-
-        if total == 0:
-            if last_status in (401, 403):
-                hint = (
-                    "⚠️ WB вернул 403 — нет доступа к Analytics API.\n\n"
-                    "В ЛК WB создай токен с категорией <b>Аналитика</b> "
-                    "и добавь его через /start → «Подключить магазин» (поле Statistics token)."
-                )
-            elif last_status == 404:
-                hint = "⚠️ WB Analytics API недоступен (404). Попробуй позже."
-            elif last_status == 0:
-                hint = "⚠️ Не удалось подключиться к WB Analytics API (timeout или сеть)."
-            else:
-                hint = (
-                    f"⚠️ Ключевые слова не получены (HTTP {last_status}).\n"
-                    "Возможно, нет данных за выбранный период."
-                )
-            await update.message.reply_text(hint, parse_mode="HTML")
-        else:
-            await update.message.reply_text(
-                f"✅ Ключевые слова синхронизированы: {total} записей\n"
-                f"Период: {date_from} — {date_to}"
-            )
 
     async def _check_seo_drops(self, chat_id: int) -> list[dict]:
         """Сравнить две последних даты в product_search_keywords, вернуть дропы позиций."""
@@ -2915,9 +2776,9 @@ class MaxAgent(BaseAgent):
             await update.message.reply_text("\n".join(lines))
 
     async def sync_shop_kpi(self, chat_id: int) -> dict:
-        """Снимок рейтинга и KPI продавца WB + Ozon."""
+        """Снимок рейтинга и KPI продавца Ozon."""
         from db import get_marketplace_shops, upsert_shop_kpi
-        from tools.marketplace import WBClient, OzonClient
+        from tools.marketplace import OzonClient
         from datetime import date as _date
 
         shops = await get_marketplace_shops(chat_id)
@@ -2926,30 +2787,6 @@ class MaxAgent(BaseAgent):
 
         for shop in shops:
             mp = shop["marketplace"]
-
-            if mp == "wb":
-                try:
-                    client = WBClient(shop["api_token"])
-                    kpi = await client.get_shop_kpi()
-                    if kpi:
-                        await upsert_shop_kpi(
-                            chat_id=chat_id, marketplace="wb",
-                            snapshot_date=today,
-                            rating=kpi.get("rating"),
-                            return_pct=kpi.get("return_pct"),
-                            cancellation_pct=kpi.get("cancellation_pct"),
-                            penalty_count=kpi.get("penalty_count", 0),
-                            extra_data=kpi.get("extra_data", {}),
-                        )
-                        logger.info(f"[Макс/kpi] WB: рейтинг {kpi.get('rating')}")
-                    else:
-                        from db import get_wb_proxy_kpi
-                        kpi = await get_wb_proxy_kpi(chat_id)
-                        logger.info(f"[Макс/kpi] WB: proxy из БД, рейтинг {kpi.get('rating')}")
-                    results["wb"] = kpi
-                except Exception as e:
-                    logger.error(f"[Макс/kpi] WB: {e}", exc_info=True)
-                    results["wb"] = {}
 
             if mp == "ozon":
                 try:
@@ -5275,10 +5112,9 @@ class MaxAgent(BaseAgent):
             "/sync_fin — финансовые операции\n"
             "/sync_funnel — воронка конверсии (показы→корзина→заказ)\n"
             "/sync_cards — карточки товаров и фото\n"
-            "/sync_keywords — поисковые запросы\n"
             "/sync_returns — возвраты\n"
             "/sync_sku — соответствие SKU/артикулов\n"
-            "/sync_promotions — акции и скидки\n\n"
+            "/sync_promotions — акции Ozon\n\n"
             "💬 **Отзывы и вопросы:**\n"
             "/reviews — вручную запустить обработку отзывов\n"
             "/pending — отзывы и вопросы, ожидающие ответа\n"
@@ -6174,20 +6010,6 @@ class MaxAgent(BaseAgent):
                         if info and info.get("cpm"):
                             new_cpm = clamp_wb_cpm(info["cpm"], d, dp)
                             price_line = f"CPM: {info['cpm']} ₽ → <b>{new_cpm} ₽</b>\n"
-                            try:
-                                nms = await wb_client.get_campaigns_nms([cid])
-                                nm_id = next(iter(nms.get(cid) or []), None)
-                                market = await wb_client.get_recommended_bid(cid, nm_id) if nm_id else None
-                                recommended_cpm = market.get("recommended_cpm") if market else None
-                                _, flag = wb_market_bid_flag(new_cpm, recommended_cpm)
-                                if recommended_cpm:
-                                    market_line = f"Рынок (WB): рекомендовано ~{recommended_cpm} ₽\n"
-                                    if flag == "overspend":
-                                        market_line += "⚠️ Предложенная ставка выше рыночной — риск перерасхода бюджета\n"
-                                    elif flag == "underspend":
-                                        market_line += "⚠️ Предложенная ставка ниже рыночной — риск проигрыша аукциона\n"
-                            except Exception:
-                                pass
                 except Exception:
                     pass
                 text = (
@@ -6963,16 +6785,6 @@ class MaxAgent(BaseAgent):
                     if info and info.get("cpm"):
                         row["current_value"] = info["cpm"]
                         row["new_value"] = clamp_wb_cpm(info["cpm"], d, dp)
-                        try:
-                            nms = await wb_client.get_campaigns_nms([cid])
-                            nm_id = next(iter(nms.get(cid) or []), None)
-                            market = await wb_client.get_recommended_bid(cid, nm_id) if nm_id else None
-                            recommended_cpm = market.get("recommended_cpm") if market else None
-                            recommended_cpm, flag = wb_market_bid_flag(row["new_value"], recommended_cpm)
-                            row["market_recommended_cpm"] = recommended_cpm
-                            row["market_flag"] = flag
-                        except Exception:
-                            pass
                 elif mp == "ozon" and ozon_shop:
                     from tools.marketplace import OzonPerformanceClient
                     client = OzonPerformanceClient(
@@ -7435,7 +7247,7 @@ class MaxAgent(BaseAgent):
             BotCommand("sync_funnel",      "🎯 Воронка конверсии карточек"),
             BotCommand("sync_cards",       "📝 Контент карточек — заголовок, описание"),
             BotCommand("sync_returns",     "↩️ Аналитика возвратов"),
-            BotCommand("sync_promotions",  "🎁 Акции и кампании"),
+            BotCommand("sync_promotions",  "🎁 Акции Ozon"),
             # Аналитика
             BotCommand("shop_kpi",         "🏆 KPI магазина — рейтинг, штрафы"),
             BotCommand("data_status",      "🗄️ Состояние данных в БД"),
@@ -7476,7 +7288,6 @@ class MaxAgent(BaseAgent):
         self.app.add_handler(CommandHandler("sync_funnel",      self.cmd_sync_funnel))
         self.app.add_handler(CommandHandler("sync_cards",       self.cmd_sync_cards))
         self.app.add_handler(CommandHandler("sync_promotions", self.cmd_sync_promotions))
-        self.app.add_handler(CommandHandler("sync_keywords",   self.cmd_sync_keywords))
         self.app.add_handler(CommandHandler("seo_check",       self.cmd_seo_check))
         self.app.add_handler(CommandHandler("sync_returns",    self.cmd_sync_returns))
         self.app.add_handler(CommandHandler("shop_kpi",        self.cmd_shop_kpi))

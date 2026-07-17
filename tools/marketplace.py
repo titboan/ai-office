@@ -1069,51 +1069,6 @@ class WBClient:
         logger.info(f"[WB.get_funnel_stats] {date_from}–{date_to}: {len(results)} записей")
         return results
 
-    async def get_campaigns_nms(self, campaign_ids: list[str]) -> dict[str, list[str]]:
-        """Получить nm_id товаров для каждой кампании через /adv/v0/advert.
-
-        Для кампаний типов 4/5/6/9 (поиск/каталог/карточка) WB не возвращает
-        nm-разбивку в fullstats, но хранит список рекламируемых nm_id в поле
-        params[].nms[]. Используется как fallback для распределения расходов.
-
-        Возвращает {campaign_id: [nm_id_str, ...]}.
-        """
-        import json as _json
-        result: dict[str, list[str]] = {}
-        url = "https://advert-api.wildberries.ru/adv/v0/advert"
-        headers = {"Authorization": self._token}
-
-        for i, cid in enumerate(campaign_ids):
-            if i > 0:
-                await asyncio.sleep(0.25)  # 4 запроса/сек — безопасно для WB
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        url, headers=headers, params={"id": cid}, timeout=_TIMEOUT
-                    ) as resp:
-                        raw = await resp.text()
-                        if resp.status != 200:
-                            logger.error(f"[WB.get_campaigns_nms] campaign {cid}: HTTP {resp.status} — {raw[:200]}")
-                            continue
-                        data = _json.loads(raw)
-                ctype = int(data.get("type") or 0)
-                params_key = "unitedParams" if ctype == 8 else "params"
-                nms: list[str] = []
-                for p in (data.get(params_key) or []):
-                    for nm in (p.get("nms") or []):
-                        if nm:
-                            nms.append(str(nm))
-                if nms:
-                    result[cid] = nms
-                    logger.info(f"[WB.get_campaigns_nms] кампания {cid} (type={ctype}): {len(nms)} nm_id")
-                else:
-                    logger.error(f"[WB.get_campaigns_nms] кампания {cid} (type={ctype}): nms пустые, ответ: {str(data)[:300]}")
-            except Exception as e:
-                logger.error(f"[WB.get_campaigns_nms] campaign {cid}: {e}")
-
-        logger.info(f"[WB.get_campaigns_nms] итого: {len(result)}/{len(campaign_ids)} кампаний с nm_id")
-        return result
-
     async def get_campaign_cpm(self, campaign_id: str) -> dict | None:
         """Получить тип, subject_id и текущую CPM-ставку кампании.
         Возвращает {"type": int, "subject_id": int, "cpm": int} или None при ошибке."""
@@ -1144,97 +1099,6 @@ class WBClient:
             logger.error(f"[WB.get_campaign_cpm] error: {e}")
             return None
 
-    async def get_campaign_products_v2(self, campaign_ids: list[str]) -> dict[str, list[str]]:
-        """Попытка получить nm_ids через POST /adv/v2/promotion/adverts.
-
-        Если endpoint жив — возвращает {campaign_id: [nm_id, ...]}.
-        Если 404 — тихо возвращает {} (ожидаемо для устаревших WB endpoints).
-        Логирует полный ответ при успехе чтобы можно было скорректировать парсинг.
-        """
-        import json as _json
-        result: dict[str, list[str]] = {}
-        url = "https://advert-api.wildberries.ru/adv/v2/promotion/adverts"
-        headers = {"Authorization": self._token, "Content-Type": "application/json"}
-        ids = [int(cid) for cid in campaign_ids if cid.isdigit()]
-        if not ids:
-            return {}
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    url, headers=headers,
-                    json=ids,
-                    timeout=_TIMEOUT,
-                ) as resp:
-                    raw = await resp.text()
-                    if resp.status == 404:
-                        logger.info("[WB.get_campaign_products_v2] POST /adv/v2/promotion/adverts → 404 (endpoint мёртв)")
-                        return {}
-                    if resp.status != 200:
-                        logger.error(f"[WB.get_campaign_products_v2] HTTP {resp.status}: {raw[:300]}")
-                        return {}
-                    logger.info(f"[WB.get_campaign_products_v2] ✅ HTTP 200 — ответ: {raw[:800]}")
-                    data = _json.loads(raw)
-                    for item in (data if isinstance(data, list) else []):
-                        cid = str(item.get("advertId") or item.get("id") or "")
-                        nms: list[str] = []
-                        params_key = "unitedParams" if int(item.get("type") or 0) == 8 else "params"
-                        for p in (item.get(params_key) or []):
-                            for nm in (p.get("nms") or []):
-                                if nm:
-                                    nms.append(str(nm))
-                        if cid and nms:
-                            result[cid] = nms
-                    logger.info(f"[WB.get_campaign_products_v2] получено nm для {len(result)}/{len(ids)} кампаний")
-        except Exception as e:
-            logger.error(f"[WB.get_campaign_products_v2] exception: {e}")
-        return result
-
-    async def get_campaign_details(self, campaign_ids: list[str]) -> dict[str, dict]:
-        """Получить nm_ids и названия кампаний через GET /api/advert/v2/adverts.
-
-        Актуальный эндпоинт (2025+), возвращает nm_settings с nm_id для каждого товара
-        и settings.name с названием кампании. Работает для всех типов кампаний.
-        Возвращает {campaign_id: {"nm_ids": [...], "name": "..."}}.
-        """
-        import json as _json
-        result: dict[str, dict] = {}
-        url = "https://advert-api.wildberries.ru/api/advert/v2/adverts"
-        headers = {"Authorization": self._token}
-        ids = [cid for cid in campaign_ids if str(cid).lstrip("-").isdigit()]
-        if not ids:
-            return {}
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url, headers=headers,
-                    params={"ids": ",".join(str(cid) for cid in ids)},
-                    timeout=_TIMEOUT,
-                ) as resp:
-                    raw = await resp.text()
-                    if resp.status == 404:
-                        logger.info("[WB.get_campaign_details] GET /api/advert/v2/adverts → 404 (endpoint недоступен)")
-                        return {}
-                    if resp.status != 200:
-                        logger.error(f"[WB.get_campaign_details] HTTP {resp.status}: {raw[:300]}")
-                        return {}
-                    logger.info(f"[WB.get_campaign_details] ✅ HTTP 200 — ответ: {raw[:600]}")
-                    data = _json.loads(raw)
-                    for item in (data.get("adverts") or []):
-                        cid = str(item.get("id") or "")
-                        if not cid:
-                            continue
-                        nm_ids = [
-                            str(nm["nm_id"])
-                            for nm in (item.get("nm_settings") or [])
-                            if nm.get("nm_id")
-                        ]
-                        name = (item.get("settings") or {}).get("name") or ""
-                        result[cid] = {"nm_ids": nm_ids, "name": name}
-                    logger.info(f"[WB.get_campaign_details] получено данных для {len(result)}/{len(ids)} кампаний")
-        except Exception as e:
-            logger.error(f"[WB.get_campaign_details] exception: {e}")
-        return result
-
     async def update_campaign_cpm(
         self, campaign_id: str, campaign_type: int, subject_id: int, new_cpm: int
     ) -> bool:
@@ -1259,50 +1123,6 @@ class WBClient:
             logger.error(f"[WB.update_campaign_cpm] error: {e}")
             return False
 
-    async def get_recommended_bid(self, campaign_id: str, nm_id: str) -> dict | None:
-        """Получить рекомендуемую (конкурентную по рынку) ставку WB для товара в рамках
-        кампании — аукцион поиск/каталог (CPM-кампании). Рекомендация считается WB на
-        пару (кампания, артикул), поэтому нужен nm_id, а не только campaign_id.
-
-        Схема подтверждена по открытому OpenAPI-спеку сообщества (не по официальным
-        докам WB — dev.wildberries.ru отдаёт 403 на прямой фетч; спек синхронизируется
-        с реальным API): raw.githubusercontent.com/eslazarev/wildberries-sdk/main/specs/08-promotion.yaml.
-        WB отдаёт несколько уровней ставки — берём "competitiveBid" (конкурентная
-        по рынку) как ближайший аналог "не перерасходовать бюджет"; bidKopecks — в
-        копейках, конвертируем в рубли.
-
-        Возвращает {"recommended_cpm": int} (в рублях) или None, если WB не отдал
-        данные (не CPM-кампания, эндпоинт недоступен, сбой сети/парсинга). НЕ бросает
-        исключения — это опциональный сигнал поверх ДРР-логики.
-        """
-        import json as _json
-        url = "https://advert-api.wildberries.ru/api/advert/v0/bids/recommendations"
-        headers = {"Authorization": self._token}
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url, headers=headers,
-                    params={"advertId": campaign_id, "nmId": nm_id},
-                    timeout=_TIMEOUT,
-                ) as resp:
-                    raw = await resp.text()
-                    if resp.status == 404:
-                        logger.info(f"[WB.get_recommended_bid] 404 для campaign={campaign_id} nm={nm_id} (эндпоинт/кампания недоступны)")
-                        return None
-                    if resp.status != 200:
-                        logger.warning(f"[WB.get_recommended_bid] HTTP {resp.status} campaign={campaign_id} nm={nm_id}: {raw[:200]}")
-                        return None
-                    logger.info(f"[WB.get_recommended_bid] ✅ HTTP 200 campaign={campaign_id} nm={nm_id} — ответ: {raw[:800]}")
-                    data = _json.loads(raw)
-            bid_kopecks = ((data.get("base") or {}).get("competitiveBid") or {}).get("bidKopecks")
-            if not bid_kopecks:
-                logger.info(f"[WB.get_recommended_bid] campaign={campaign_id} nm={nm_id}: base.competitiveBid.bidKopecks отсутствует, см. лог выше")
-                return None
-            return {"recommended_cpm": round(bid_kopecks / 100)}
-        except Exception as e:
-            logger.error(f"[WB.get_recommended_bid] error campaign={campaign_id} nm={nm_id}: {e}")
-            return None
-
     async def upload_product_photo(self, nm_id: str, photo_bytes: bytes, filename: str = "photo.jpg") -> bool:
         """Загрузить фото в карточку WB. nm_id — числовой nmID карточки."""
         url = "https://content-api.wildberries.ru/content/v3/media/save"
@@ -1320,67 +1140,6 @@ class WBClient:
         except Exception as e:
             logger.error(f"[WB.upload_photo] error: {e}")
             return False
-
-    async def get_promotions(self) -> list[dict]:
-        """Список активных и предстоящих акций продавца WB."""
-        import json as _json
-        url = "https://dp-api.wildberries.ru/api/v2/promotion/catalogue"
-        headers = {"Authorization": self._token, "Content-Type": "application/json"}
-        results = []
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=_TIMEOUT) as resp:
-                    raw = await resp.text()
-                    if resp.status == 404:
-                        logger.warning("[WB.get_promotions] endpoint 404 — акции WB недоступны через API")
-                        return []
-                    if resp.status != 200:
-                        logger.error(f"[WB.get_promotions] HTTP {resp.status}: {raw[:200]}")
-                        return []
-                    data = _json.loads(raw)
-            for promo in (data.get("data") or data.get("promotions") or []):
-                results.append({
-                    "promotion_id": str(promo.get("promotionID") or promo.get("id", "")),
-                    "title":        promo.get("name") or promo.get("title", ""),
-                    "discount_pct": float(promo.get("discount") or 0),
-                    "start_date":   (promo.get("startDateTime") or promo.get("startDate", ""))[:10],
-                    "end_date":     (promo.get("endDateTime") or promo.get("endDate", ""))[:10],
-                    "product_ids":  [str(x) for x in (promo.get("nmIDs") or [])],
-                })
-        except Exception as e:
-            logger.error(f"[WB.get_promotions] {e}", exc_info=True)
-        logger.info(f"[WB.get_promotions] {len(results)} акций")
-        return results
-
-    async def get_shop_kpi(self) -> dict:
-        """Рейтинг и KPI продавца WB через /api/v1/supplier/info."""
-        import json as _json
-        url = "https://seller-analytics-api.wildberries.ru/api/v1/supplier/info"
-        headers = {"Authorization": self._token, "Content-Type": "application/json"}
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=_TIMEOUT) as resp:
-                    raw = await resp.text()
-                    if resp.status == 404:
-                        logger.warning("[WB.get_shop_kpi] endpoint 404 — KPI WB недоступны")
-                        return {}
-                    if resp.status != 200:
-                        logger.error(f"[WB.get_shop_kpi] HTTP {resp.status}: {raw[:200]}")
-                        return {}
-                    data = _json.loads(raw)
-            logger.info(f"[WB.get_shop_kpi] raw: {raw[:400]}")
-            info = data.get("data") or data
-            return {
-                "rating":           float(info.get("rating") or 0),
-                "return_pct":       float(info.get("returnPercent") or info.get("buyoutPercent") or 0),
-                "cancellation_pct": float(info.get("cancelPercent") or 0),
-                "penalty_count":    int(info.get("penaltyCount") or 0),
-                "extra_data":       {k: v for k, v in info.items()
-                                     if k not in ("rating", "returnPercent", "buyoutPercent", "cancelPercent", "penaltyCount")},
-            }
-        except Exception as e:
-            logger.error(f"[WB.get_shop_kpi] {e}", exc_info=True)
-            return {}
 
     async def get_questions(self, is_answered: bool = False, take: int = 100) -> list[dict]:
         """Вопросы покупателей WB через feedbacks-api.wildberries.ru (questions-api устарел)."""
@@ -1446,60 +1205,6 @@ class WBClient:
         except Exception as e:
             logger.error(f"[WB.answer_question] exception: {e}")
             return False
-
-    async def get_search_keywords(
-        self,
-        nm_ids: list[int],
-        date_from: str,
-        date_to: str,
-        statistics_token: str = "",
-    ) -> tuple[list[dict], int]:
-        """Ключевые слова и позиции в поиске WB за период.
-
-        Returns (results, http_status) — http_status 0 при exception.
-        analytics-api требует statistics_token (категория «Аналитика» в ЛК).
-        """
-        import json as _json
-        if not nm_ids:
-            return [], 0
-        url = "https://seller-analytics-api.wildberries.ru/api/v1/analytics/search-keywords"
-        # Пробуем statistics_token — он имеет доступ к аналитике; основной токен как fallback
-        token = statistics_token or self._token
-        headers = {"Authorization": token, "Content-Type": "application/json"}
-        # WB принимает nmIds как повторяющиеся query-params: ?nmIds=1&nmIds=2
-        params = [("nmIds", nid) for nid in nm_ids[:20]]
-        params += [("dateFrom", date_from), ("dateTo", date_to)]
-        http_status = 0
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, params=params, timeout=_TIMEOUT) as resp:
-                    http_status = resp.status
-                    raw = await resp.text()
-                    if resp.status != 200:
-                        logger.warning(f"[WB.get_search_keywords] HTTP {resp.status}: {raw[:300]}")
-                        return [], http_status
-                    data = _json.loads(raw)
-        except asyncio.TimeoutError:
-            logger.error("[marketplace] timeout: WB.get_search_keywords")
-            return [], 0
-        except Exception as e:
-            logger.error(f"[WB.get_search_keywords] exception: {e}")
-            return [], 0
-        results = []
-        for item in (data.get("data") or []):
-            nm_id = str(item.get("nmId", ""))
-            for kw in (item.get("keywords") or []):
-                results.append({
-                    "product_id":   nm_id,
-                    "keyword":      kw.get("keyword", ""),
-                    "position":     kw.get("position"),
-                    "search_count": kw.get("searchCount"),
-                    "ctr":          kw.get("ctr"),
-                    "conv_rate":    kw.get("conversionRate"),
-                    "stat_date":    date_to,
-                })
-        logger.info(f"[WB.get_search_keywords] {len(results)} записей для {len(nm_ids)} товаров")
-        return results, http_status
 
     async def get_returns_analytics(
         self,

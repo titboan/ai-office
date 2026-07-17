@@ -22,7 +22,7 @@ from .base_agent import BaseAgent, _AGENT_NAMES, with_company_context
 _HEAVY_SYNC_PAYLOADS = {
     "__sync__", "__sync_adv__", "__sync_fin__",
     "__sync_funnel__", "__sync_returns__", "__sync_cards__",
-    "__sync_keywords__", "__sync_sku__",
+    "__sync_sku__",
 }
 
 def _task_timeout(agent_key: str, payload: str) -> int:
@@ -1551,7 +1551,6 @@ class MartaAgent(BaseAgent):
         "sync_funnel":  ("max", "__sync_funnel__"),
         "sync_returns": ("max", "__sync_returns__"),
         "sync_cards":   ("max", "__sync_cards__"),
-        "sync_keywords":("max", "__sync_keywords__"),
         # Элина
         "write":       ("elina", "Напиши текст"),
         "post":        ("elina", "Напиши пост для маркетплейса или соцсетей"),
@@ -1643,10 +1642,7 @@ class MartaAgent(BaseAgent):
                     InlineKeyboardButton("🔄 Воронка (данные)",   callback_data="mmenu_run:sync_funnel"),
                     InlineKeyboardButton("🔄 Возвраты (данные)",  callback_data="mmenu_run:sync_returns"),
                 ],
-                [
-                    InlineKeyboardButton("🃏 Карточки",   callback_data="mmenu_run:sync_cards"),
-                    InlineKeyboardButton("🔑 Ключевые слова", callback_data="mmenu_run:sync_keywords"),
-                ],
+                [InlineKeyboardButton("🃏 Карточки",   callback_data="mmenu_run:sync_cards")],
                 [InlineKeyboardButton("◀️ Назад",        callback_data="mmenu:back")],
             ],
         ),
@@ -1864,7 +1860,6 @@ class MartaAgent(BaseAgent):
             BotCommand("sync_funnel", "🔽 Синхронизация воронки"),
             BotCommand("sync_returns", "↩️ Синхронизация возвратов"),
             BotCommand("sync_cards", "🃏 Контент карточек"),
-            BotCommand("sync_keywords", "🔑 Позиции ключевых слов"),
             BotCommand("reviews", "⭐ Обработать отзывы"),
             BotCommand("questions", "❓ Вопросы покупателей"),
             BotCommand("pending", "⏳ Ожидают модерации"),
@@ -2036,9 +2031,6 @@ class MartaAgent(BaseAgent):
 
     async def cmd_proxy_sync_cards(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "max", "__sync_cards__")
-
-    async def cmd_proxy_sync_keywords(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._proxy_cmd(update, context, "max", "__sync_keywords__")
 
     async def cmd_proxy_sync_sku(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._proxy_cmd(update, context, "max", "__sync_sku__")
@@ -2549,7 +2541,6 @@ class MartaAgent(BaseAgent):
         self.app.add_handler(CommandHandler("sync_funnel", self.cmd_proxy_sync_funnel))
         self.app.add_handler(CommandHandler("sync_returns", self.cmd_proxy_sync_returns))
         self.app.add_handler(CommandHandler("sync_cards", self.cmd_proxy_sync_cards))
-        self.app.add_handler(CommandHandler("sync_keywords", self.cmd_proxy_sync_keywords))
         self.app.add_handler(CommandHandler("sync_sku", self.cmd_proxy_sync_sku))
         self.app.add_handler(CommandHandler("questions", self.cmd_proxy_questions))
         self.app.add_handler(CommandHandler("pending", self.cmd_proxy_pending))

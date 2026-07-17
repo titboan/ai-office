@@ -175,7 +175,7 @@ Postgres Tasks: queued → running → completed/failed (chain_id, priority, ret
 
 ## Известные баги (не трогать без надобности)
 
-- `WB /adv/v1/promotion/adverts` → 404 с окт 2025 — названия кампаний вносить вручную в `wb_campaigns`
+- Названия WB-кампаний вносить вручную в `wb_campaigns` через `/camp` — API `/adv/v*` мёртв с окт 2025
 - `Notion Unclosed connection` — некритично, мониторим
 - `Conflict` при деплое — норма, rolling restart, проходит за 30–60 сек
 
