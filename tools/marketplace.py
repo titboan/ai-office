@@ -2241,7 +2241,7 @@ class OzonClient:
             body = {
                 "date_from": date_from,
                 "date_to":   date_to,
-                "dimension": ["sku"],
+                "dimension": ["sku", "day"],
                 "metrics":   ["hits_view", "conv_tocart", "ordered_units"],
                 "limit":     1000,
                 "offset":    offset,
@@ -2270,15 +2270,16 @@ class OzonClient:
                 raise last_error or RuntimeError("Ozon analytics/data: пустой ответ после 3 попыток")
             rows = (data.get("result") or {}).get("data") or []
             for row in rows:
-                dims    = row.get("dimensions") or [{}]
+                dims    = row.get("dimensions") or [{}, {}]
                 metrics = row.get("metrics") or [0, 0, 0]
                 views      = int(metrics[0] or 0)
                 conv_tocart = float(metrics[1] or 0)
                 orders     = int(metrics[2] or 0)
                 add_to_cart = round(views * conv_tocart / 100) if views > 0 else 0
+                stat_date = (dims[1].get("id") if len(dims) > 1 else None) or date_from
                 results.append({
                     "product_id":         str((dims[0] if dims else {}).get("id", "")),
-                    "stat_date":          date_from,
+                    "stat_date":          stat_date,
                     "views":              views,
                     "add_to_cart":        add_to_cart,
                     "orders_count":       orders,
