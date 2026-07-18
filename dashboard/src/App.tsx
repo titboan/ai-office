@@ -245,91 +245,101 @@ export default function App() {
 
   return (
     <div
-      className="min-h-screen p-3 space-y-3 md:max-w-3xl lg:max-w-5xl md:mx-auto"
+      className="min-h-screen px-3 pb-3 space-y-3 md:max-w-3xl lg:max-w-5xl md:mx-auto"
       style={{ background: 'var(--tg-theme-bg-color, #f5f5f5)' }}
     >
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-base font-bold flex items-center gap-1.5">
-          <ActiveTabIcon size={18} /> {activeTabInfo.label}
-        </h1>
-        <div className="flex gap-1 items-center">
-          <button
-            onClick={() => setRefreshKey(k => k + 1)}
-            disabled={isFetchingFresh}
-            aria-label="Обновить данные"
-            className="p-1.5 rounded bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 disabled:opacity-40"
-          >
-            <RefreshCw size={14} className={isFetchingFresh ? 'animate-spin' : ''} />
-          </button>
-          <button
-            onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-            aria-label="Переключить тему"
-            className="p-1.5 rounded bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300"
-          >
-            {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
-          </button>
-        </div>
-      </div>
-
-      {/* Фильтры: маркетплейс + период */}
-      {showFilters && (
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex gap-1">
-            {(['all', 'wb', 'ozon'] as MpFilter[]).map(mp => (
-              <button
-                key={mp}
-                onClick={() => setMpFilter(mp)}
-                className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
-                  mpFilter === mp ? 'bg-purple-600 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300'
-                }`}
-              >
-                {mp === 'all' ? 'Все' : mp === 'wb' ? 'WB' : 'Ozon'}
-              </button>
-            ))}
-          </div>
-          <div className="flex gap-1">
-            {([7, 14, 30] as Days[]).map(d => (
-              <button
-                key={d}
-                onClick={() => setDays(d)}
-                className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
-                  days === d ? 'bg-purple-600 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300'
-                }`}
-              >
-                {d}д
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Таб-бар с бейджами */}
-      <div className="grid grid-cols-4 gap-1">
-        {TABS.map(({ key, label, icon: Icon }) => {
-          const badge = key === 'dashboard' ? criticalAlertCount : key === 'reports' ? reportsBadgeCount : 0
-          return (
+      {/* Шапка + фильтры + таб-бар — прилипают к верху при скролле (position: sticky).
+          Собственный фон (не только у родителя) и -mx-3/px-3, чтобы при скролле
+          под ними не просвечивал контент по бокам — родитель больше не даёт
+          верхний отступ (был перенесён сюда), чтобы разница между "прилипшим" и
+          обычным состоянием не создавала лишний зазор. */}
+      <div
+        className="sticky top-0 z-20 -mx-3 px-3 pt-3 pb-2 space-y-3 border-b border-gray-200 dark:border-gray-700"
+        style={{ background: 'var(--tg-theme-bg-color, #f5f5f5)' }}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <h1 className="text-base font-bold flex items-center gap-1.5">
+            <ActiveTabIcon size={18} /> {activeTabInfo.label}
+          </h1>
+          <div className="flex gap-1 items-center">
             <button
-              key={key}
-              onClick={() => setTab(key)}
-              className={`flex items-center justify-center gap-1 px-1.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                tab === key ? 'bg-purple-600 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300'
-              }`}
+              onClick={() => setRefreshKey(k => k + 1)}
+              disabled={isFetchingFresh}
+              aria-label="Обновить данные"
+              className="p-1.5 rounded bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 disabled:opacity-40"
             >
-              <div className="relative shrink-0">
-                <Icon size={13} />
-                {badge > 0 && (
-                  <span className={`absolute -top-1 -right-1.5 flex items-center justify-center rounded-full bg-red-500 text-white font-bold leading-none ${
-                    badge > 9 ? 'min-w-[14px] h-3.5 text-[8px] px-0.5' : 'w-3 h-3 text-[9px]'
-                  }`}>
-                    {badge > 9 ? '9+' : badge}
-                  </span>
-                )}
-              </div>
-              <span className="truncate">{label}</span>
+              <RefreshCw size={14} className={isFetchingFresh ? 'animate-spin' : ''} />
             </button>
-          )
-        })}
+            <button
+              onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+              aria-label="Переключить тему"
+              className="p-1.5 rounded bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300"
+            >
+              {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+            </button>
+          </div>
+        </div>
+
+        {/* Фильтры: маркетплейс + период */}
+        {showFilters && (
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex gap-1">
+              {(['all', 'wb', 'ozon'] as MpFilter[]).map(mp => (
+                <button
+                  key={mp}
+                  onClick={() => setMpFilter(mp)}
+                  className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                    mpFilter === mp ? 'bg-purple-600 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+                  }`}
+                >
+                  {mp === 'all' ? 'Все' : mp === 'wb' ? 'WB' : 'Ozon'}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-1">
+              {([7, 14, 30] as Days[]).map(d => (
+                <button
+                  key={d}
+                  onClick={() => setDays(d)}
+                  className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                    days === d ? 'bg-purple-600 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+                  }`}
+                >
+                  {d}д
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Таб-бар с бейджами */}
+        <div className="grid grid-cols-4 gap-1">
+          {TABS.map(({ key, label, icon: Icon }) => {
+            const badge = key === 'dashboard' ? criticalAlertCount : key === 'reports' ? reportsBadgeCount : 0
+            return (
+              <button
+                key={key}
+                onClick={() => setTab(key)}
+                className={`flex items-center justify-center gap-1 px-1.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                  tab === key ? 'bg-purple-600 text-white' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+                }`}
+              >
+                <div className="relative shrink-0">
+                  <Icon size={13} />
+                  {badge > 0 && (
+                    <span className={`absolute -top-1 -right-1.5 flex items-center justify-center rounded-full bg-red-500 text-white font-bold leading-none ${
+                      badge > 9 ? 'min-w-[14px] h-3.5 text-[8px] px-0.5' : 'w-3 h-3 text-[9px]'
+                    }`}>
+                      {badge > 9 ? '9+' : badge}
+                    </span>
+                  )}
+                </div>
+                <span className="truncate">{label}</span>
+              </button>
+            )
+          })}
+        </div>
       </div>
 
       {tab === 'dashboard' && loading && (
