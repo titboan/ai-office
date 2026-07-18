@@ -1768,6 +1768,12 @@ class OzonClient:
                     postings = raw_result.get("postings") or [] if isinstance(raw_result, dict) else []
                     has_next = raw_result.get("has_next", False) if isinstance(raw_result, dict) else False
                 total.extend(_parse_postings(postings, scheme))
+                if has_next and offset >= 2000:
+                    logger.warning(
+                        f"[Ozon.get_sales/{scheme}] обрыв пагинации на offset={offset} — "
+                        "по данным Ozon есть ещё записи (has_next=True), но достигнут предел 2000 "
+                        "(точное количество оставшихся Ozon API не сообщает)"
+                    )
                 if not has_next or offset >= 2000:
                     break
                 offset += len(postings)
@@ -1861,6 +1867,12 @@ class OzonClient:
                     logger.debug(f"[Ozon.get_orders/{status}] offset={offset}, postings_count={len(postings)}")
                     all_postings.extend(postings)
                     status_raw += len(postings)
+                    if data.get("has_next") and offset >= 2000:
+                        logger.warning(
+                            f"[Ozon.get_orders/{status}] обрыв пагинации на offset={offset} — "
+                            "по данным Ozon есть ещё записи (has_next=True), но достигнут предел 2000 "
+                            "(точное количество оставшихся Ozon API не сообщает)"
+                        )
                     if not data.get("has_next") or offset >= 2000:
                         break
                     offset += len(postings)
