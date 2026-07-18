@@ -119,7 +119,7 @@ Postgres Tasks: queued → running → completed/failed (chain_id, priority, ret
 - Изменился расчёт (маржа/срочность/метрика) → обнови легенду/тултипы/цвет в компоненте
 - Переименование поля → синхронно переименуй в `api.ts` и всех компонентах
 
-Карта компонентов: `NetMarginTable.tsx` ↔ `net_margin` · `StockTable.tsx` ↔ `low_stocks` · `RevenueChart.tsx` ↔ `revenue_by_day` · `AbcTable.tsx` ↔ `abc_data` · `MarginChart.tsx` ↔ `margin_wb`/`margin_ozon`
+Карта компонентов: `NetMarginTable.tsx` ↔ `net_margin` · `StockTable.tsx` ↔ `stock_velocity` · `RevenueChart.tsx` ↔ `revenue_by_day` · `AbcTable.tsx` ↔ `abc_data` · `MarginChart.tsx` ↔ `net_margin` (основной), `margin_wb`/`margin_ozon` (GROSS-фоллбэк, если `net_margin` пуст) · `OrdersChart.tsx` ↔ `orders_by_day`
 
 ---
 
@@ -178,6 +178,7 @@ Postgres Tasks: queued → running → completed/failed (chain_id, priority, ret
 - Названия WB-кампаний вносить вручную в `wb_campaigns` через `/camp` — API `/adv/v*` мёртв с окт 2025
 - `Notion Unclosed connection` — некритично, мониторим
 - `Conflict` при деплое — норма, rolling restart, проходит за 30–60 сек
+- Дашборд: `BidSuggestions` умеет показывать `market_recommended_cpm`/`market_flag` (рыночная ставка), но `agents/max.py` их пока не считает — всегда `None`, поле готово на будущее
 
 ---
 
