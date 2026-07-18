@@ -5640,6 +5640,41 @@ class MaxAgent(BaseAgent):
             logger.error(f"[Макс/reprice] магазин {mp} не найден для chat_id={chat_id}")
             return {"ok": False, "detail": f"Магазин {mp} не найден"}
 
+        if new_price <= 0:
+            return {"ok": False, "detail": "Цена должна быть больше 0 ₽"}
+
+        price_col = "wb_price" if mp == "wb" else "ozon_price"
+        id_col    = "wb_article" if mp == "wb" else "ozon_offer_id"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"""SELECT m.{price_col} AS current_price, c.cost
+                    FROM product_mapping m
+                    LEFT JOIN product_costs c ON c.mapping_id = m.id AND c.marketplace = $1
+                    WHERE m.{id_col} = $2""",
+                mp, product_id,
+            )
+        current_price = float(row["current_price"]) if row and row["current_price"] else None
+        cost = float(row["cost"]) if row and row["cost"] else None
+
+        if current_price is not None and new_price > current_price * config.PRICE_SANITY_MAX_MULTIPLIER:
+            return {
+                "ok": False,
+                "detail": (
+                    f"Цена {new_price:.0f}₽ более чем в {config.PRICE_SANITY_MAX_MULTIPLIER:.0f} раза "
+                    f"выше текущей ({current_price:.0f}₽) — похоже на опечатку, проверь ввод"
+                ),
+            }
+
+        if cost is not None and new_price < cost:
+            return {
+                "ok": False,
+                "detail": (
+                    f"Цена {new_price:.0f}₽ ниже себестоимости ({cost:.0f}₽) — это гарантированный "
+                    f"убыток, проверь ввод или себестоимость (/cost)"
+                ),
+            }
+
         try:
             if mp == "wb":
                 # Нужен wb_nm_id для WB price API
