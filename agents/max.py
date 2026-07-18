@@ -5703,15 +5703,25 @@ class MaxAgent(BaseAgent):
                 # Нужен wb_nm_id для WB price API
                 pool = await get_pool()
                 async with pool.acquire() as conn:
-                    row = await conn.fetchrow(
+                    rows = await conn.fetch(
                         "SELECT wb_nm_id FROM product_mapping WHERE wb_article = $1",
                         product_id,
                     )
-                if not row or not row["wb_nm_id"]:
+                if not rows:
+                    logger.error(f"[Макс/reprice] wb_nm_id не найден для {product_id}")
+                    return {"ok": False, "detail": "Не найден wb_nm_id товара"}
+                if len(rows) > 1:
+                    logger.warning(
+                        f"[Макс/reprice] найдено {len(rows)} строк product_mapping с wb_article={product_id} "
+                        "— отказ от применения цены вслепую к случайной из них"
+                    )
+                    return {"ok": False, "detail": "Найдено несколько товаров с артикулом WB — уточни маппинг (/map)"}
+                wb_nm_id = rows[0]["wb_nm_id"]
+                if not wb_nm_id:
                     logger.error(f"[Макс/reprice] wb_nm_id не найден для {product_id}")
                     return {"ok": False, "detail": "Не найден wb_nm_id товара"}
                 client = WBClient(shop["api_token"])
-                result = await client.update_prices([{"nm_id": int(row["wb_nm_id"]), "price": new_price}])
+                result = await client.update_prices([{"nm_id": int(wb_nm_id), "price": new_price}])
                 if result.get("success"):
                     # WB-цену не пишем в БД оптимистично — uploadID подтверждает только
                     # постановку в очередь, реальную цену подтвердит следующий sync_prices().
