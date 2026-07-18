@@ -36,7 +36,7 @@ WB/Ozon API может отклонить цену, а бот всё равно 
   Telegram и дашборд не могли разойтись — оба пути в итоге вызывают один и тот же
   `_apply_price`.
 
-### Фаза 3 — валидация direction/delta_pct для ставок [ ]
+### Фаза 3 — валидация direction/delta_pct для ставок [x]
 - `main.py:1126-1148` (`_handle_apply_bid`) — проверять знак и разумный диапазон `delta_pct`
   (сейчас только `direction in ("up","down")`, само число не проверяется).
 - `agents/max.py:6859-6900` (`_apply_wb_bid_raw`/`_apply_ozon_bid_raw`) и подпись в UI

@@ -276,6 +276,7 @@ def clamp_wb_cpm(current_cpm: float, direction: str, delta_pct: float) -> int:
     и в превью предложения, и непосредственно перед записью в API.
     """
     ceiling = getattr(config, "WB_MAX_CPM_RUB", 3000)
+    delta_pct = abs(delta_pct)
     if direction == "down":
         new_cpm = int(current_cpm * (1 - delta_pct / 100))
     else:
@@ -286,6 +287,7 @@ def clamp_wb_cpm(current_cpm: float, direction: str, delta_pct: float) -> int:
 def clamp_ozon_bid(current_bid: float, direction: str, delta_pct: float) -> float:
     """Новая ставка Ozon per-SKU по проценту, зажатая в [1.0, config.OZON_MAX_BID_RUB]."""
     ceiling = getattr(config, "OZON_MAX_BID_RUB", 500)
+    delta_pct = abs(delta_pct)
     multiplier = (1 - delta_pct / 100) if direction == "down" else (1 + delta_pct / 100)
     return max(1.0, min(ceiling, round(current_bid * multiplier, 2)))
 
@@ -6314,7 +6316,14 @@ class MaxAgent(BaseAgent):
         ]
         ok = await client.update_campaign_bids(campaign_id, new_bids)
 
-        arrow = "📉 Снижены" if direction == "down" else "📈 Повышены"
+        avg_cur = sum(b["bid"] for b in bids) / len(bids)
+        avg_new = sum(nb["bid"] for nb in new_bids) / len(new_bids)
+        if avg_new < avg_cur:
+            arrow = "📉 Снижены"
+        elif avg_new > avg_cur:
+            arrow = "📈 Повышены"
+        else:
+            arrow = "↔️ Без изменений"
         if ok:
             await self._invalidate_dashboard_bid_cache(chat_id)
             result = f"✅ Ставки {arrow} на {delta_pct}% ({len(new_bids)} SKU)"
@@ -6732,7 +6741,10 @@ class MaxAgent(BaseAgent):
             )
             return
 
-        delta_pct = int(delta_str)
+        try:
+            delta_pct = int(delta_str)
+        except ValueError:
+            delta_pct = 0
 
         lock = f"bid_apply:wb:{campaign_id}"
         if not await self._redis_acquire_lock(lock, "1", ttl=60):

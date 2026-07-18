@@ -1133,6 +1133,8 @@ async def run_all_async() -> None:
             return web.Response(status=400, text="Bad Request", headers=cors)
         if mp not in ("wb", "ozon") or not campaign_id or direction not in ("up", "down"):
             return web.Response(status=400, text="Bad Request", headers=cors)
+        if not (0 < delta_pct <= 90):
+            return web.Response(status=400, text="Bad Request", headers=cors)
         if mp == "ozon" and not shop_id:
             return web.Response(status=400, text="Bad Request", headers=cors)
 
