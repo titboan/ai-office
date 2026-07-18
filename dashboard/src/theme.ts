@@ -63,8 +63,8 @@ export function stockBarClass(days: number): string {
 // ── ДРР (доля рекламных расходов) ───────────────────────────────────────────
 export function drrColorClass(pct: number | null): string {
   if (pct === null) return 'text-gray-400'
-  if (pct > 30) return 'text-red-500'
-  if (pct > 20) return 'text-yellow-500'
+  if (pct >= 30) return 'text-red-500'
+  if (pct >= 20) return 'text-yellow-500'
   return 'text-green-600'
 }
 

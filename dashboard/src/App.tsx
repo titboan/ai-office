@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo, useRef } from 'react'
 import { LayoutDashboard, FileBarChart, Package, Settings, AlertCircle, Sun, Moon, RefreshCw } from 'lucide-react'
 import { fetchDashboard, fetchTimeline, DashboardData, DayRevenue, TimelineData } from './api'
 import RevenueChart from './charts/RevenueChart'
+import OrdersChart from './charts/OrdersChart'
 import TopProducts from './charts/TopProducts'
 import DrrGauge from './charts/DrrGauge'
 import CtrRoas from './charts/CtrRoas'
@@ -25,6 +26,7 @@ import MergeProductForm from './charts/MergeProductForm'
 import AddShopForm from './charts/AddShopForm'
 import CardSkeleton from './components/CardSkeleton'
 import AlertBanner, { collectAlerts } from './components/AlertBanner'
+import { MainButtonProvider } from './hooks/MainButtonContext'
 
 type Days = 7 | 14 | 30
 type Theme = 'light' | 'dark'
@@ -114,6 +116,7 @@ export default function App() {
   const [loading, setLoading] = useState(true)      // true только пока нет никаких данных (нет кеша)
   const [isFetchingFresh, setIsFetchingFresh] = useState(false)  // фоновое обновление
   const [isStale, setIsStale] = useState(false)     // показаны кешированные данные
+  const [staleRefreshFailed, setStaleRefreshFailed] = useState(false)  // фоновый рефреш кеша не удался
   const [timeline, setTimeline] = useState<TimelineData | null>(null)
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [tab, setTab] = useState<Tab>(getInitialTab)
@@ -165,6 +168,7 @@ export default function App() {
     lastRefreshAt.current = Date.now()
 
     const cached = loadCachedData(days)
+    setStaleRefreshFailed(false)
     if (cached) {
       setData(cached)
       setLoading(false)
@@ -183,15 +187,32 @@ export default function App() {
         setData(d)
         setUpdatedAt(new Date())
         setIsStale(false)
+        setStaleRefreshFailed(false)
         setLoading(false)
         saveCachedData(days, d)
       })
       .catch(e => {
-        if (!cached) setError(e.message)
+        if (!cached) {
+          setError(e.message)
+        } else {
+          // Кеш уже показан пользователю — не блокируем UI ошибкой, но снимаем
+          // вечный "из кеша, обновление..." и коротко показываем, что фоновый
+          // рефреш не удался (данные остаются старыми из кеша).
+          setIsStale(false)
+          setStaleRefreshFailed(true)
+        }
         setLoading(false)
       })
       .finally(() => setIsFetchingFresh(false))
   }, [days, refreshKey])
+
+  // Убрать индикатор неудавшегося фонового обновления через несколько секунд,
+  // чтобы не висел в футере бесконечно.
+  useEffect(() => {
+    if (!staleRefreshFailed) return
+    const t = setTimeout(() => setStaleRefreshFailed(false), 5000)
+    return () => clearTimeout(t)
+  }, [staleRefreshFailed])
 
   const displayData = useMemo(
     () => data && mpFilter !== 'all' ? filterDataByMp(data, mpFilter) : data,
@@ -245,6 +266,7 @@ export default function App() {
   const showFilters = tab === 'dashboard' || tab === 'reports'
 
   return (
+    <MainButtonProvider>
     <div
       className="min-h-screen p-3 space-y-3 md:max-w-3xl lg:max-w-5xl md:mx-auto"
       style={{ background: 'var(--tg-theme-bg-color, #f5f5f5)' }}
@@ -376,6 +398,7 @@ export default function App() {
           <div className="space-y-3 md:space-y-0 md:grid md:grid-cols-2 lg:grid-cols-3 md:gap-3 md:items-start">
             <WowTrend data={displayData.trend} />
             <RevenueChart data={displayData.revenue_by_day} sales={displayData.sales_by_day ?? []} />
+            <OrdersChart data={displayData.orders_by_day ?? []} />
             <TopProducts data={displayData.top_products} />
             {/* id для скролла из AlertBanner */}
             <div id="section-drr"><DrrGauge adv={displayData.adv} salesByDay={displayData.revenue_by_day ?? []} /></div>
@@ -399,6 +422,8 @@ export default function App() {
             За {displayData.period_days} дней с {displayData.date_from}
             {isStale
               ? ' · из кеша, обновление...'
+              : staleRefreshFailed
+              ? ' · не удалось обновить, попробуй позже'
               : updatedAtStr ? ` · обновлено в ${updatedAtStr}` : ''
             }
           </div>
@@ -415,7 +440,12 @@ export default function App() {
         <div className="space-y-3">
           <div className="text-xs text-gray-400 dark:text-gray-500 px-1">
             Данные за {days} дней
-            {isStale ? ' · из кеша, обновление...' : updatedAtStr ? ` · обновлено в ${updatedAtStr}` : ''}
+            {isStale
+              ? ' · из кеша, обновление...'
+              : staleRefreshFailed
+              ? ' · не удалось обновить, попробуй позже'
+              : updatedAtStr ? ` · обновлено в ${updatedAtStr}` : ''
+            }
           </div>
           <KwTable data={data?.kw_top ?? []} />
           <SupplyPlan data={displayData?.supply_plan ?? { products: [], lead_days: 0, safety_days: 0 }} />
@@ -438,5 +468,6 @@ export default function App() {
         </div>
       )}
     </div>
+    </MainButtonProvider>
   )
 }

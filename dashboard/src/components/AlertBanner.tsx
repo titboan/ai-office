@@ -26,9 +26,9 @@ export function collectAlerts(data: DashboardData): Alert[] {
   const totalSpend = data.adv.reduce((s, r) => s + r.spend, 0)
   if (totalRevenue > 0) {
     const drr = (totalSpend / totalRevenue) * 100
-    if (drr > 30) {
+    if (drr >= 30) {
       alerts.push({ level: 'critical', text: `ДРР ${drr.toFixed(1)}% — выше нормы (цель < 20%)`, scrollTo: 'section-drr' })
-    } else if (drr > 20) {
+    } else if (drr >= 20) {
       alerts.push({ level: 'warning', text: `ДРР ${drr.toFixed(1)}% — повышенный`, scrollTo: 'section-drr' })
     }
   }
