@@ -238,25 +238,13 @@ class WBClient:
         stats_headers = {"Authorization": f"Bearer {statistics_token}", "Content-Type": "application/json"}
         date_from = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT00:00:00")
         url = f"{_STATS_BASE}/api/v1/supplier/stocks"
-        data = None
-        for attempt in range(2):
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url, headers=stats_headers,
-                    params={"dateFrom": date_from},
-                    timeout=_TIMEOUT,
-                ) as resp:
-                    if resp.status == 429:
-                        logger.warning("[WB.get_stocks] rate limit, жду 60 сек")
-                        await asyncio.sleep(60)
-                        continue
-                    raw = await resp.text()
-                    if resp.status != 200:
-                        logger.error(f"[WB.get_stocks] HTTP {resp.status}: {raw[:200]}")
-                        return []
-                    import json as _json
-                    data = _json.loads(raw)
-                    break
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "GET", url,
+                headers=stats_headers,
+                params={"dateFrom": date_from},
+                label="WB.get_stocks",
+            )
         if not data:
             return []
         results = []
@@ -472,28 +460,16 @@ class WBClient:
         stats_headers = {"Authorization": f"Bearer {statistics_token}", "Content-Type": "application/json"}
         df_str = date_from.strftime("%Y-%m-%dT%H:%M:%S")
         url = f"{_STATS_BASE}/api/v1/supplier/orders"
-        data = None
-        for attempt in range(2):
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url, headers=stats_headers,
-                    params={"dateFrom": df_str, "flag": 1},
-                    timeout=_TIMEOUT,
-                ) as resp:
-                    if resp.status == 429:
-                        logger.warning("[WB.get_orders] rate limit, жду 60 сек")
-                        await asyncio.sleep(60)
-                        continue
-                    raw = await resp.text()
-                    if resp.status != 200:
-                        logger.error(f"[WB.get_orders] HTTP {resp.status}: {raw[:200]}")
-                        return []
-                    import json as _json
-                    data = _json.loads(raw)
-                    logger.info(f"[WB.get_orders] HTTP {resp.status}, записей в ответе: {len(data) if isinstance(data, list) else '?'}")
-                    break
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "GET", url,
+                headers=stats_headers,
+                params={"dateFrom": df_str, "flag": 1},
+                label="WB.get_orders",
+            )
         if not data:
             return []
+        logger.info(f"[WB.get_orders] записей в ответе: {len(data) if isinstance(data, list) else '?'}")
         results = []
         for item in (data if isinstance(data, list) else []):
             if item.get("isCancel"):
@@ -516,26 +492,13 @@ class WBClient:
         df_str = date_from.strftime("%Y-%m-%dT%H:%M:%S")
         url = f"{_STATS_BASE}/api/v1/supplier/orders"
         logger.info(f"[WB.get_orders_all] GET {url} dateFrom={df_str}")
-        data = None
-        for attempt in range(2):
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url, headers=stats_headers,
-                    params={"dateFrom": df_str, "flag": 0},
-                    timeout=_TIMEOUT,
-                ) as resp:
-                    if resp.status == 429:
-                        logger.warning("[WB.get_orders_all] rate limit, жду 60 сек")
-                        await asyncio.sleep(60)
-                        continue
-                    raw = await resp.text()
-                    logger.info(f"[WB.get_orders_all] HTTP {resp.status}, тело: {raw[:200]}")
-                    if resp.status != 200:
-                        logger.error(f"[WB.get_orders_all] HTTP {resp.status}: {raw[:200]}")
-                        return []
-                    import json as _json
-                    data = _json.loads(raw)
-                    break
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "GET", url,
+                headers=stats_headers,
+                params={"dateFrom": df_str, "flag": 0},
+                label="WB.get_orders_all",
+            )
         if not data:
             return []
         orders_raw = data if isinstance(data, list) else []
@@ -666,25 +629,13 @@ class WBClient:
         stats_headers = {"Authorization": f"Bearer {statistics_token}", "Content-Type": "application/json"}
         df_str = date_from.strftime("%Y-%m-%dT00:00:00")
         url = f"{_STATS_BASE}/api/v1/supplier/sales"
-        data = None
-        for attempt in range(2):
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url, headers=stats_headers,
-                    params={"dateFrom": df_str, "flag": 1},
-                    timeout=_TIMEOUT,
-                ) as resp:
-                    if resp.status == 429:
-                        logger.warning("[WB.get_sales] rate limit, жду 60 сек")
-                        await asyncio.sleep(60)
-                        continue
-                    raw = await resp.text()
-                    if resp.status != 200:
-                        logger.error(f"[WB.get_sales] HTTP {resp.status}: {raw[:200]}")
-                        return []
-                    import json as _json
-                    data = _json.loads(raw)
-                    break
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "GET", url,
+                headers=stats_headers,
+                params={"dateFrom": df_str, "flag": 1},
+                label="WB.get_sales",
+            )
         if not data:
             return []
         results = []
@@ -1265,35 +1216,16 @@ class WBClient:
         statistics_token: str,
     ) -> list[dict]:
         """Аналитика возвратов WB за период из Statistics API."""
-        import json as _json
         _STATS_BASE = "https://statistics-api.wildberries.ru"
         stats_headers = {"Authorization": f"Bearer {statistics_token}", "Content-Type": "application/json"}
         url = f"{_STATS_BASE}/api/v1/supplier/sales"
-        data = None
-        for attempt in range(2):
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        url, headers=stats_headers,
-                        params={"dateFrom": date_from, "flag": 1},
-                        timeout=_TIMEOUT,
-                    ) as resp:
-                        if resp.status == 429:
-                            logger.warning("[WB.get_returns_analytics] rate limit, жду 60 сек")
-                            await asyncio.sleep(60)
-                            continue
-                        raw = await resp.text()
-                        if resp.status != 200:
-                            logger.error(f"[WB.get_returns_analytics] HTTP {resp.status}: {raw[:200]}")
-                            return []
-                        data = _json.loads(raw)
-                        break
-            except asyncio.TimeoutError:
-                logger.error("[marketplace] timeout: WB.get_returns_analytics")
-                return []
-            except Exception as e:
-                logger.error(f"[WB.get_returns_analytics] exception: {e}")
-                return []
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "GET", url,
+                headers=stats_headers,
+                params={"dateFrom": date_from, "flag": 1},
+                label="WB.get_returns_analytics",
+            )
         if not data:
             return []
         agg: dict[str, dict] = {}
