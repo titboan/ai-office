@@ -375,11 +375,32 @@ class MartaAgent(BaseAgent):
             if task_id:
                 enqueued_ids.append(task_id)
 
-        # Redis-барьер для параллельного старта
+        # Redis-барьер для параллельного старта — по реально поставленным в очередь
+        # задачам, не по заявленному числу шагов (enqueue_chain_task может вернуть None
+        # при сбое БД — тогда барьер по len(group0_steps) никогда не досчитается до нуля).
+        if len(enqueued_ids) == 0 and len(group0_steps) > 0:
+            logger.error(
+                f"chain_start | chain_id={chain_id[:8]} | "
+                f"ни одна из {len(group0_steps)} задач не встала в очередь — цепочка не запущена"
+            )
+            if chat_id:
+                await self._notify_user(
+                    chat_id,
+                    "⚠️ Не удалось запустить цепочку — очередь недоступна, попробуй ещё раз.",
+                    bot_token=self.bot_token,
+                )
+            return
+
         if is_parallel_start:
+            if len(enqueued_ids) < len(group0_steps):
+                logger.warning(
+                    f"chain_start | chain_id={chain_id[:8]} | "
+                    f"в очередь встало {len(enqueued_ids)} из {len(group0_steps)} задач — "
+                    f"барьер выставлен на фактическое число"
+                )
             redis = await self._get_redis()
             if redis:
-                await redis.set(f"chain_barrier:{chain_id}:0", len(group0_steps), ex=86_400)
+                await redis.set(f"chain_barrier:{chain_id}:0", len(enqueued_ids), ex=86_400)
 
         logger.info(
             f"chain_start | chain_id={chain_id[:8]} | groups={total_groups} | "

@@ -82,63 +82,77 @@ class WBClient:
         if since is None:
             since = datetime.now(timezone.utc) - timedelta(days=7)
         reviews: list[dict] = []
-        url    = f"{self._BASE}/api/v1/feedbacks"
-        params = {"isAnswered": "false", "take": 100, "skip": 0}
-        logger.debug(f"[WB.get_new_reviews] since={since}, params={params}")
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url,
-                    headers=self._headers(),
-                    params=params,
-                    timeout=_TIMEOUT,
-                ) as resp:
-                    text = await resp.text()
-                    logger.debug(
-                        f"[WB.get_new_reviews] status={resp.status}, body[:300]={text[:300]}"
-                    )
-                    if resp.status != 200:
-                        return reviews
-                    import json as _json
-                    data = _json.loads(text)
-        except asyncio.TimeoutError:
-            logger.error(f"[marketplace] timeout: GET {url}")
-            return reviews
-        except Exception as e:
-            logger.error(f"[WB.get_new_reviews] exception: {e}")
-            return reviews
-        if not data:
-            return reviews
-
-        for item in data.get("data", {}).get("feedbacks", []):
-            created_raw = item.get("createdDate", "")
+        url = f"{self._BASE}/api/v1/feedbacks"
+        take = 100
+        skip = 0
+        max_pages = 10  # безопасный предел — 1000 отзывов за один синк
+        for _page in range(max_pages):
+            params = {"isAnswered": "false", "take": take, "skip": skip}
+            logger.debug(f"[WB.get_new_reviews] since={since}, params={params}")
             try:
-                created = datetime.fromisoformat(created_raw.rstrip("Z")).replace(
-                    tzinfo=since.tzinfo
-                )
-                if created < since:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        url,
+                        headers=self._headers(),
+                        params=params,
+                        timeout=_TIMEOUT,
+                    ) as resp:
+                        text = await resp.text()
+                        logger.debug(
+                            f"[WB.get_new_reviews] status={resp.status}, body[:300]={text[:300]}"
+                        )
+                        if resp.status != 200:
+                            break
+                        import json as _json
+                        data = _json.loads(text)
+            except asyncio.TimeoutError:
+                logger.error(f"[marketplace] timeout: GET {url}")
+                break
+            except Exception as e:
+                logger.error(f"[WB.get_new_reviews] exception: {e}")
+                break
+            if not data:
+                break
+
+            feedbacks = data.get("data", {}).get("feedbacks", []) or []
+            for item in feedbacks:
+                created_raw = item.get("createdDate", "")
+                try:
+                    created = datetime.fromisoformat(created_raw.rstrip("Z")).replace(
+                        tzinfo=since.tzinfo
+                    )
+                    if created < since:
+                        continue
+                except Exception:
+                    pass
+
+                parts = []
+                if item.get("text"): parts.append(item["text"])
+                if item.get("pros"): parts.append(f"Плюсы: {item['pros']}")
+                if item.get("cons"): parts.append(f"Минусы: {item['cons']}")
+                full_text = "\n".join(parts) if parts else ""
+
+                rating = item.get("productValuation", 0)
+                if rating > max_rating:
                     continue
-            except Exception:
-                pass
 
-            parts = []
-            if item.get("text"): parts.append(item["text"])
-            if item.get("pros"): parts.append(f"Плюсы: {item['pros']}")
-            if item.get("cons"): parts.append(f"Минусы: {item['cons']}")
-            full_text = "\n".join(parts) if parts else ""
+                reviews.append({
+                    "review_id":    item.get("id", ""),
+                    "product_id":   str(item.get("subjectId", "") or ""),
+                    "product_name": item.get("subjectName", ""),
+                    "rating":       rating,
+                    "text":         full_text,
+                    "author":       item.get("userName", ""),
+                })
 
-            rating = item.get("productValuation", 0)
-            if rating > max_rating:
-                continue
-
-            reviews.append({
-                "review_id":    item.get("id", ""),
-                "product_id":   str(item.get("subjectId", "") or ""),
-                "product_name": item.get("subjectName", ""),
-                "rating":       rating,
-                "text":         full_text,
-                "author":       item.get("userName", ""),
-            })
+            if len(feedbacks) < take:
+                break
+            skip += take
+        else:
+            logger.warning(
+                f"[WB.get_new_reviews] достигнут предел {max_pages} страниц "
+                f"({max_pages * take}) — возможен незагруженный остаток отзывов"
+            )
         return reviews
 
     async def send_reply(self, review_id: str, text: str) -> bool:
@@ -163,8 +177,13 @@ class WBClient:
             logger.error(f"[WB.send_reply] exception: {e}")
             return False
 
-    async def check_connection(self) -> bool:
-        """Проверить валидность токена (тестовый запрос)."""
+    async def check_connection(self) -> str:
+        """Проверить валидность токена (тестовый запрос).
+
+        Возвращает "ok" (токен валиден), "invalid_token" (401/403 — нужно
+        переподключить магазин с правильным токеном) или "unavailable"
+        (сеть/таймаут/прочие статусы — временный сбой WB, токен тут ни при чём).
+        """
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -174,13 +193,17 @@ class WBClient:
                     timeout=_TIMEOUT_CHECK,
                 ) as resp:
                     logger.debug(f"[WB.check_connection] status={resp.status}")
-                    return resp.status == 200
+                    if resp.status == 200:
+                        return "ok"
+                    if resp.status in (401, 403):
+                        return "invalid_token"
+                    return "unavailable"
         except asyncio.TimeoutError:
             logger.error(f"[marketplace] timeout: GET {self._BASE}/api/v1/feedbacks")
-            return False
+            return "unavailable"
         except Exception as e:
             logger.warning(f"[WB.check_connection] exception: {e}")
-            return False
+            return "unavailable"
 
 
     async def get_nm_id_mapping(self, statistics_token: str) -> dict[str, str]:
@@ -224,25 +247,13 @@ class WBClient:
         stats_headers = {"Authorization": f"Bearer {statistics_token}", "Content-Type": "application/json"}
         date_from = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT00:00:00")
         url = f"{_STATS_BASE}/api/v1/supplier/stocks"
-        data = None
-        for attempt in range(2):
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url, headers=stats_headers,
-                    params={"dateFrom": date_from},
-                    timeout=_TIMEOUT,
-                ) as resp:
-                    if resp.status == 429:
-                        logger.warning("[WB.get_stocks] rate limit, жду 60 сек")
-                        await asyncio.sleep(60)
-                        continue
-                    raw = await resp.text()
-                    if resp.status != 200:
-                        logger.error(f"[WB.get_stocks] HTTP {resp.status}: {raw[:200]}")
-                        return []
-                    import json as _json
-                    data = _json.loads(raw)
-                    break
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "GET", url,
+                headers=stats_headers,
+                params={"dateFrom": date_from},
+                label="WB.get_stocks",
+            )
         if not data:
             return []
         results = []
@@ -458,28 +469,16 @@ class WBClient:
         stats_headers = {"Authorization": f"Bearer {statistics_token}", "Content-Type": "application/json"}
         df_str = date_from.strftime("%Y-%m-%dT%H:%M:%S")
         url = f"{_STATS_BASE}/api/v1/supplier/orders"
-        data = None
-        for attempt in range(2):
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url, headers=stats_headers,
-                    params={"dateFrom": df_str, "flag": 1},
-                    timeout=_TIMEOUT,
-                ) as resp:
-                    if resp.status == 429:
-                        logger.warning("[WB.get_orders] rate limit, жду 60 сек")
-                        await asyncio.sleep(60)
-                        continue
-                    raw = await resp.text()
-                    if resp.status != 200:
-                        logger.error(f"[WB.get_orders] HTTP {resp.status}: {raw[:200]}")
-                        return []
-                    import json as _json
-                    data = _json.loads(raw)
-                    logger.info(f"[WB.get_orders] HTTP {resp.status}, записей в ответе: {len(data) if isinstance(data, list) else '?'}")
-                    break
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "GET", url,
+                headers=stats_headers,
+                params={"dateFrom": df_str, "flag": 1},
+                label="WB.get_orders",
+            )
         if not data:
             return []
+        logger.info(f"[WB.get_orders] записей в ответе: {len(data) if isinstance(data, list) else '?'}")
         results = []
         for item in (data if isinstance(data, list) else []):
             if item.get("isCancel"):
@@ -502,26 +501,13 @@ class WBClient:
         df_str = date_from.strftime("%Y-%m-%dT%H:%M:%S")
         url = f"{_STATS_BASE}/api/v1/supplier/orders"
         logger.info(f"[WB.get_orders_all] GET {url} dateFrom={df_str}")
-        data = None
-        for attempt in range(2):
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url, headers=stats_headers,
-                    params={"dateFrom": df_str, "flag": 0},
-                    timeout=_TIMEOUT,
-                ) as resp:
-                    if resp.status == 429:
-                        logger.warning("[WB.get_orders_all] rate limit, жду 60 сек")
-                        await asyncio.sleep(60)
-                        continue
-                    raw = await resp.text()
-                    logger.info(f"[WB.get_orders_all] HTTP {resp.status}, тело: {raw[:200]}")
-                    if resp.status != 200:
-                        logger.error(f"[WB.get_orders_all] HTTP {resp.status}: {raw[:200]}")
-                        return []
-                    import json as _json
-                    data = _json.loads(raw)
-                    break
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "GET", url,
+                headers=stats_headers,
+                params={"dateFrom": df_str, "flag": 0},
+                label="WB.get_orders_all",
+            )
         if not data:
             return []
         orders_raw = data if isinstance(data, list) else []
@@ -652,25 +638,13 @@ class WBClient:
         stats_headers = {"Authorization": f"Bearer {statistics_token}", "Content-Type": "application/json"}
         df_str = date_from.strftime("%Y-%m-%dT00:00:00")
         url = f"{_STATS_BASE}/api/v1/supplier/sales"
-        data = None
-        for attempt in range(2):
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url, headers=stats_headers,
-                    params={"dateFrom": df_str, "flag": 1},
-                    timeout=_TIMEOUT,
-                ) as resp:
-                    if resp.status == 429:
-                        logger.warning("[WB.get_sales] rate limit, жду 60 сек")
-                        await asyncio.sleep(60)
-                        continue
-                    raw = await resp.text()
-                    if resp.status != 200:
-                        logger.error(f"[WB.get_sales] HTTP {resp.status}: {raw[:200]}")
-                        return []
-                    import json as _json
-                    data = _json.loads(raw)
-                    break
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "GET", url,
+                headers=stats_headers,
+                params={"dateFrom": df_str, "flag": 1},
+                label="WB.get_sales",
+            )
         if not data:
             return []
         results = []
@@ -748,26 +722,43 @@ class WBClient:
             batch = campaign_ids[i:i+50]
             if i > 0:
                 await asyncio.sleep(20)  # соблюдаем rate limit: 3 запроса/мин, интервал 20 сек
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{_ADV_BASE}/adv/v3/fullstats",
-                    headers=adv_headers,
-                    params={
-                        "ids":       ",".join(str(cid) for cid in batch),
-                        "beginDate": date_from,
-                        "endDate":   date_to,
-                    },
-                    timeout=_TIMEOUT,
-                ) as resp:
-                    raw = await resp.text()
-                    if resp.status == 429:
-                        logger.warning("[WB.get_ad_stats] rate limit, жду 60 сек")
-                        await asyncio.sleep(60)
-                        continue
-                    if resp.status != 200:
-                        logger.error(f"[WB.get_ad_stats] fullstats HTTP {resp.status}: {raw[:200]}")
-                        continue
-                    stats = _json.loads(raw)
+
+            stats = None
+            max_retries = 3
+            for attempt in range(1, max_retries + 1):
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"{_ADV_BASE}/adv/v3/fullstats",
+                        headers=adv_headers,
+                        params={
+                            "ids":       ",".join(str(cid) for cid in batch),
+                            "beginDate": date_from,
+                            "endDate":   date_to,
+                        },
+                        timeout=_TIMEOUT,
+                    ) as resp:
+                        raw = await resp.text()
+                        if resp.status == 429:
+                            if attempt < max_retries:
+                                logger.warning(
+                                    f"[WB.get_ad_stats] rate limit на батче {i}-{i + len(batch)}, "
+                                    f"жду 60 сек (попытка {attempt}/{max_retries})"
+                                )
+                                await asyncio.sleep(60)
+                                continue
+                            logger.error(
+                                f"[WB.get_ad_stats] rate limit на батче {i}-{i + len(batch)} "
+                                f"после {max_retries} попыток — батч потерян ({len(batch)} кампаний)"
+                            )
+                            break
+                        if resp.status != 200:
+                            logger.error(f"[WB.get_ad_stats] fullstats HTTP {resp.status}: {raw[:200]}")
+                            break
+                        stats = _json.loads(raw)
+                        break
+
+            if stats is None:
+                continue
 
             _campaigns_with_nm = 0
             _campaigns_no_nm = 0
@@ -1156,35 +1147,47 @@ class WBClient:
         _Q_BASE = "https://feedbacks-api.wildberries.ru"
         url = f"{_Q_BASE}/api/v1/questions"
         headers = {"Authorization": self._token, "Content-Type": "application/json"}
-        params = {"isAnswered": str(is_answered).lower(), "take": take, "skip": 0}
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, params=params, timeout=_TIMEOUT) as resp:
-                    raw = await resp.text()
-                    if resp.status != 200:
-                        logger.error(f"[WB.get_questions] HTTP {resp.status}: {raw[:200]}")
-                        raise RuntimeError(f"WB questions API HTTP {resp.status}")
-                    data = _json.loads(raw)
-        except asyncio.TimeoutError:
-            logger.error("[marketplace] timeout: WB.get_questions")
-            return []
-        except Exception as e:
-            logger.error(f"[WB.get_questions] exception: {e}")
-            return []
         results = []
-        for item in (data.get("data") or {}).get("questions") or []:
-            results.append({
-                "question_id":   str(item.get("id", "")),
-                "product_id":    str(item.get("productDetails", {}).get("nmId", "") or ""),
-                "product_name":  item.get("productDetails", {}).get("productName", ""),
-                "question_text": item.get("text", ""),
-                "created_at":    item.get("createdDate", ""),
-            })
-        if not results:
-            inner = data.get("data") or {}
+        skip = 0
+        max_pages = 10  # безопасный предел — 1000 вопросов за один синк
+        for page in range(max_pages):
+            params = {"isAnswered": str(is_answered).lower(), "take": take, "skip": skip}
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers=headers, params=params, timeout=_TIMEOUT) as resp:
+                        raw = await resp.text()
+                        if resp.status != 200:
+                            logger.error(f"[WB.get_questions] HTTP {resp.status}: {raw[:200]}")
+                            raise RuntimeError(f"WB questions API HTTP {resp.status}")
+                        data = _json.loads(raw)
+            except asyncio.TimeoutError:
+                logger.error("[marketplace] timeout: WB.get_questions")
+                break
+            except Exception as e:
+                logger.error(f"[WB.get_questions] exception: {e}")
+                break
+            items = (data.get("data") or {}).get("questions") or []
+            for item in items:
+                results.append({
+                    "question_id":   str(item.get("id", "")),
+                    "product_id":    str(item.get("productDetails", {}).get("nmId", "") or ""),
+                    "product_name":  item.get("productDetails", {}).get("productName", ""),
+                    "question_text": item.get("text", ""),
+                    "created_at":    item.get("createdDate", ""),
+                })
+            if page == 0 and not items:
+                inner = data.get("data") or {}
+                logger.warning(
+                    f"[WB.get_questions] 0 вопросов — countUnanswered={inner.get('countUnanswered')}, "
+                    f"keys={list(inner.keys())}, raw[:300]={str(data)[:300]}"
+                )
+            if len(items) < take:
+                break
+            skip += take
+        else:
             logger.warning(
-                f"[WB.get_questions] 0 вопросов — countUnanswered={inner.get('countUnanswered')}, "
-                f"keys={list(inner.keys())}, raw[:300]={str(data)[:300]}"
+                f"[WB.get_questions] достигнут предел {max_pages} страниц "
+                f"({max_pages * take}) — возможен незагруженный остаток вопросов"
             )
         logger.info(f"[WB.get_questions] {len(results)} вопросов (is_answered={is_answered})")
         return results
@@ -1222,35 +1225,16 @@ class WBClient:
         statistics_token: str,
     ) -> list[dict]:
         """Аналитика возвратов WB за период из Statistics API."""
-        import json as _json
         _STATS_BASE = "https://statistics-api.wildberries.ru"
         stats_headers = {"Authorization": f"Bearer {statistics_token}", "Content-Type": "application/json"}
         url = f"{_STATS_BASE}/api/v1/supplier/sales"
-        data = None
-        for attempt in range(2):
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        url, headers=stats_headers,
-                        params={"dateFrom": date_from, "flag": 1},
-                        timeout=_TIMEOUT,
-                    ) as resp:
-                        if resp.status == 429:
-                            logger.warning("[WB.get_returns_analytics] rate limit, жду 60 сек")
-                            await asyncio.sleep(60)
-                            continue
-                        raw = await resp.text()
-                        if resp.status != 200:
-                            logger.error(f"[WB.get_returns_analytics] HTTP {resp.status}: {raw[:200]}")
-                            return []
-                        data = _json.loads(raw)
-                        break
-            except asyncio.TimeoutError:
-                logger.error("[marketplace] timeout: WB.get_returns_analytics")
-                return []
-            except Exception as e:
-                logger.error(f"[WB.get_returns_analytics] exception: {e}")
-                return []
+        async with aiohttp.ClientSession() as session:
+            data = await _request(
+                session, "GET", url,
+                headers=stats_headers,
+                params={"dateFrom": date_from, "flag": 1},
+                label="WB.get_returns_analytics",
+            )
         if not data:
             return []
         agg: dict[str, dict] = {}
@@ -1300,36 +1284,47 @@ class OzonClient:
     async def get_new_reviews(self, since: datetime) -> list[dict]:
         now = datetime.now(since.tzinfo)
         reviews: list[dict] = []
+        offset = 0
+        max_pages = 25  # безопасный предел — 500 отзывов (_OZON_LIMIT=20) за один синк
         async with aiohttp.ClientSession() as session:
-            data = await _request(
-                session, "POST",
-                f"{self._BASE}/v2/review/list",
-                headers=self._headers(),
-                json={
-                    "sort_dir": "DESC",
-                    "filter": {
-                        "posting_date": {
-                            "time_from": since.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                            "time_to":   now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        }
+            for _page in range(max_pages):
+                data = await _request(
+                    session, "POST",
+                    f"{self._BASE}/v2/review/list",
+                    headers=self._headers(),
+                    json={
+                        "sort_dir": "DESC",
+                        "filter": {
+                            "posting_date": {
+                                "time_from": since.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                "time_to":   now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            }
+                        },
+                        "limit":  _OZON_LIMIT,
+                        "offset": offset,
                     },
-                    "limit":  _OZON_LIMIT,
-                    "offset": 0,
-                },
-                label="Ozon.get_new_reviews",
-            )
-        if not data:
-            return reviews
-
-        for item in data.get("reviews", []):
-            reviews.append({
-                "review_id":    item.get("review_uuid", ""),
-                "product_id":   str(item.get("sku", "") or ""),
-                "product_name": item.get("product_name", ""),
-                "rating":       item.get("rating", 0),
-                "text":         (item.get("text") or {}).get("positive", "") or "",
-                "author":       item.get("reviewer_name", ""),
-            })
+                    label="Ozon.get_new_reviews",
+                )
+                if not data:
+                    break
+                items = data.get("reviews", []) or []
+                for item in items:
+                    reviews.append({
+                        "review_id":    item.get("review_uuid", ""),
+                        "product_id":   str(item.get("sku", "") or ""),
+                        "product_name": item.get("product_name", ""),
+                        "rating":       item.get("rating", 0),
+                        "text":         (item.get("text") or {}).get("positive", "") or "",
+                        "author":       item.get("reviewer_name", ""),
+                    })
+                if len(items) < _OZON_LIMIT:
+                    break
+                offset += _OZON_LIMIT
+            else:
+                logger.warning(
+                    f"[Ozon.get_new_reviews] достигнут предел {max_pages} страниц "
+                    f"({max_pages * _OZON_LIMIT}) — возможен незагруженный остаток отзывов"
+                )
         return reviews
 
     async def send_reply(self, review_id: str, text: str) -> bool:
@@ -1343,9 +1338,12 @@ class OzonClient:
             )
         return data is not None
 
-    async def check_connection(self) -> bool:
+    async def check_connection(self) -> str:
         """Проверить валидность токена.
-        200/400 → credentials верны; 401/403 → неверные.
+
+        200/400 → credentials верны ("ok"); 401/403 → неверные ("invalid_token");
+        сеть/таймаут/прочие статусы → временный сбой Ozon ("unavailable"), токен
+        тут ни при чём.
         """
         url = f"{self._BASE}/v2/review/list"
         try:
@@ -1358,13 +1356,17 @@ class OzonClient:
                 ) as resp:
                     raw = await resp.text()
                     logger.debug(f"[Ozon.check_connection] status={resp.status} body={raw[:200]!r}")
-                    return resp.status in (200, 400)
+                    if resp.status in (200, 400):
+                        return "ok"
+                    if resp.status in (401, 403):
+                        return "invalid_token"
+                    return "unavailable"
         except asyncio.TimeoutError:
             logger.error(f"[marketplace] timeout: POST {url}")
-            return False
+            return "unavailable"
         except Exception as e:
             logger.warning(f"[Ozon.check_connection] exception: {e}")
-            return False
+            return "unavailable"
 
     async def get_questions(self) -> list[dict]:
         """Неотвеченные вопросы покупателей Ozon через /v1/question/list.
@@ -1714,6 +1716,12 @@ class OzonClient:
                     postings = raw_result.get("postings") or [] if isinstance(raw_result, dict) else []
                     has_next = raw_result.get("has_next", False) if isinstance(raw_result, dict) else False
                 total.extend(_parse_postings(postings, scheme))
+                if has_next and offset >= 2000:
+                    logger.warning(
+                        f"[Ozon.get_sales/{scheme}] обрыв пагинации на offset={offset} — "
+                        "по данным Ozon есть ещё записи (has_next=True), но достигнут предел 2000 "
+                        "(точное количество оставшихся Ozon API не сообщает)"
+                    )
                 if not has_next or offset >= 2000:
                     break
                 offset += len(postings)
@@ -1807,6 +1815,12 @@ class OzonClient:
                     logger.debug(f"[Ozon.get_orders/{status}] offset={offset}, postings_count={len(postings)}")
                     all_postings.extend(postings)
                     status_raw += len(postings)
+                    if data.get("has_next") and offset >= 2000:
+                        logger.warning(
+                            f"[Ozon.get_orders/{status}] обрыв пагинации на offset={offset} — "
+                            "по данным Ozon есть ещё записи (has_next=True), но достигнут предел 2000 "
+                            "(точное количество оставшихся Ozon API не сообщает)"
+                        )
                     if not data.get("has_next") or offset >= 2000:
                         break
                     offset += len(postings)
@@ -2890,18 +2904,33 @@ class OzonClient:
         return result
 
 
-def _extract_csv_texts_from_zip(raw_bytes: bytes) -> list[str]:
-    """Читает ВСЕ файлы из ZIP-архива Ozon Performance (по одному CSV на кампанию в батче)."""
+def _extract_csv_texts_from_zip(raw_bytes: bytes) -> list[tuple[str, str]]:
+    """Читает ВСЕ файлы из ZIP-архива Ozon Performance (по одному CSV на кампанию в батче).
+
+    Возвращает [(filename, text), ...]. utf-8-sig — основная кодировка; если декодирование
+    даёт replacement-символы (значит байты не utf-8), пробуем cp1251 — часть выгрузок
+    Ozon Performance приходит в этой кодировке.
+    """
     import zipfile as _zipfile, io as _io
-    csv_texts = []
+    csv_texts: list[tuple[str, str]] = []
     with _zipfile.ZipFile(_io.BytesIO(raw_bytes)) as zf:
         for fname in zf.namelist():
-            csv_texts.append(zf.read(fname).decode("utf-8-sig", errors="replace"))
+            raw = zf.read(fname)
+            text = raw.decode("utf-8-sig", errors="replace")
+            if "�" in text:
+                try:
+                    text = raw.decode("cp1251")
+                except UnicodeDecodeError:
+                    logger.warning(
+                        f"[Ozon.get_ad_stats_csv] {fname}: не удалось декодировать ни как "
+                        "utf-8-sig, ни как cp1251 — используется текст с заменой символов"
+                    )
+            csv_texts.append((fname, text))
     return csv_texts
 
 
 def _parse_ozon_ad_stats_csv(
-    csv_texts: list[str],
+    csv_texts: list[tuple[str, str]],
     campaign_names: dict[str, str],
     date_from: str,
     date_to: str,
@@ -2923,12 +2952,20 @@ def _parse_ozon_ad_stats_csv(
     from datetime import datetime as _dt, timedelta as _td
 
     results = []
-    for csv_text_batch in csv_texts:
+    for fname, csv_text_batch in csv_texts:
         lines = csv_text_batch.splitlines()
         if len(lines) < 2:
+            logger.warning(
+                f"[Ozon.get_ad_stats_csv] {fname}: пустой/слишком короткий CSV "
+                f"({len(lines)} строк) — пропущен"
+            )
             continue
         m = _re.search(r"№\s*(\d+)", lines[0])
         if not m:
+            logger.warning(
+                f"[Ozon.get_ad_stats_csv] {fname}: не найден ID кампании в первой строке "
+                f"({lines[0][:100]!r}) — пропущен"
+            )
             continue
         cid = m.group(1)
         header_and_data = "\n".join(lines[1:])

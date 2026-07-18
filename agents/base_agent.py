@@ -695,6 +695,23 @@ class BaseAgent(ABC):
                                 bot_token=config.MARTA_BOT_TOKEN,
                             )
                         await mark_completed(reminder.id, "reminder_sent")
+
+                    # Зависшие цепочки: все известные задачи в терминальном статусе, но
+                    # следующая группа так и не была создана (barrier завис/enqueue провалился).
+                    # Уведомляем пользователя один раз на цепочку (NX-лок).
+                    from task_queue import get_stalled_chains
+                    stalled = await get_stalled_chains(config.CHAIN_STALL_TIMEOUT_MINUTES)
+                    for chain in stalled:
+                        chain_id = chain["chain_id"]
+                        acquired = await self._redis_acquire_lock(
+                            f"chain_stall_notified:{chain_id}", "1", ttl=86_400
+                        )
+                        if acquired and chain.get("chat_id"):
+                            await self._notify_user(
+                                chain["chat_id"],
+                                "⚠️ Цепочка задач зависла и не продвигается. Проверь `📋 Статус` или начни заново.",
+                                bot_token=config.MARTA_BOT_TOKEN,
+                            )
                 task = await get_next_task(self.agent_key or self.name.lower())
                 if task is None:
                     await asyncio.sleep(2)
@@ -716,32 +733,20 @@ class BaseAgent(ABC):
                 _task_start = time.monotonic()
                 # Единственная точка входа/выхода для пользователя — бот Марты.
                 _reply_token: str | None = config.MARTA_BOT_TOKEN
+                _task_completed = False
+                _completed_result: str | None = None
                 try:
                     result = await asyncio.wait_for(
                         self.handle_task(task.payload, from_agent=task.from_agent),
                         timeout=float(task.timeout_seconds),
                     )
                     await mark_completed(task.id, result)
-                    _latency_ms = int((time.monotonic() - _task_start) * 1000)
-                    await update_task_cost(task.id, self._task_tokens["cost"], _latency_ms)
-                    await log_event(
-                        "TASK_COMPLETED",
-                        task_id=task.id,
-                        agent_key=self.agent_key,
-                        chain_id=task.chain_id,
-                        payload={"result_len": len(result)},
-                    )
-                    task.result = result  # обновляем объект — нужно для _advance_chain → Notion
-                    if task.chain_id:
-                        await self._advance_chain(task)
-                    else:
-                        if task.chat_id:
-                            result_msg = f"{self._agent_label(result)}\n\n{result}"
-                            await self._notify_user(
-                                task.chat_id,
-                                result_msg,
-                                bot_token=_reply_token,
-                            )
+                    # Задача уже отмечена completed — ниже, до конца worker loop, никакая
+                    # ошибка НЕ должна вызывать mark_failed(retry=True), иначе завершённая
+                    # задача откатится в queued и выполнится повторно (двойной расход бюджета,
+                    # повторное применение цены/ставки, дублирующее сообщение пользователю).
+                    _task_completed = True
+                    _completed_result = result
                 except asyncio.TimeoutError:
                     await mark_failed(task.id, f"Таймаут {task.timeout_seconds}с", retry=False)
                     await log_event(
@@ -778,6 +783,38 @@ class BaseAgent(ABC):
                             f"**Причина:** `{error_short}`\n\n"
                             f"Попробуй переформулировать задачу или обратись к Марте.",
                             bot_token=_reply_token,
+                        )
+
+                if _task_completed:
+                    # Задача уже completed в БД — эти шаги только логируют/уведомляют/двигают
+                    # цепочку. Их сбой не должен откатывать уже выполненную задачу обратно
+                    # в queued, поэтому здесь нет mark_failed — только logger.error.
+                    try:
+                        result = _completed_result or ""
+                        _latency_ms = int((time.monotonic() - _task_start) * 1000)
+                        await update_task_cost(task.id, self._task_tokens["cost"], _latency_ms)
+                        await log_event(
+                            "TASK_COMPLETED",
+                            task_id=task.id,
+                            agent_key=self.agent_key,
+                            chain_id=task.chain_id,
+                            payload={"result_len": len(result)},
+                        )
+                        task.result = result  # обновляем объект — нужно для _advance_chain → Notion
+                        if task.chain_id:
+                            await self._advance_chain(task)
+                        else:
+                            if task.chat_id:
+                                result_msg = f"{self._agent_label(result)}\n\n{result}"
+                                await self._notify_user(
+                                    task.chat_id,
+                                    result_msg,
+                                    bot_token=_reply_token,
+                                )
+                    except Exception as e:
+                        logger.error(
+                            f"[{self.name}] Пост-обработка завершённой задачи {task.id} упала "
+                            f"({type(e).__name__}: {e}) — задача уже completed, не откатываем."
                         )
             except asyncio.CancelledError:
                 break
@@ -1037,13 +1074,35 @@ class BaseAgent(ABC):
             if task_id:
                 enqueued_ids.append(task_id)
 
-        # Устанавливаем Redis-барьер для параллельной следующей группы
+        # Устанавливаем Redis-барьер для параллельной следующей группы —
+        # по реально поставленным в очередь задачам, не по заявленному числу шагов
+        # (enqueue_chain_task может вернуть None при сбое БД — тогда барьер по len(next_steps)
+        # никогда не досчитается до нуля декрементами, и цепочка зависнет молча).
+        if len(enqueued_ids) == 0 and len(next_steps) > 0:
+            logger.error(
+                f"chain_advance | chain_id={chain_id[:8]} | group={next_index} | "
+                f"ни одна из {len(next_steps)} задач не встала в очередь — цепочка остановлена"
+            )
+            if chat_id:
+                await self._notify_user(
+                    chat_id,
+                    "⚠️ Не удалось запустить следующий шаг цепочки — очередь недоступна.",
+                    bot_token=_chain_reply_token,
+                )
+            return
+
         if is_parallel_next:
+            if len(enqueued_ids) < len(next_steps):
+                logger.warning(
+                    f"chain_advance | chain_id={chain_id[:8]} | group={next_index} | "
+                    f"в очередь встало {len(enqueued_ids)} из {len(next_steps)} задач — "
+                    f"барьер выставлен на фактическое число"
+                )
             redis = await self._get_redis()
             if redis:
                 await redis.set(
                     f"chain_barrier:{chain_id}:{next_index}",
-                    len(next_steps),
+                    len(enqueued_ids),
                     ex=86_400,
                 )
 

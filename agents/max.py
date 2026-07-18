@@ -1029,8 +1029,14 @@ class MaxAgent(BaseAgent):
         if step == "wb_token":
             await update.message.reply_text("🔍 Проверяю токен Wildberries…")
             from tools.marketplace import WBClient
-            ok = await WBClient(text).check_connection()
-            if not ok:
+            status = await WBClient(text).check_connection()
+            if status == "unavailable":
+                await update.message.reply_text(
+                    "⚠️ Wildberries временно недоступен — не удалось проверить токен. "
+                    "Попробуй отправить его ещё раз через минуту."
+                )
+                return
+            if status != "ok":
                 await update.message.reply_text(
                     "❌ Токен не подходит. Проверь что токен создан с категорией «Отзывы» и попробуй ещё раз."
                 )
@@ -1089,8 +1095,14 @@ class MaxAgent(BaseAgent):
             await update.message.reply_text("🔍 Проверяю подключение к Ozon…")
             from tools.marketplace import OzonClient
             client_id = data.get("client_id", "")
-            ok = await OzonClient(text, client_id).check_connection()
-            if not ok:
+            status = await OzonClient(text, client_id).check_connection()
+            if status == "unavailable":
+                await update.message.reply_text(
+                    "⚠️ Ozon временно недоступен — не удалось проверить подключение. "
+                    "Попробуй отправить Api-Key ещё раз через минуту."
+                )
+                return
+            if status != "ok":
                 await update.message.reply_text(
                     "❌ Не удалось подключиться. Проверь Client-Id и Api-Key и попробуй ещё раз.\n"
                     "Отправь Client-Id заново:"
@@ -1173,7 +1185,7 @@ class MaxAgent(BaseAgent):
 
     async def process_reviews(self, chat_id: int) -> dict:
         """Обработать отзывы. Возвращает итоги по каждой площадке."""
-        from db import get_marketplace_shops, save_review, update_review_status, get_review_status
+        from db import get_marketplace_shops, save_review, update_review_status, update_shop_last_checked
         from tools.marketplace import make_client
 
         shops = await get_marketplace_shops(chat_id)
@@ -1205,6 +1217,7 @@ class MaxAgent(BaseAgent):
                 continue
 
             for rv in reviews:
+                notif_key = f"rv_notified:{mp}:{rv['review_id']}"
                 is_new = await save_review(
                     marketplace=mp,
                     review_id=rv["review_id"],
@@ -1218,8 +1231,29 @@ class MaxAgent(BaseAgent):
                 if not is_new:
                     # Отзыв уже видели. Пропускаем, если он уже дошёл до финального
                     # статуса — но если авто-ответ раньше не удался (статус остался
-                    # 'new'), пробуем отправить ответ ещё раз, а не забываем о нём навсегда.
-                    existing_status = await get_review_status(mp, rv["review_id"])
+                    # 'new'), пробуем отправить ответ ещё раз. Если статус 'pending_approval'
+                    # (низкая оценка, ждёт решения человека) — уведомление могло не дойти
+                    # (упавший _notify_pending), повторяем не чаще раза в 2 часа.
+                    from db import get_pool as _gp
+                    async with (await _gp()).acquire() as _conn:
+                        _row = await _conn.fetchrow(
+                            "SELECT status, generated_reply FROM marketplace_reviews "
+                            "WHERE marketplace=$1 AND review_id=$2",
+                            mp, rv["review_id"],
+                        )
+                    existing_status = _row["status"] if _row else None
+                    if existing_status == "pending_approval":
+                        if not await self._redis_get(notif_key):
+                            try:
+                                await self._notify_pending(
+                                    chat_id, shop, rv, (_row["generated_reply"] if _row else "") or ""
+                                )
+                                await self._redis_set(notif_key, "1", ttl=7200)
+                                stats["pending"] += 1
+                            except Exception as e:
+                                logger.error(f"[Макс] retry _notify_pending failed review={rv['review_id'][:8]}: {e}")
+                                stats["errors"] += 1
+                        continue
                     if existing_status != "new":
                         continue
 
@@ -1246,6 +1280,7 @@ class MaxAgent(BaseAgent):
                 if rating <= 2:
                     try:
                         await self._notify_pending(chat_id, shop, rv, reply)
+                        await self._redis_set(notif_key, "1", ttl=7200)
                     except Exception as e:
                         logger.error(f"[Макс] _notify_pending failed review={rv['review_id'][:8]}: {e}")
                     stats["pending"] += 1
@@ -1266,6 +1301,7 @@ class MaxAgent(BaseAgent):
                             f"review={rv['review_id'][:8]} rating={rating} — статус остаётся 'new'"
                         )
 
+            await update_shop_last_checked(shop["id"])
             results[mp] = stats
 
         return results
@@ -1515,7 +1551,7 @@ class MaxAgent(BaseAgent):
                     if deleted:
                         logger.info(f"[Макс/sync] Ozon: удалено {deleted} старых записей с числовым SKU")
                     for pid, qty in ozon_in_transit.items():
-                        await upsert_in_transit(chat_id, "ozon", pid, qty)
+                        await upsert_in_transit(chat_id, "ozon", pid, qty, shop["id"])
                     if ozon_in_transit:
                         logger.info(f"[Макс/sync] Ozon: {len(ozon_in_transit)} товаров в пути на склад")
             except Exception as e:
@@ -1534,7 +1570,7 @@ class MaxAgent(BaseAgent):
                 try:
                     in_transit_items = await client.get_in_transit()
                     for item in in_transit_items:
-                        await upsert_in_transit(chat_id, "wb", item["product_id"], item["qty"])
+                        await upsert_in_transit(chat_id, "wb", item["product_id"], item["qty"], shop["id"])
                     if in_transit_items:
                         logger.info(f"[Макс/sync] WB: {len(in_transit_items)} артикулов в пути на склад")
                 except Exception as e:
@@ -2786,7 +2822,8 @@ class MaxAgent(BaseAgent):
             await update.message.reply_text("\n".join(lines))
 
     async def sync_shop_kpi(self, chat_id: int) -> dict:
-        """Снимок рейтинга и KPI продавца Ozon."""
+        """Снимок рейтинга и KPI продавца Ozon. Ключ результата — shop_id, а не marketplace,
+        чтобы несколько магазинов Ozon у одного продавца не затирали друг друга."""
         from db import get_marketplace_shops, upsert_shop_kpi
         from tools.marketplace import OzonClient
         from datetime import date as _date
@@ -2803,8 +2840,11 @@ class MaxAgent(BaseAgent):
                     client = OzonClient(shop["api_token"], shop.get("client_id", ""))
                     kpi = await client.get_shop_kpi()
                     if kpi:
+                        kpi = dict(kpi)
+                        kpi["marketplace"] = mp
+                        kpi["shop_name"] = shop.get("shop_name") or ""
                         await upsert_shop_kpi(
-                            chat_id=chat_id, marketplace="ozon",
+                            chat_id=chat_id, marketplace="ozon", shop_id=shop["id"],
                             snapshot_date=today,
                             rating=kpi.get("rating"),
                             return_pct=kpi.get("return_pct"),
@@ -2813,10 +2853,12 @@ class MaxAgent(BaseAgent):
                             extra_data=kpi.get("extra_data", {}),
                         )
                         logger.info(f"[Макс/kpi] Ozon: рейтинг {kpi.get('rating')}")
-                    results["ozon"] = kpi  # всегда, даже пустой — для отображения
+                        results[shop["id"]] = kpi
+                    else:
+                        results[shop["id"]] = {"marketplace": mp, "shop_name": shop.get("shop_name") or ""}
                 except Exception as e:
                     logger.error(f"[Макс/kpi] Ozon: {e}", exc_info=True)
-                    results["ozon"] = {}
+                    results[shop["id"]] = {"marketplace": mp, "shop_name": shop.get("shop_name") or ""}
 
         return results
 
@@ -2825,9 +2867,11 @@ class MaxAgent(BaseAgent):
         if not results:
             return "⚠️ Данные KPI недоступны (магазины не подключены или API не поддерживается)."
         lines = ["<b>Рейтинг продавца</b>"]
-        for mp, kpi in results.items():
-            label = _mp_label(mp)
-            if not kpi:
+        for shop_id, kpi in results.items():
+            mp = kpi.get("marketplace", "?")
+            shop_name = kpi.get("shop_name") or ""
+            label = _mp_label(mp) + (f" ({shop_name})" if shop_name else "")
+            if not kpi or not kpi.get("rating"):
                 lines.append(f"\n{label}\n<i>данные временно недоступны</i>")
                 continue
             is_proxy = kpi.get("_proxy")
@@ -6931,9 +6975,10 @@ class MaxAgent(BaseAgent):
         shop_kpi: dict = {}
         try:
             results = await self.sync_shop_kpi(chat_id)
-            for mp, kpi in results.items():
-                if not kpi:
+            for kpi in results.values():
+                if not kpi or not kpi.get("rating"):
                     continue
+                mp = kpi.get("marketplace", "?")
                 shop_kpi[mp] = {
                     "rating": kpi.get("rating"),
                     "return_pct": kpi.get("return_pct"),
@@ -7205,8 +7250,10 @@ class MaxAgent(BaseAgent):
                         await msg.reply_text("⚠️ Данные KPI недоступны.", reply_markup=_back_kb)
                         return
                     lines = ["<b>Рейтинг продавца</b>"]
-                    for mp, kpi in results.items():
-                        label = _mp_label(mp)
+                    for shop_id, kpi in results.items():
+                        mp = kpi.get("marketplace", "?")
+                        shop_name = kpi.get("shop_name") or ""
+                        label = _mp_label(mp) + (f" ({shop_name})" if shop_name else "")
                         rating = kpi.get("rating") or 0
                         ret    = kpi.get("return_pct") or 0
                         cancel = kpi.get("cancellation_pct") or 0
