@@ -6,7 +6,7 @@ import AbcBadge from '../components/AbcBadge'
 import { MARGIN_TARGET_PCT, marginColorClass as marginColor } from '../theme'
 import { useMainButtonAction } from '../hooks/useMainButtonAction'
 
-const fmt = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}к` : v.toLocaleString()
+const fmt = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}к` : v.toLocaleString('ru-RU')
 
 // ABC-строки считаются по product_id (WB/Ozon раздельно), а NetMarginTable — по общему
 // названию товара. Один и тот же товар может встретиться в abc_data дважды (WB и Ozon
@@ -52,10 +52,10 @@ function MarginCell({ pct, atTarget, recPrice, selectable, selected, applied, fa
               selected ? 'text-blue-800 dark:text-blue-300' : 'text-blue-600 dark:text-blue-400'
             }`}
           >
-            {recPrice.toLocaleString()}₽
+            {recPrice.toLocaleString('ru-RU')}₽
           </button>
         ) : (
-          <span className="text-blue-600 dark:text-blue-400 font-medium">{recPrice.toLocaleString()}₽</span>
+          <span className="text-blue-600 dark:text-blue-400 font-medium">{recPrice.toLocaleString('ru-RU')}₽</span>
         )}
         {failed && <span className="text-red-500 ml-1" title="Не удалось применить, попробуй ещё раз">⚠</span>}
       </td>
@@ -71,7 +71,7 @@ export default function NetMarginTable({ data, abcData = [] }: { data: NetMargin
 
   useMainButtonAction(
     pending,
-    p => `${p.marketplace === 'wb' ? 'WB' : 'Ozon'} "${p.productName}" → ${p.price.toLocaleString()} ₽`,
+    p => `${p.marketplace === 'wb' ? 'WB' : 'Ozon'} "${p.productName}" → ${p.price.toLocaleString('ru-RU')} ₽`,
     async p => {
       try {
         const res = await applyPrice(p.marketplace, p.productId, p.price)
@@ -113,10 +113,10 @@ export default function NetMarginTable({ data, abcData = [] }: { data: NetMargin
               const keyOzon = `${i}-ozon`
               return (
                 <tr key={i} className="border-b border-gray-100 dark:border-gray-700">
-                  <td className="py-1.5 pr-2 font-medium">
-                    <span className="inline-flex items-center gap-1">
+                  <td className="py-1.5 pr-2 font-medium max-w-[140px]">
+                    <span className="flex items-center gap-1 min-w-0">
                       {abcGroupByName[r.product_name] && <AbcBadge group={abcGroupByName[r.product_name]} />}
-                      {r.product_name}
+                      <span className="truncate min-w-0">{r.product_name}</span>
                     </span>
                     {/* На мобильном — кол-во под названием вместо отдельных столбцов */}
                     {(r.qty_wb > 0 || r.qty_ozon > 0) && (

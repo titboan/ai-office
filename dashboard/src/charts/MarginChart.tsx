@@ -2,16 +2,17 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, Refere
 import { NetMarginRow, GrossMarginRow } from '../api'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
-import { TOOLTIP_STYLE, marginColorHex } from '../theme'
+import { MARGIN_TARGET_PCT, TOOLTIP_STYLE, marginColorHex } from '../theme'
 
 const fmt = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}к` : String(v)
 
+// Цвета легенды — те же hex, что marginColorHex красит бары (единственный источник цвета).
 const LEGEND = (
   <div className="flex gap-2 mt-2 text-xs text-gray-400 dark:text-gray-500 justify-center">
-    <span className="text-green-600">●</span> ≥50% цель
-    <span className="text-yellow-500 ml-2">●</span> 30-50%
-    <span className="text-orange-500 ml-2">●</span> 10-30%
-    <span className="text-red-500 ml-2">●</span> &lt;10%
+    <span style={{ color: '#059669' }}>●</span> ≥{MARGIN_TARGET_PCT}% цель
+    <span style={{ color: '#f59e0b' }} className="ml-2">●</span> 30-{MARGIN_TARGET_PCT}%
+    <span style={{ color: '#d97706' }} className="ml-2">●</span> 10-30%
+    <span style={{ color: '#dc2626' }} className="ml-2">●</span> &lt;10%
   </div>
 )
 
@@ -38,7 +39,7 @@ export default function MarginChart({
               labelFormatter={(label: string) => label}
               contentStyle={TOOLTIP_STYLE}
             />
-            <ReferenceLine y={50} stroke="#059669" strokeDasharray="3 3" label={{ value: 'цель 50%', fontSize: 9, fill: '#059669' }} />
+            <ReferenceLine y={MARGIN_TARGET_PCT} stroke="#059669" strokeDasharray="3 3" label={{ value: `цель ${MARGIN_TARGET_PCT}%`, fontSize: 9, fill: '#059669' }} />
             <Bar dataKey="net_margin_pct_total" name="Маржа">
               {combined.map((d, i) => <Cell key={i} fill={marginColorHex(d.net_margin_pct_total ?? 0)} />)}
             </Bar>
@@ -80,7 +81,7 @@ export default function MarginChart({
             labelFormatter={(label: string) => label}
             contentStyle={TOOLTIP_STYLE}
           />
-          <ReferenceLine y={50} stroke="#059669" strokeDasharray="3 3" label={{ value: 'цель 50%', fontSize: 9, fill: '#059669' }} />
+          <ReferenceLine y={MARGIN_TARGET_PCT} stroke="#059669" strokeDasharray="3 3" label={{ value: `цель ${MARGIN_TARGET_PCT}%`, fontSize: 9, fill: '#059669' }} />
           <Bar dataKey="profitability" name="Маржа (GROSS)">
             {grossCombined.map((d, i) => <Cell key={i} fill={marginColorHex(d.profitability)} />)}
           </Bar>

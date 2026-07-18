@@ -62,7 +62,7 @@ export default function KwTable({ data }: { data: KwRow[] }) {
                   )}
                 </td>
                 <td className="py-1.5 pr-2 text-right text-gray-600 dark:text-gray-400 tabular-nums">
-                  {r.search_count?.toLocaleString() ?? '—'}
+                  {r.search_count?.toLocaleString('ru-RU') ?? '—'}
                 </td>
                 <td className="py-1.5 text-right text-gray-600 dark:text-gray-400 tabular-nums">
                   {r.ctr != null ? `${r.ctr}%` : '—'}

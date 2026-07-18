@@ -54,8 +54,9 @@ export default function BidSuggestions({ data }: { data: BidSuggestionRow[] }) {
           return (
             <div key={key} className="space-y-1 pb-2 border-b border-gray-100 dark:border-gray-700 last:border-0 last:pb-0">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-medium truncate flex items-center gap-1">
-                  <MarketplaceBadge marketplace={r.marketplace} /> {r.name}
+                <span className="text-xs font-medium flex items-center gap-1 min-w-0">
+                  <MarketplaceBadge marketplace={r.marketplace} />
+                  <span className="truncate min-w-0">{r.name}</span>
                 </span>
                 <span className={`text-xs font-semibold whitespace-nowrap ${drrColorClass(r.drr)}`}>
                   ДРР {r.drr.toFixed(0)}%
@@ -68,7 +69,7 @@ export default function BidSuggestions({ data }: { data: BidSuggestionRow[] }) {
                 </span>
                 {r.current_value != null && r.new_value != null && (
                   <span className="text-xs text-gray-500 dark:text-gray-400">
-                    {r.current_value.toLocaleString()} ₽ → {r.new_value.toLocaleString()} ₽
+                    {r.current_value.toLocaleString('ru-RU')} ₽ → {r.new_value.toLocaleString('ru-RU')} ₽
                   </span>
                 )}
                 {applied && <span className="text-xs text-green-600 font-medium">✓ применено</span>}
@@ -86,7 +87,7 @@ export default function BidSuggestions({ data }: { data: BidSuggestionRow[] }) {
                         : undefined
                     }
                   >
-                    {r.market_flag ? '⚠️ ' : ''}рынок ~{r.market_recommended_cpm.toLocaleString()} ₽
+                    {r.market_flag ? '⚠️ ' : ''}рынок ~{r.market_recommended_cpm.toLocaleString('ru-RU')} ₽
                   </span>
                 )}
                 {canApply && (

@@ -1,21 +1,26 @@
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, ReferenceLine } from 'recharts'
 import { ProductMetric } from '../api'
 import Card from '../components/Card'
+import { useIsDarkMode } from '../hooks/useIsDarkMode'
 import { TOOLTIP_STYLE } from '../theme'
 
-function ctrColor(ctr: number) {
-  if (ctr < 1) return '#dc2626'
-  if (ctr < 3) return '#d97706'
-  return '#059669'
+// Светлее/контрастнее на тёмном фоне — та же логика, что marginColorHex/stockColorClass.
+function ctrColor(ctr: number, isDark: boolean) {
+  if (ctr < 1) return isDark ? '#f87171' : '#dc2626'
+  if (ctr < 3) return isDark ? '#fbbf24' : '#d97706'
+  return isDark ? '#34d399' : '#059669'
 }
 
-function roasColor(roas: number) {
-  if (roas < 2) return '#dc2626'
-  if (roas < 5) return '#d97706'
-  return '#059669'
+function roasColor(roas: number, isDark: boolean) {
+  if (roas < 2) return isDark ? '#f87171' : '#dc2626'
+  if (roas < 5) return isDark ? '#fbbf24' : '#d97706'
+  return isDark ? '#34d399' : '#059669'
 }
 
 export default function CtrRoas({ data }: { data: ProductMetric[] }) {
+  const isDark = useIsDarkMode()
+  const redLine = isDark ? '#f87171' : '#dc2626'
+  const greenLine = isDark ? '#34d399' : '#059669'
   const withSpend = data.filter(d => d.adv_spend > 0).slice(0, 12)
 
   return (
@@ -28,10 +33,10 @@ export default function CtrRoas({ data }: { data: ProductMetric[] }) {
               <XAxis dataKey="name" tick={{ fontSize: 9, fill: 'currentColor' }} />
               <YAxis tick={{ fontSize: 10, fill: 'currentColor' }} unit="%" width={32} />
               <Tooltip formatter={(v: number) => [`${v.toFixed(2)}%`]} contentStyle={TOOLTIP_STYLE} />
-              <ReferenceLine y={1} stroke="#dc2626" strokeDasharray="3 3" />
-              <ReferenceLine y={3} stroke="#059669" strokeDasharray="3 3" />
+              <ReferenceLine y={1} stroke={redLine} strokeDasharray="3 3" />
+              <ReferenceLine y={3} stroke={greenLine} strokeDasharray="3 3" />
               <Bar dataKey="avg_ctr" name="CTR">
-                {withSpend.map((d, i) => <Cell key={i} fill={ctrColor(d.avg_ctr)} />)}
+                {withSpend.map((d, i) => <Cell key={i} fill={ctrColor(d.avg_ctr, isDark)} />)}
               </Bar>
             </BarChart>
           </ResponsiveContainer>
@@ -43,10 +48,10 @@ export default function CtrRoas({ data }: { data: ProductMetric[] }) {
               <XAxis dataKey="name" tick={{ fontSize: 9, fill: 'currentColor' }} />
               <YAxis tick={{ fontSize: 10, fill: 'currentColor' }} width={32} />
               <Tooltip formatter={(v: number) => [`${v.toFixed(2)}x`]} contentStyle={TOOLTIP_STYLE} />
-              <ReferenceLine y={2} stroke="#dc2626" strokeDasharray="3 3" />
-              <ReferenceLine y={5} stroke="#059669" strokeDasharray="3 3" />
+              <ReferenceLine y={2} stroke={redLine} strokeDasharray="3 3" />
+              <ReferenceLine y={5} stroke={greenLine} strokeDasharray="3 3" />
               <Bar dataKey="roas" name="ROAS">
-                {withSpend.map((d, i) => <Cell key={i} fill={roasColor(d.roas)} />)}
+                {withSpend.map((d, i) => <Cell key={i} fill={roasColor(d.roas, isDark)} />)}
               </Bar>
             </BarChart>
           </ResponsiveContainer>

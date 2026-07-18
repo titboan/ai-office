@@ -37,7 +37,7 @@ export default function StockTable({ data }: { data: StockVelocity[] }) {
         {rows.map((r) => (
           <div key={r.name} className="space-y-1">
             <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-medium truncate">{r.name}</span>
+              <span className="text-xs font-medium truncate min-w-0">{r.name}</span>
               <span className={`text-xs font-semibold whitespace-nowrap ${stockColorClass(r.days_left)}`}>
                 {r.days_left === 999 ? '∞' : `${r.days_left} дн.`}
               </span>

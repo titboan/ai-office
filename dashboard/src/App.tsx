@@ -27,6 +27,7 @@ import AddShopForm from './charts/AddShopForm'
 import CardSkeleton from './components/CardSkeleton'
 import AlertBanner, { collectAlerts } from './components/AlertBanner'
 import { MainButtonProvider } from './hooks/MainButtonContext'
+import { drrColorClass } from './theme'
 
 type Days = 7 | 14 | 30
 type Theme = 'light' | 'dark'
@@ -241,16 +242,16 @@ export default function App() {
       delta: wowPct !== null ? `${wowPct >= 0 ? '+' : ''}${wowPct.toFixed(1)}%` : null,
       deltaPositive: wowPct !== null ? wowPct >= 0 : undefined,
     },
-    { label: 'Заказов', value: totalOrders.toLocaleString(), color: '' },
+    { label: 'Заказов', value: totalOrders.toLocaleString('ru-RU'), color: '' },
     { label: 'Ср. чек', value: `${(avgCheck / 1000).toFixed(1)}к ₽`, color: '' },
     { label: 'Реклама', value: `${(totalSpend / 1000).toFixed(0)}к ₽`, color: '' },
-    { label: 'ДРР', value: `${drr}%`, color: '' },
+    { label: 'ДРР', value: `${drr}%`, color: drrColorClass(drr === '—' ? null : Number(drr)) },
     {
       label: 'WoW',
       value: wowPct !== null
         ? `${wowPct >= 0 ? '↑' : '↓'}${Math.abs(wowPct).toFixed(1)}%`
         : '—',
-      color: wowPct === null ? '' : wowPct >= 0 ? 'text-green-600' : 'text-red-500',
+      color: wowPct === null ? '' : wowPct >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400',
     },
   ] : []
 
