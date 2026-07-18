@@ -255,6 +255,18 @@ async def _create_schema() -> None:
             )
         """)
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS product_cost_history (
+                id                  BIGSERIAL    PRIMARY KEY,
+                mapping_id          BIGINT       REFERENCES product_mapping(id),
+                marketplace         TEXT,
+                purchase_logistics  NUMERIC,
+                packaging_marking   NUMERIC,
+                cost                NUMERIC,
+                changed_by          BIGINT,
+                created_at          TIMESTAMPTZ  NOT NULL DEFAULT now()
+            )
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS product_adv_stats (
                 id           SERIAL PRIMARY KEY,
                 chat_id      BIGINT       NOT NULL,
@@ -2683,12 +2695,17 @@ async def set_product_cost(mapping_id: int, marketplace: str, cost: float) -> No
 
 
 async def set_product_cost_breakdown(
-    mapping_id: int, marketplace: str, purchase_logistics: float, packaging_marking: float
+    mapping_id: int, marketplace: str, purchase_logistics: float, packaging_marking: float,
+    changed_by: int | None = None,
 ) -> None:
     """Задать себестоимость товара на площадке через две статьи расходов
     (закупка+логистика, упаковка+маркировка) — дашборд-редактор (Фаза 1,
     plans/2026-07-15-cost-price-dashboard-editor.md). cost = сумма статей,
-    пишется в ту же колонку product_costs.cost, что и set_product_cost."""
+    пишется в ту же колонку product_costs.cost, что и set_product_cost.
+
+    Каждый вызов также пишет запись в product_cost_history (Фаза 1,
+    plans/2026-07-16-cost-editor-history-mobile.md) — журнал изменений
+    себестоимости для дашборда, changed_by — chat_id из initData."""
     pool = await get_pool()
     cost = purchase_logistics + packaging_marking
     async with pool.acquire() as conn:
@@ -2702,6 +2719,34 @@ async def set_product_cost_breakdown(
             """,
             mapping_id, marketplace, cost, purchase_logistics, packaging_marking,
         )
+        await conn.execute(
+            """
+            INSERT INTO product_cost_history
+                (mapping_id, marketplace, purchase_logistics, packaging_marking, cost, changed_by)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            """,
+            mapping_id, marketplace, purchase_logistics, packaging_marking, cost, changed_by,
+        )
+
+
+async def get_cost_history(mapping_id: int, marketplace: str, limit: int = 20) -> list[dict]:
+    """Последние изменения себестоимости товара на площадке (product_cost_history),
+    по убыванию даты — для попапа истории в дашборде (Фаза 1,
+    plans/2026-07-16-cost-editor-history-mobile.md)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, mapping_id, marketplace, purchase_logistics, packaging_marking,
+                   cost, changed_by, created_at
+              FROM product_cost_history
+             WHERE mapping_id = $1 AND marketplace = $2
+             ORDER BY created_at DESC
+             LIMIT $3
+            """,
+            mapping_id, marketplace, limit,
+        )
+        return [dict(r) for r in rows]
 
 
 async def get_product_costs_for_dashboard(chat_id: int) -> list[dict]:

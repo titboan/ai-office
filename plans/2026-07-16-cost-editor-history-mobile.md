@@ -28,7 +28,7 @@
 
 ## Фазы
 
-### Фаза 1 — db.py: таблица истории
+### Фаза 1 — db.py: таблица истории [x]
 - `CREATE TABLE IF NOT EXISTS product_cost_history` (по образцу `product_costs`,
   `db.py:248-256`): `id BIGSERIAL PK`, `mapping_id BIGINT REFERENCES product_mapping(id)`,
   `marketplace TEXT`, `purchase_logistics NUMERIC`, `packaging_marking NUMERIC`,
