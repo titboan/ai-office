@@ -1173,7 +1173,7 @@ class MaxAgent(BaseAgent):
 
     async def process_reviews(self, chat_id: int) -> dict:
         """Обработать отзывы. Возвращает итоги по каждой площадке."""
-        from db import get_marketplace_shops, save_review, update_review_status, get_review_status
+        from db import get_marketplace_shops, save_review, update_review_status
         from tools.marketplace import make_client
 
         shops = await get_marketplace_shops(chat_id)
@@ -1205,6 +1205,7 @@ class MaxAgent(BaseAgent):
                 continue
 
             for rv in reviews:
+                notif_key = f"rv_notified:{mp}:{rv['review_id']}"
                 is_new = await save_review(
                     marketplace=mp,
                     review_id=rv["review_id"],
@@ -1218,8 +1219,29 @@ class MaxAgent(BaseAgent):
                 if not is_new:
                     # Отзыв уже видели. Пропускаем, если он уже дошёл до финального
                     # статуса — но если авто-ответ раньше не удался (статус остался
-                    # 'new'), пробуем отправить ответ ещё раз, а не забываем о нём навсегда.
-                    existing_status = await get_review_status(mp, rv["review_id"])
+                    # 'new'), пробуем отправить ответ ещё раз. Если статус 'pending_approval'
+                    # (низкая оценка, ждёт решения человека) — уведомление могло не дойти
+                    # (упавший _notify_pending), повторяем не чаще раза в 2 часа.
+                    from db import get_pool as _gp
+                    async with (await _gp()).acquire() as _conn:
+                        _row = await _conn.fetchrow(
+                            "SELECT status, generated_reply FROM marketplace_reviews "
+                            "WHERE marketplace=$1 AND review_id=$2",
+                            mp, rv["review_id"],
+                        )
+                    existing_status = _row["status"] if _row else None
+                    if existing_status == "pending_approval":
+                        if not await self._redis_get(notif_key):
+                            try:
+                                await self._notify_pending(
+                                    chat_id, shop, rv, (_row["generated_reply"] if _row else "") or ""
+                                )
+                                await self._redis_set(notif_key, "1", ttl=7200)
+                                stats["pending"] += 1
+                            except Exception as e:
+                                logger.error(f"[Макс] retry _notify_pending failed review={rv['review_id'][:8]}: {e}")
+                                stats["errors"] += 1
+                        continue
                     if existing_status != "new":
                         continue
 
@@ -1246,6 +1268,7 @@ class MaxAgent(BaseAgent):
                 if rating <= 2:
                     try:
                         await self._notify_pending(chat_id, shop, rv, reply)
+                        await self._redis_set(notif_key, "1", ttl=7200)
                     except Exception as e:
                         logger.error(f"[Макс] _notify_pending failed review={rv['review_id'][:8]}: {e}")
                     stats["pending"] += 1
