@@ -270,7 +270,7 @@ export default function App() {
     <MainButtonProvider>
     <div
       className="min-h-screen p-3 space-y-3 md:max-w-3xl lg:max-w-5xl md:mx-auto"
-      style={{ background: 'var(--tg-theme-bg-color, #f5f5f5)' }}
+      style={{ background: 'var(--page-bg)' }}
     >
       {/* Header */}
       <div className="flex items-center justify-between">
