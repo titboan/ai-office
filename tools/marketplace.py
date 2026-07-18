@@ -177,8 +177,13 @@ class WBClient:
             logger.error(f"[WB.send_reply] exception: {e}")
             return False
 
-    async def check_connection(self) -> bool:
-        """Проверить валидность токена (тестовый запрос)."""
+    async def check_connection(self) -> str:
+        """Проверить валидность токена (тестовый запрос).
+
+        Возвращает "ok" (токен валиден), "invalid_token" (401/403 — нужно
+        переподключить магазин с правильным токеном) или "unavailable"
+        (сеть/таймаут/прочие статусы — временный сбой WB, токен тут ни при чём).
+        """
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -188,13 +193,17 @@ class WBClient:
                     timeout=_TIMEOUT_CHECK,
                 ) as resp:
                     logger.debug(f"[WB.check_connection] status={resp.status}")
-                    return resp.status == 200
+                    if resp.status == 200:
+                        return "ok"
+                    if resp.status in (401, 403):
+                        return "invalid_token"
+                    return "unavailable"
         except asyncio.TimeoutError:
             logger.error(f"[marketplace] timeout: GET {self._BASE}/api/v1/feedbacks")
-            return False
+            return "unavailable"
         except Exception as e:
             logger.warning(f"[WB.check_connection] exception: {e}")
-            return False
+            return "unavailable"
 
 
     async def get_nm_id_mapping(self, statistics_token: str) -> dict[str, str]:
@@ -1329,9 +1338,12 @@ class OzonClient:
             )
         return data is not None
 
-    async def check_connection(self) -> bool:
+    async def check_connection(self) -> str:
         """Проверить валидность токена.
-        200/400 → credentials верны; 401/403 → неверные.
+
+        200/400 → credentials верны ("ok"); 401/403 → неверные ("invalid_token");
+        сеть/таймаут/прочие статусы → временный сбой Ozon ("unavailable"), токен
+        тут ни при чём.
         """
         url = f"{self._BASE}/v2/review/list"
         try:
@@ -1344,13 +1356,17 @@ class OzonClient:
                 ) as resp:
                     raw = await resp.text()
                     logger.debug(f"[Ozon.check_connection] status={resp.status} body={raw[:200]!r}")
-                    return resp.status in (200, 400)
+                    if resp.status in (200, 400):
+                        return "ok"
+                    if resp.status in (401, 403):
+                        return "invalid_token"
+                    return "unavailable"
         except asyncio.TimeoutError:
             logger.error(f"[marketplace] timeout: POST {url}")
-            return False
+            return "unavailable"
         except Exception as e:
             logger.warning(f"[Ozon.check_connection] exception: {e}")
-            return False
+            return "unavailable"
 
     async def get_questions(self) -> list[dict]:
         """Неотвеченные вопросы покупателей Ozon через /v1/question/list.

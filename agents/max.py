@@ -1029,8 +1029,14 @@ class MaxAgent(BaseAgent):
         if step == "wb_token":
             await update.message.reply_text("🔍 Проверяю токен Wildberries…")
             from tools.marketplace import WBClient
-            ok = await WBClient(text).check_connection()
-            if not ok:
+            status = await WBClient(text).check_connection()
+            if status == "unavailable":
+                await update.message.reply_text(
+                    "⚠️ Wildberries временно недоступен — не удалось проверить токен. "
+                    "Попробуй отправить его ещё раз через минуту."
+                )
+                return
+            if status != "ok":
                 await update.message.reply_text(
                     "❌ Токен не подходит. Проверь что токен создан с категорией «Отзывы» и попробуй ещё раз."
                 )
@@ -1089,8 +1095,14 @@ class MaxAgent(BaseAgent):
             await update.message.reply_text("🔍 Проверяю подключение к Ozon…")
             from tools.marketplace import OzonClient
             client_id = data.get("client_id", "")
-            ok = await OzonClient(text, client_id).check_connection()
-            if not ok:
+            status = await OzonClient(text, client_id).check_connection()
+            if status == "unavailable":
+                await update.message.reply_text(
+                    "⚠️ Ozon временно недоступен — не удалось проверить подключение. "
+                    "Попробуй отправить Api-Key ещё раз через минуту."
+                )
+                return
+            if status != "ok":
                 await update.message.reply_text(
                     "❌ Не удалось подключиться. Проверь Client-Id и Api-Key и попробуй ещё раз.\n"
                     "Отправь Client-Id заново:"
