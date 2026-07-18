@@ -762,26 +762,43 @@ class WBClient:
             batch = campaign_ids[i:i+50]
             if i > 0:
                 await asyncio.sleep(20)  # соблюдаем rate limit: 3 запроса/мин, интервал 20 сек
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{_ADV_BASE}/adv/v3/fullstats",
-                    headers=adv_headers,
-                    params={
-                        "ids":       ",".join(str(cid) for cid in batch),
-                        "beginDate": date_from,
-                        "endDate":   date_to,
-                    },
-                    timeout=_TIMEOUT,
-                ) as resp:
-                    raw = await resp.text()
-                    if resp.status == 429:
-                        logger.warning("[WB.get_ad_stats] rate limit, жду 60 сек")
-                        await asyncio.sleep(60)
-                        continue
-                    if resp.status != 200:
-                        logger.error(f"[WB.get_ad_stats] fullstats HTTP {resp.status}: {raw[:200]}")
-                        continue
-                    stats = _json.loads(raw)
+
+            stats = None
+            max_retries = 3
+            for attempt in range(1, max_retries + 1):
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"{_ADV_BASE}/adv/v3/fullstats",
+                        headers=adv_headers,
+                        params={
+                            "ids":       ",".join(str(cid) for cid in batch),
+                            "beginDate": date_from,
+                            "endDate":   date_to,
+                        },
+                        timeout=_TIMEOUT,
+                    ) as resp:
+                        raw = await resp.text()
+                        if resp.status == 429:
+                            if attempt < max_retries:
+                                logger.warning(
+                                    f"[WB.get_ad_stats] rate limit на батче {i}-{i + len(batch)}, "
+                                    f"жду 60 сек (попытка {attempt}/{max_retries})"
+                                )
+                                await asyncio.sleep(60)
+                                continue
+                            logger.error(
+                                f"[WB.get_ad_stats] rate limit на батче {i}-{i + len(batch)} "
+                                f"после {max_retries} попыток — батч потерян ({len(batch)} кампаний)"
+                            )
+                            break
+                        if resp.status != 200:
+                            logger.error(f"[WB.get_ad_stats] fullstats HTTP {resp.status}: {raw[:200]}")
+                            break
+                        stats = _json.loads(raw)
+                        break
+
+            if stats is None:
+                continue
 
             _campaigns_with_nm = 0
             _campaigns_no_nm = 0
