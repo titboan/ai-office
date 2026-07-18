@@ -22,6 +22,13 @@ export interface NetMarginRow {
   recommended_price_ozon: number | null; at_target_ozon: boolean
   net_profit_total: number; net_margin_pct_total: number | null
 }
+// Ozon-часть net_margin всегда за последний полный календарный месяц (ограничение отчёта
+// Ozon /v2/finance/realization — не отдаёт данные за произвольный диапазон дат), WB-часть —
+// за фактически запрошенный период. Окна НЕ совпадают — см. agents/peter.py::_collect_data.
+export interface NetMarginPeriod {
+  wb: { from: string; to: string }
+  ozon: { from: string; to: string }
+}
 export interface MomRow { month: string; revenue: number; orders: number }
 export interface ReturnRow {
   product_id: string; product_name: string; marketplace: string
@@ -131,6 +138,7 @@ export interface DashboardData {
   orders_by_day: DayRevenue[]
   sales_by_day: DayRevenue[]
   net_margin: NetMarginRow[]
+  net_margin_period?: NetMarginPeriod
   margin_wb: GrossMarginRow[]
   margin_ozon: GrossMarginRow[]
   mom_trends: MomRow[]

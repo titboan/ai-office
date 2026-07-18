@@ -399,6 +399,19 @@ class PeterAgent(BaseAgent):
                 HAVING COALESCE(SUM(f.payout), 0) != 0
             """, chat_id, _wb_date_from, _oz_month_start, _oz_month_end)
 
+            # Реальные окна дат net_margin для WB и Ozon — НЕ совпадают (см. комментарий выше
+            # про _oz_month_start/_oz_month_end vs _wb_date_from) и не привязаны к параметру
+            # days/date_from этого вызова. Ozon: get_realization_quantity_revenue() в max.py
+            # ходит в /v2/finance/realization, который Ozon отдаёт только по запросу year+month
+            # (нет произвольного диапазона дат), поэтому qty_ozon/payout_ozon в net_margin
+            # физически не могут быть пересчитаны на дни — это ограничение Ozon API, не наш
+            # выбор. Отдаём оба окна явно, чтобы Claude в промптах не складывал их как один
+            # период (см. ВАЖНО-блоки в cmd_report/cmd_audit/run_weekly_audit/run_daily_digest).
+            net_margin_period = {
+                "wb":   {"from": str(_wb_date_from),   "to": str(_today)},
+                "ozon": {"from": str(_oz_month_start), "to": str(_oz_month_end)},
+            }
+
             # Средняя цена продажи (с учётом скидки селлера) за тот же период — нужна, чтобы
             # перевести "требуемый payout на штуку" в рекомендованную розничную цену. payout уже
             # очищен от комиссии/логистики/хранения МП, а seller_price — это то, что видит
@@ -577,6 +590,7 @@ class PeterAgent(BaseAgent):
             infographic_ctr = await _q(conn, "infographic_ctr", """
                 SELECT
                     COALESCE(m.display_name, m.wb_article) AS name,
+                    p.marketplace                           AS marketplace,
                     m.infographic_updated_at::date          AS updated_at,
                     ROUND(AVG(CASE WHEN p.stat_date <  m.infographic_updated_at::date
                                         AND p.stat_date >= (m.infographic_updated_at - INTERVAL '14 days')::date
@@ -590,7 +604,7 @@ class PeterAgent(BaseAgent):
                       AND p.chat_id = $1
                       AND p.stat_date >= (m.infographic_updated_at - INTERVAL '14 days')::date
                 WHERE m.infographic_updated_at IS NOT NULL
-                GROUP BY m.display_name, m.wb_article, m.infographic_updated_at
+                GROUP BY m.display_name, m.wb_article, m.infographic_updated_at, p.marketplace
                 ORDER BY m.infographic_updated_at DESC
                 LIMIT 10
             """, chat_id)
@@ -633,6 +647,7 @@ class PeterAgent(BaseAgent):
             "margin_wb":        [dict(r) for r in margin_wb],
             "margin_ozon":      [dict(r) for r in margin_ozon],
             "net_margin":       [dict(r) for r in net_margin],
+            "net_margin_period": net_margin_period,
             "adv":              [dict(r) for r in adv],
             "fin_payout":       [dict(r) for r in fin_payout],
             "mom_trends":       [dict(r) for r in mom],
@@ -1185,6 +1200,7 @@ class PeterAgent(BaseAgent):
 - Целевая NET-маржа — {config.TARGET_NET_MARGIN_PCT:.0f}% (config.TARGET_NET_MARGIN_PCT). at_target_wb/at_target_ozon=true → площадка уже на цели или выше, отмечай "✅ норма", не выводи лишних чисел. Если false и recommended_price_wb/ozon не null — это целевая розничная цена площадки, при которой маржа выйдет на {config.TARGET_NET_MARGIN_PCT:.0f}%; явно называй её "рекомендованная цена" и говори, на сколько ₽/% поднять текущую цену. Если recommended_price_* = null при at_target=false — не хватает данных (нет себестоимости через /cost или нет заказов за период) — скажи это прямо, не придумывай число.
 - Формируй net_margin как одну таблицу: товар | WB (шт/прибыль/%/рекоменд. цена) | Ozon (шт/прибыль/%/рекоменд. цена) | Итого (прибыль/%). Список короткий (товаров немного) — выводи ВСЕ строки, не выбирай топ-N.
 - Если net_margin пустой — запусти /sync_fin у Макса. Только тогда временно используй margin_wb/margin_ozon (GROSS, без комиссий МП и без налога — переоценивает прибыль) и явно предупреди, что это грубая оценка.
+- net_margin_period (поле в БАЗОВЫХ ДАННЫХ) — .wb.from/.wb.to и .ozon.from/.ozon.to — РАЗНЫЕ окна дат: Ozon net_margin считается по последнему полному календарному месяцу (так ограничен отчёт Ozon /v2/finance/realization — он не отдаёт данные за произвольный диапазон дат), WB — по фактически запрошенному периоду. НЕ показывай net_profit_total/net_margin_pct_total как «Итого за N дней» — это сумма двух разных периодов. Явно укажи оба периода рядом с таблицей net_margin, взяв даты из net_margin_period (например «WB: 8–14 июля, Ozon: июнь»).
 - Комиссия WB ~15-25%, логистика ~50-150₽/заказ; Ozon ~5-15%.
 - product_metrics.avg_ctr — CTR из рекламы (если 0 — данные ещё не накоплены после /sync_adv).
 - product_metrics.roas — ROAS = выкупы (продажи без возвратов)/расход на рекламу. Если 0 — данные не синхронизированы.
@@ -1195,7 +1211,7 @@ class PeterAgent(BaseAgent):
 - mom_trends — помесячная выручка и заказы за последние 60 дней. Если 2 месяца — посчитай MoM рост: (текущий месяц / предыдущий − 1) × 100%. Выведи одной строкой в блоке отчёта.
 - returns_top — товары с наибольшей суммой возвратов за 30 дней (если есть данные после /sync_returns). Укажи топ-3 по return_amount и возможные причины. Если пусто — данные не синхронизированы (/sync_returns у Макса).
 - kw_top — топ ключевых слов WB по охвату (исторические данные из БД). Укажи ключи с лучшей позицией (чем меньше число, тем выше в поиске) и наибольшим search_count. Если пусто — данных по ключевым словам нет (WB API недоступен).
-- infographic_ctr — эффект замены инфографики: ctr_before/ctr_after в %. days_after = сколько дней прошло после загрузки. Если ctr_after IS NULL или days_after < 7 — данных ещё недостаточно (накапливается), напиши "CTR ещё накапливается (X дн. из 14)". Если есть оба значения — покажи дельту: было → стало (+X% или −X%). Блок выводить только если список непустой.
+- infographic_ctr — эффект замены инфографики: ctr_before/ctr_after в %. marketplace — WB или Ozon; если один и тот же товар (name) продаётся на обеих площадках, в списке будет ДВЕ отдельные строки (по одной на marketplace) — не складывай и не усредняй их в одну цифру, показывай CTR отдельно на WB и отдельно на Ozon. days_after = сколько дней прошло после загрузки. Если ctr_after IS NULL или days_after < 7 — данных ещё недостаточно (накапливается), напиши "CTR ещё накапливается (X дн. из 14)". Если есть оба значения — покажи дельту: было → стало (+X% или −X%). Блок выводить только если список непустой.
 {"- Цель: " + str(goal) + " ₽/день суммарно WB+Ozon." if goal else ""}
 {"- ЦЕНЫ КОНКУРЕНТОВ: median_price — медиана топ-100 товаров WB по ключевому запросу ниши. Сравни свои цены (из product_mapping через adv_data) с медианой. Если цена выше медианы >15% — укажи это как риск; если ниже — возможность поднять." if comp_data else ""}
 
@@ -1240,8 +1256,10 @@ class PeterAgent(BaseAgent):
 
         total_revenue = sum(float(r["revenue"] or 0) for r in data["revenue"])
         total_adv_spend = sum(float(r["spend"] or 0) for r in data["adv"])
+        total_payout = sum(float(r["payout"] or 0) for r in data["fin_payout"])
         avg_per_day = round(total_revenue / 30, 0)
-        drr_overall = round(total_adv_spend / total_revenue * 100, 1) if total_revenue else 0
+        # ДРР = расход / выплата после комиссии МП (та же формула, что в /drr), а не от валовой выручки
+        drr_overall = round(total_adv_spend / total_payout * 100, 1) if total_payout else 0
 
         prompt = f"""Проведи полный аудит магазина. Используй формат из PETER_AUDIT_PROMPT.
 
@@ -1263,6 +1281,7 @@ class PeterAgent(BaseAgent):
 - days_left в stock_velocity (999 = нет продаж по этому товару)
 - trend показывает неделя к неделе по каждой площадке
 - Используй net_margin (выплата − себестоимость − налог {int(config.NET_MARGIN_TAX_RATE*100)}%) как маржу. margin_wb/margin_ozon — только запасной грубый ориентир, если net_margin пуст (без комиссий МП и налога, переоценивает прибыль)
+- net_margin_period.wb и net_margin_period.ozon — РАЗНЫЕ окна дат (Ozon net_margin всегда за последний полный календарный месяц, WB — за фактический период). Не смешивай их в одну цифру «Итого» — укажи период отдельно для WB и для Ozon.
 
 Используй формат PETER_AUDIT_PROMPT."""
 
@@ -2502,8 +2521,10 @@ class PeterAgent(BaseAgent):
 
         total_revenue = sum(float(r["revenue"] or 0) for r in data["revenue"])
         total_adv_spend = sum(float(r["spend"] or 0) for r in data["adv"])
+        total_payout = sum(float(r["payout"] or 0) for r in data["fin_payout"])
         avg_per_day = round(total_revenue / 30, 0)
-        drr_overall = round(total_adv_spend / total_revenue * 100, 1) if total_revenue else 0
+        # ДРР = расход / выплата после комиссии МП (та же формула, что в /drr), а не от валовой выручки
+        drr_overall = round(total_adv_spend / total_payout * 100, 1) if total_payout else 0
 
         prompt = f"""Еженедельный автоаудит магазина (понедельник). Краткий вариант — не более 25 строк.
 
@@ -2513,6 +2534,8 @@ class PeterAgent(BaseAgent):
 {json.dumps({**data, **adv_data}, ensure_ascii=False, default=str, indent=2)}
 
 Сделай акцент на изменениях за прошлую неделю (тренд) и 3 главных действиях.
+net_margin_period.wb и net_margin_period.ozon — РАЗНЫЕ окна дат (Ozon — последний полный календарный месяц, WB — фактический период). Не складывай net_margin WB и Ozon в одну цифру «Итого» без указания, что это разные периоды.
+Если net_margin пустой — используй margin_wb/margin_ozon (GROSS, без комиссий МП и без налога — переоценивает прибыль) и явно предупреди, что это грубая оценка, а не настоящая NET-маржа.
 Используй формат PETER_AUDIT_PROMPT, но сокращённо."""
 
         try:
@@ -2559,7 +2582,9 @@ class PeterAgent(BaseAgent):
         total_revenue = sum(float(r["revenue"] or 0) for r in data["revenue"])
         total_orders  = sum(int(r["orders"]  or 0)   for r in data["revenue"])
         total_adv     = sum(float(r["spend"] or 0)   for r in data["adv"])
-        drr = round(total_adv / total_revenue * 100, 1) if total_revenue else 0
+        total_payout  = sum(float(r["payout"] or 0)  for r in data["fin_payout"])
+        # ДРР = расход / выплата после комиссии МП (та же формула, что в /drr), а не от валовой выручки
+        drr = round(total_adv / total_payout * 100, 1) if total_payout else 0
 
         # Авто-триггер Peter→Elina: CTR < 1% → ставим задачу Элине
         low_ctr_names: list[str] = []
@@ -2635,7 +2660,9 @@ class PeterAgent(BaseAgent):
 ⚠️ Срочно (если дефицит стока или критический ДРР — укажи конкретно)
 💡 1-2 главных действия на завтра
 
-Только факты и цифры. Если нет проблем — «Всё в норме».{elina_note}"""
+Только факты и цифры. Если нет проблем — «Всё в норме».
+Если упоминаешь net_margin (NET-маржу) — учти, что net_margin_period.wb и net_margin_period.ozon это РАЗНЫЕ окна дат (Ozon — последний полный календарный месяц, а не последние 7 дней); не подавай их сумму как «Итого за 7 дней».
+Если net_margin пустой — используй margin_wb/margin_ozon (GROSS, без комиссий МП и без налога — переоценивает прибыль) и явно предупреди, что это грубая оценка, а не настоящая NET-маржа.{elina_note}"""
 
         try:
             from anthropic import AsyncAnthropic

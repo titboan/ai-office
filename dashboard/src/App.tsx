@@ -408,7 +408,7 @@ export default function App() {
               marginWb={displayData.margin_wb ?? []}
               marginOzon={displayData.margin_ozon ?? []}
             />
-            <NetMarginTable data={displayData.net_margin ?? []} abcData={displayData.abc_data ?? []} />
+            <NetMarginTable data={displayData.net_margin ?? []} abcData={displayData.abc_data ?? []} period={displayData.net_margin_period} />
             <BidSuggestions data={displayData.bid_suggestions ?? []} />
             <FunnelChart data={displayData.funnel ?? []} />
             <CtrRoas data={displayData.product_metrics} />
