@@ -399,6 +399,19 @@ class PeterAgent(BaseAgent):
                 HAVING COALESCE(SUM(f.payout), 0) != 0
             """, chat_id, _wb_date_from, _oz_month_start, _oz_month_end)
 
+            # Реальные окна дат net_margin для WB и Ozon — НЕ совпадают (см. комментарий выше
+            # про _oz_month_start/_oz_month_end vs _wb_date_from) и не привязаны к параметру
+            # days/date_from этого вызова. Ozon: get_realization_quantity_revenue() в max.py
+            # ходит в /v2/finance/realization, который Ozon отдаёт только по запросу year+month
+            # (нет произвольного диапазона дат), поэтому qty_ozon/payout_ozon в net_margin
+            # физически не могут быть пересчитаны на дни — это ограничение Ozon API, не наш
+            # выбор. Отдаём оба окна явно, чтобы Claude в промптах не складывал их как один
+            # период (см. ВАЖНО-блоки в cmd_report/cmd_audit/run_weekly_audit/run_daily_digest).
+            net_margin_period = {
+                "wb":   {"from": str(_wb_date_from),   "to": str(_today)},
+                "ozon": {"from": str(_oz_month_start), "to": str(_oz_month_end)},
+            }
+
             # Средняя цена продажи (с учётом скидки селлера) за тот же период — нужна, чтобы
             # перевести "требуемый payout на штуку" в рекомендованную розничную цену. payout уже
             # очищен от комиссии/логистики/хранения МП, а seller_price — это то, что видит
@@ -633,6 +646,7 @@ class PeterAgent(BaseAgent):
             "margin_wb":        [dict(r) for r in margin_wb],
             "margin_ozon":      [dict(r) for r in margin_ozon],
             "net_margin":       [dict(r) for r in net_margin],
+            "net_margin_period": net_margin_period,
             "adv":              [dict(r) for r in adv],
             "fin_payout":       [dict(r) for r in fin_payout],
             "mom_trends":       [dict(r) for r in mom],
@@ -1185,6 +1199,7 @@ class PeterAgent(BaseAgent):
 - Целевая NET-маржа — {config.TARGET_NET_MARGIN_PCT:.0f}% (config.TARGET_NET_MARGIN_PCT). at_target_wb/at_target_ozon=true → площадка уже на цели или выше, отмечай "✅ норма", не выводи лишних чисел. Если false и recommended_price_wb/ozon не null — это целевая розничная цена площадки, при которой маржа выйдет на {config.TARGET_NET_MARGIN_PCT:.0f}%; явно называй её "рекомендованная цена" и говори, на сколько ₽/% поднять текущую цену. Если recommended_price_* = null при at_target=false — не хватает данных (нет себестоимости через /cost или нет заказов за период) — скажи это прямо, не придумывай число.
 - Формируй net_margin как одну таблицу: товар | WB (шт/прибыль/%/рекоменд. цена) | Ozon (шт/прибыль/%/рекоменд. цена) | Итого (прибыль/%). Список короткий (товаров немного) — выводи ВСЕ строки, не выбирай топ-N.
 - Если net_margin пустой — запусти /sync_fin у Макса. Только тогда временно используй margin_wb/margin_ozon (GROSS, без комиссий МП и без налога — переоценивает прибыль) и явно предупреди, что это грубая оценка.
+- net_margin_period (поле в БАЗОВЫХ ДАННЫХ) — .wb.from/.wb.to и .ozon.from/.ozon.to — РАЗНЫЕ окна дат: Ozon net_margin считается по последнему полному календарному месяцу (так ограничен отчёт Ozon /v2/finance/realization — он не отдаёт данные за произвольный диапазон дат), WB — по фактически запрошенному периоду. НЕ показывай net_profit_total/net_margin_pct_total как «Итого за N дней» — это сумма двух разных периодов. Явно укажи оба периода рядом с таблицей net_margin, взяв даты из net_margin_period (например «WB: 8–14 июля, Ozon: июнь»).
 - Комиссия WB ~15-25%, логистика ~50-150₽/заказ; Ozon ~5-15%.
 - product_metrics.avg_ctr — CTR из рекламы (если 0 — данные ещё не накоплены после /sync_adv).
 - product_metrics.roas — ROAS = выкупы (продажи без возвратов)/расход на рекламу. Если 0 — данные не синхронизированы.
@@ -1265,6 +1280,7 @@ class PeterAgent(BaseAgent):
 - days_left в stock_velocity (999 = нет продаж по этому товару)
 - trend показывает неделя к неделе по каждой площадке
 - Используй net_margin (выплата − себестоимость − налог {int(config.NET_MARGIN_TAX_RATE*100)}%) как маржу. margin_wb/margin_ozon — только запасной грубый ориентир, если net_margin пуст (без комиссий МП и налога, переоценивает прибыль)
+- net_margin_period.wb и net_margin_period.ozon — РАЗНЫЕ окна дат (Ozon net_margin всегда за последний полный календарный месяц, WB — за фактический период). Не смешивай их в одну цифру «Итого» — укажи период отдельно для WB и для Ozon.
 
 Используй формат PETER_AUDIT_PROMPT."""
 
@@ -2517,6 +2533,7 @@ class PeterAgent(BaseAgent):
 {json.dumps({**data, **adv_data}, ensure_ascii=False, default=str, indent=2)}
 
 Сделай акцент на изменениях за прошлую неделю (тренд) и 3 главных действиях.
+net_margin_period.wb и net_margin_period.ozon — РАЗНЫЕ окна дат (Ozon — последний полный календарный месяц, WB — фактический период). Не складывай net_margin WB и Ozon в одну цифру «Итого» без указания, что это разные периоды.
 Используй формат PETER_AUDIT_PROMPT, но сокращённо."""
 
         try:
@@ -2641,7 +2658,8 @@ class PeterAgent(BaseAgent):
 ⚠️ Срочно (если дефицит стока или критический ДРР — укажи конкретно)
 💡 1-2 главных действия на завтра
 
-Только факты и цифры. Если нет проблем — «Всё в норме».{elina_note}"""
+Только факты и цифры. Если нет проблем — «Всё в норме».
+Если упоминаешь net_margin (NET-маржу) — учти, что net_margin_period.wb и net_margin_period.ozon это РАЗНЫЕ окна дат (Ozon — последний полный календарный месяц, а не последние 7 дней); не подавай их сумму как «Итого за 7 дней».{elina_note}"""
 
         try:
             from anthropic import AsyncAnthropic

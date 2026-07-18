@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { NetMarginRow, AbcRow, applyPrice } from '../api'
+import { NetMarginRow, AbcRow, NetMarginPeriod, applyPrice } from '../api'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
 import AbcBadge from '../components/AbcBadge'
@@ -7,6 +7,17 @@ import { MARGIN_TARGET_PCT, marginColorClass as marginColor } from '../theme'
 import { useMainButtonAction } from '../hooks/useMainButtonAction'
 
 const fmt = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}к` : v.toLocaleString('ru-RU')
+const fmtDate = (iso: string) => {
+  const [y, m, d] = iso.split('-')
+  return `${d}.${m}.${y.slice(2)}`
+}
+// Ozon-часть net_margin всегда за последний полный календарный месяц (ограничение API Ozon),
+// WB-часть — за фактически выбранный на дашборде период. Итоговая колонка «Итого» ниже
+// складывает эти два разных окна — предупреждаем об этом прямо под заголовком таблицы.
+function periodNote(period?: NetMarginPeriod): string | null {
+  if (!period) return null
+  return `NET по WB: ${fmtDate(period.wb.from)}–${fmtDate(period.wb.to)} · NET по Ozon: ${fmtDate(period.ozon.from)}–${fmtDate(period.ozon.to)} (разные периоды, «Итого» — их сумма)`
+}
 
 // ABC-строки считаются по product_id (WB/Ozon раздельно), а NetMarginTable — по общему
 // названию товара. Один и тот же товар может встретиться в abc_data дважды (WB и Ozon
@@ -64,10 +75,11 @@ function MarginCell({ pct, atTarget, recPrice, selectable, selected, applied, fa
   return <td className={`text-right py-1.5 ${marginColor(pct)}`}>{pct}%</td>
 }
 
-export default function NetMarginTable({ data, abcData = [] }: { data: NetMarginRow[]; abcData?: AbcRow[] }) {
+export default function NetMarginTable({ data, abcData = [], period }: { data: NetMarginRow[]; abcData?: AbcRow[]; period?: NetMarginPeriod }) {
   const [pending, setPending] = useState<Pending | null>(null)
   const [status, setStatus] = useState<Record<string, RowStatus>>({})
   const abcGroupByName = bestAbcGroupByName(abcData)
+  const note = periodNote(period)
 
   useMainButtonAction(
     pending,
@@ -94,6 +106,7 @@ export default function NetMarginTable({ data, abcData = [] }: { data: NetMargin
   const rows = [...data].sort((a, b) => b.net_profit_total - a.net_profit_total)
   return (
     <Card title="NET маржа (реальные выплаты)" subtitle={`Цель: ${MARGIN_TARGET_PCT}% · A/B/C = вклад в выручку · ✓ норма · % → цена₽ = рекомендация · нажми на цену чтобы применить`}>
+      {note && <div className="text-[10px] text-gray-400 dark:text-gray-500 mb-1.5">{note}</div>}
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
