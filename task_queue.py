@@ -148,17 +148,25 @@ async def mark_failed(task_id: int, error: str, retry: bool = False) -> None:
                     "SELECT retry_count, max_retries FROM tasks WHERE id=$1", task_id
                 )
                 if row and row["retry_count"] < row["max_retries"]:
-                    await conn.execute("""
+                    # AND status != 'completed' — вторая линия защиты: если задача уже
+                    # отмечена completed (mark_completed успел выполниться раньше), нельзя
+                    # откатывать её обратно в queued — это приведёт к повторному выполнению.
+                    tag = await conn.execute("""
                         UPDATE tasks
                         SET status='queued', retry_count=retry_count+1,
                             error_message=$2, started_at=NULL
-                        WHERE id=$1
+                        WHERE id=$1 AND status != 'completed'
                     """, task_id, error)
+                    if tag == "UPDATE 0":
+                        logger.warning(
+                            f"[task_queue] ⚠️ task_id={task_id} retry пропущен — задача уже completed"
+                        )
+                        return
                     logger.warning(f"[task_queue] 🔄 task_id={task_id} → retry ({row['retry_count']+1}/{row['max_retries']})")
                     return
             await conn.execute("""
                 UPDATE tasks SET status='failed', error_message=$2, finished_at=NOW()
-                WHERE id=$1
+                WHERE id=$1 AND status != 'completed'
             """, task_id, error)
             logger.error(f"[task_queue] ❌ task_id={task_id} → failed")
     except Exception as e:

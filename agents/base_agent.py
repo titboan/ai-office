@@ -716,32 +716,20 @@ class BaseAgent(ABC):
                 _task_start = time.monotonic()
                 # Единственная точка входа/выхода для пользователя — бот Марты.
                 _reply_token: str | None = config.MARTA_BOT_TOKEN
+                _task_completed = False
+                _completed_result: str | None = None
                 try:
                     result = await asyncio.wait_for(
                         self.handle_task(task.payload, from_agent=task.from_agent),
                         timeout=float(task.timeout_seconds),
                     )
                     await mark_completed(task.id, result)
-                    _latency_ms = int((time.monotonic() - _task_start) * 1000)
-                    await update_task_cost(task.id, self._task_tokens["cost"], _latency_ms)
-                    await log_event(
-                        "TASK_COMPLETED",
-                        task_id=task.id,
-                        agent_key=self.agent_key,
-                        chain_id=task.chain_id,
-                        payload={"result_len": len(result)},
-                    )
-                    task.result = result  # обновляем объект — нужно для _advance_chain → Notion
-                    if task.chain_id:
-                        await self._advance_chain(task)
-                    else:
-                        if task.chat_id:
-                            result_msg = f"{self._agent_label(result)}\n\n{result}"
-                            await self._notify_user(
-                                task.chat_id,
-                                result_msg,
-                                bot_token=_reply_token,
-                            )
+                    # Задача уже отмечена completed — ниже, до конца worker loop, никакая
+                    # ошибка НЕ должна вызывать mark_failed(retry=True), иначе завершённая
+                    # задача откатится в queued и выполнится повторно (двойной расход бюджета,
+                    # повторное применение цены/ставки, дублирующее сообщение пользователю).
+                    _task_completed = True
+                    _completed_result = result
                 except asyncio.TimeoutError:
                     await mark_failed(task.id, f"Таймаут {task.timeout_seconds}с", retry=False)
                     await log_event(
@@ -778,6 +766,38 @@ class BaseAgent(ABC):
                             f"**Причина:** `{error_short}`\n\n"
                             f"Попробуй переформулировать задачу или обратись к Марте.",
                             bot_token=_reply_token,
+                        )
+
+                if _task_completed:
+                    # Задача уже completed в БД — эти шаги только логируют/уведомляют/двигают
+                    # цепочку. Их сбой не должен откатывать уже выполненную задачу обратно
+                    # в queued, поэтому здесь нет mark_failed — только logger.error.
+                    try:
+                        result = _completed_result or ""
+                        _latency_ms = int((time.monotonic() - _task_start) * 1000)
+                        await update_task_cost(task.id, self._task_tokens["cost"], _latency_ms)
+                        await log_event(
+                            "TASK_COMPLETED",
+                            task_id=task.id,
+                            agent_key=self.agent_key,
+                            chain_id=task.chain_id,
+                            payload={"result_len": len(result)},
+                        )
+                        task.result = result  # обновляем объект — нужно для _advance_chain → Notion
+                        if task.chain_id:
+                            await self._advance_chain(task)
+                        else:
+                            if task.chat_id:
+                                result_msg = f"{self._agent_label(result)}\n\n{result}"
+                                await self._notify_user(
+                                    task.chat_id,
+                                    result_msg,
+                                    bot_token=_reply_token,
+                                )
+                    except Exception as e:
+                        logger.error(
+                            f"[{self.name}] Пост-обработка завершённой задачи {task.id} упала "
+                            f"({type(e).__name__}: {e}) — задача уже completed, не откатываем."
                         )
             except asyncio.CancelledError:
                 break
