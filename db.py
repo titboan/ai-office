@@ -2916,3 +2916,14 @@ async def get_competitor_snapshots(weeks: int = 4) -> list[dict]:
             weeks,
         )
     return [dict(r) for r in rows]
+
+
+async def get_saved_tender_ids(chat_id: int) -> set[str]:
+    """ID тендеров, уже сохранённых для chat_id — для дедупликации в дайджесте Тины."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT tender_id FROM tender_opportunities WHERE chat_id = $1",
+            chat_id,
+        )
+    return {r["tender_id"] for r in rows}

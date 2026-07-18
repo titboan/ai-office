@@ -11,6 +11,7 @@ from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
+from db import get_saved_tender_ids
 from tools.gosplan_api import GosplanClient, STATUS_OPEN, format_tender_summary
 from tools.search import search_web
 from .base_agent import BaseAgent
@@ -92,6 +93,7 @@ class TinaAgent(BaseAgent):
     def __init__(self) -> None:
         super().__init__(config.TINA_BOT_TOKEN)
         self._gosplan = GosplanClient(api_key=config.GOSPLAN_API_KEY)
+        self._tool_chat_id = 0
 
     # ------------------------------------------------------------------ #
     #  Инструменты для Claude (tool_use loop)                             #
@@ -225,10 +227,26 @@ class TinaAgent(BaseAgent):
         )
         if not tenders:
             return f"Тендеров по запросу «{keyword}» в Краснодарском крае не найдено."
-        lines = [f"Найдено тендеров: {len(tenders)}\n"]
-        for t in tenders[:10]:
+
+        saved_ids = await get_saved_tender_ids(self._tool_chat_id)
+        new_tenders = [
+            t for t in tenders
+            if str(t.get("lotId") or t.get("id") or "") not in saved_ids
+        ]
+        skipped_count = len(tenders) - len(new_tenders)
+
+        if not new_tenders:
+            return (
+                f"Новых тендеров по «{keyword}» нет — все найденные уже показаны "
+                f"ранее и остаются в отслеживании."
+            )
+
+        lines = [f"Найдено тендеров: {len(new_tenders)}\n"]
+        for t in new_tenders[:10]:
             lines.append(format_tender_summary(t))
             lines.append("")
+        if skipped_count:
+            lines.append(f"(ещё {skipped_count} уже показано ранее)")
         return "\n".join(lines)
 
     async def _tool_get_tender_details(self, lot_id: str) -> str:
@@ -332,6 +350,7 @@ class TinaAgent(BaseAgent):
 
     async def _run_tool_loop(self, user_message: str, chat_id: int = 0) -> str:
         """Запустить Claude с инструментами и вернуть итоговый текст."""
+        self._tool_chat_id = chat_id
         messages = [{"role": "user", "content": user_message}]
         max_iterations = 8
 

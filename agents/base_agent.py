@@ -159,6 +159,10 @@ class BaseAgent(ABC):
         self._worker_stop_event: asyncio.Event = asyncio.Event()
         self._worker_task: asyncio.Task | None = None
 
+        # Временная защита от гонки на self._current_chat_id между worker loop
+        # и прямыми прокси-вызовами agent.run_task() из Марты (см. plans/2026-07-18-orchestration-race-conditions.md)
+        self._chat_id_lock: asyncio.Lock = asyncio.Lock()
+
         backend = "Redis" if config.REDIS_URL else "dict (fallback, Redis не задан)"
         logger.debug(f"[{self.name}] Хранилище истории: {backend}")
 
@@ -728,7 +732,6 @@ class BaseAgent(ABC):
                     f"[{self.name}] corr={task.correlation_id[:8]} | "
                     f"task_id={task.id} | payload={task.payload[:60]!r}"
                 )
-                self._current_chat_id = task.chat_id
                 self._task_tokens = {"input": 0, "output": 0, "cost": 0.0}
                 _task_start = time.monotonic()
                 # Единственная точка входа/выхода для пользователя — бот Марты.
@@ -736,10 +739,12 @@ class BaseAgent(ABC):
                 _task_completed = False
                 _completed_result: str | None = None
                 try:
-                    result = await asyncio.wait_for(
-                        self.handle_task(task.payload, from_agent=task.from_agent),
-                        timeout=float(task.timeout_seconds),
-                    )
+                    async with self._chat_id_lock:
+                        self._current_chat_id = task.chat_id
+                        result = await asyncio.wait_for(
+                            self.handle_task(task.payload, from_agent=task.from_agent),
+                            timeout=float(task.timeout_seconds),
+                        )
                     await mark_completed(task.id, result)
                     # Задача уже отмечена completed — ниже, до конца worker loop, никакая
                     # ошибка НЕ должна вызывать mark_failed(retry=True), иначе завершённая
@@ -1138,7 +1143,20 @@ class BaseAgent(ABC):
         if not plan:
             return
 
-        step     = plan["steps"][chain_index]
+        # chain_index — номер группы, а не позиция в списке шагов: в параллельных
+        # группах несколько шагов могут иметь одинаковый group, поэтому ищем шаг
+        # по (group, agent) провалившейся задачи, а не по plan["steps"][chain_index].
+        group_steps = [s for s in plan["steps"] if s.get("group") == chain_index]
+        step = next(
+            (s for s in group_steps if s.get("agent") == failed_task.assigned_agent),
+            group_steps[0] if group_steps else None,
+        )
+        if step is None:
+            logger.error(
+                f"chain_failed | chain_id={chain_id[:8]} | "
+                f"не найден шаг group={chain_index} agent={failed_task.assigned_agent} в плане"
+            )
+            return
         required = step.get("required", True)
         me       = _AGENT_NAMES.get(self.agent_key, self.name)
         err_msg  = getattr(failed_task, "error_message", None) or "неизвестно"
