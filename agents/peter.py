@@ -1240,8 +1240,10 @@ class PeterAgent(BaseAgent):
 
         total_revenue = sum(float(r["revenue"] or 0) for r in data["revenue"])
         total_adv_spend = sum(float(r["spend"] or 0) for r in data["adv"])
+        total_payout = sum(float(r["payout"] or 0) for r in data["fin_payout"])
         avg_per_day = round(total_revenue / 30, 0)
-        drr_overall = round(total_adv_spend / total_revenue * 100, 1) if total_revenue else 0
+        # ДРР = расход / выплата после комиссии МП (та же формула, что в /drr), а не от валовой выручки
+        drr_overall = round(total_adv_spend / total_payout * 100, 1) if total_payout else 0
 
         prompt = f"""Проведи полный аудит магазина. Используй формат из PETER_AUDIT_PROMPT.
 
@@ -2502,8 +2504,10 @@ class PeterAgent(BaseAgent):
 
         total_revenue = sum(float(r["revenue"] or 0) for r in data["revenue"])
         total_adv_spend = sum(float(r["spend"] or 0) for r in data["adv"])
+        total_payout = sum(float(r["payout"] or 0) for r in data["fin_payout"])
         avg_per_day = round(total_revenue / 30, 0)
-        drr_overall = round(total_adv_spend / total_revenue * 100, 1) if total_revenue else 0
+        # ДРР = расход / выплата после комиссии МП (та же формула, что в /drr), а не от валовой выручки
+        drr_overall = round(total_adv_spend / total_payout * 100, 1) if total_payout else 0
 
         prompt = f"""Еженедельный автоаудит магазина (понедельник). Краткий вариант — не более 25 строк.
 
@@ -2559,7 +2563,9 @@ class PeterAgent(BaseAgent):
         total_revenue = sum(float(r["revenue"] or 0) for r in data["revenue"])
         total_orders  = sum(int(r["orders"]  or 0)   for r in data["revenue"])
         total_adv     = sum(float(r["spend"] or 0)   for r in data["adv"])
-        drr = round(total_adv / total_revenue * 100, 1) if total_revenue else 0
+        total_payout  = sum(float(r["payout"] or 0)  for r in data["fin_payout"])
+        # ДРР = расход / выплата после комиссии МП (та же формула, что в /drr), а не от валовой выручки
+        drr = round(total_adv / total_payout * 100, 1) if total_payout else 0
 
         # Авто-триггер Peter→Elina: CTR < 1% → ставим задачу Элине
         low_ctr_names: list[str] = []
