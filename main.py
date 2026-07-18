@@ -847,6 +847,11 @@ async def run_all_async() -> None:
             except Exception as e:
                 logger.error(f"[dashboard] catalog error: {e}")
 
+        # fin_payout/regions_wb/infographic_ctr нужны только Telegram-отчётам Питера
+        # (json.dumps(data) целиком в промпт) — фронтенд дашборда их не рендерит,
+        # не гоняем лишний вес по сети. margin_wb/margin_ozon оставляем — GROSS-фоллбэк MarginChart.
+        for _dead_field in ("fin_payout", "regions_wb", "infographic_ctr"):
+            data.pop(_dead_field, None)
         return web.json_response(_to_json_safe({**data, **adv}), headers=cors)
 
     async def _handle_timeline(request: web.Request) -> web.Response:

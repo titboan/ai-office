@@ -3,8 +3,11 @@ import Card from '../components/Card'
 import MarketplaceBadge from '../components/MarketplaceBadge'
 import { drrColorClass } from '../theme'
 
-function drr(buyouts: number, spend: number) {
-  if (!buyouts) return null
+// buyouts === 0 && spend === 0 → реклама вообще не запускалась, реально "нет данных".
+// buyouts === 0 && spend > 0 → деньги потрачены, продаж ноль — критичный случай
+// (ДРР → ∞), не должен маскироваться под "нет данных" (Infinity, а не null).
+function drr(buyouts: number, spend: number): number | null {
+  if (buyouts === 0) return spend > 0 ? Infinity : null
   return (spend / buyouts) * 100
 }
 
@@ -25,10 +28,10 @@ export default function DrrGauge({ adv, salesByDay }: { adv: AdvRow[]; salesByDa
           <div key={marketplace} className="flex-1 text-center">
             <div className="text-xs text-gray-500 dark:text-gray-400 mb-1 justify-center flex"><MarketplaceBadge marketplace={marketplace} /></div>
             <div className={`text-2xl font-bold ${drrColorClass(d)}`}>
-              {d !== null ? `${d.toFixed(1)}%` : '—'}
+              {d === null ? '—' : Number.isFinite(d) ? `${d.toFixed(1)}%` : '∞%'}
             </div>
             <div className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-              продажи {buyouts.toLocaleString()} ₽ / реклама {s.toLocaleString()} ₽
+              продажи {buyouts.toLocaleString('ru-RU')} ₽ / реклама {s.toLocaleString('ru-RU')} ₽
             </div>
           </div>
         ))}

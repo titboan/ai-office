@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo, useRef } from 'react'
 import { LayoutDashboard, FileBarChart, Package, Settings, AlertCircle, Sun, Moon, RefreshCw } from 'lucide-react'
 import { fetchDashboard, fetchTimeline, DashboardData, DayRevenue, TimelineData } from './api'
 import RevenueChart from './charts/RevenueChart'
+import OrdersChart from './charts/OrdersChart'
 import TopProducts from './charts/TopProducts'
 import DrrGauge from './charts/DrrGauge'
 import CtrRoas from './charts/CtrRoas'
@@ -25,6 +26,8 @@ import MergeProductForm from './charts/MergeProductForm'
 import AddShopForm from './charts/AddShopForm'
 import CardSkeleton from './components/CardSkeleton'
 import AlertBanner, { collectAlerts } from './components/AlertBanner'
+import { MainButtonProvider } from './hooks/MainButtonContext'
+import { drrColorClass } from './theme'
 
 type Days = 7 | 14 | 30
 type Theme = 'light' | 'dark'
@@ -90,12 +93,13 @@ function filterDataByMp(data: DashboardData, mp: 'wb' | 'ozon'): DashboardData {
     revenue: data.revenue.filter(r => r.marketplace === mp),
     top_products: data.top_products.filter(r => r.marketplace === mp),
     adv: data.adv.filter(r => r.marketplace === mp),
-    low_stocks: data.low_stocks.filter(r => r.marketplace === mp),
     trend: data.trend.filter(r => r.marketplace === mp),
     product_metrics: data.product_metrics.filter(r => r.marketplace === mp),
     stock_velocity: data.stock_velocity.filter(r => r.marketplace === mp),
     funnel: (data.funnel ?? []).filter(r => r.marketplace === mp),
     bid_suggestions: (data.bid_suggestions ?? []).filter(r => r.marketplace === mp),
+    abc_data: (data.abc_data ?? []).filter(r => r.marketplace === mp),
+    returns_top: (data.returns_top ?? []).filter(r => r.marketplace === mp),
     supply_plan: {
       ...data.supply_plan,
       products: (data.supply_plan?.products ?? []).filter(r => r.marketplace === mp),
@@ -113,6 +117,7 @@ export default function App() {
   const [loading, setLoading] = useState(true)      // true только пока нет никаких данных (нет кеша)
   const [isFetchingFresh, setIsFetchingFresh] = useState(false)  // фоновое обновление
   const [isStale, setIsStale] = useState(false)     // показаны кешированные данные
+  const [staleRefreshFailed, setStaleRefreshFailed] = useState(false)  // фоновый рефреш кеша не удался
   const [timeline, setTimeline] = useState<TimelineData | null>(null)
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [tab, setTab] = useState<Tab>(getInitialTab)
@@ -164,6 +169,7 @@ export default function App() {
     lastRefreshAt.current = Date.now()
 
     const cached = loadCachedData(days)
+    setStaleRefreshFailed(false)
     if (cached) {
       setData(cached)
       setLoading(false)
@@ -182,15 +188,32 @@ export default function App() {
         setData(d)
         setUpdatedAt(new Date())
         setIsStale(false)
+        setStaleRefreshFailed(false)
         setLoading(false)
         saveCachedData(days, d)
       })
       .catch(e => {
-        if (!cached) setError(e.message)
+        if (!cached) {
+          setError(e.message)
+        } else {
+          // Кеш уже показан пользователю — не блокируем UI ошибкой, но снимаем
+          // вечный "из кеша, обновление..." и коротко показываем, что фоновый
+          // рефреш не удался (данные остаются старыми из кеша).
+          setIsStale(false)
+          setStaleRefreshFailed(true)
+        }
         setLoading(false)
       })
       .finally(() => setIsFetchingFresh(false))
   }, [days, refreshKey])
+
+  // Убрать индикатор неудавшегося фонового обновления через несколько секунд,
+  // чтобы не висел в футере бесконечно.
+  useEffect(() => {
+    if (!staleRefreshFailed) return
+    const t = setTimeout(() => setStaleRefreshFailed(false), 5000)
+    return () => clearTimeout(t)
+  }, [staleRefreshFailed])
 
   const displayData = useMemo(
     () => data && mpFilter !== 'all' ? filterDataByMp(data, mpFilter) : data,
@@ -219,16 +242,16 @@ export default function App() {
       delta: wowPct !== null ? `${wowPct >= 0 ? '+' : ''}${wowPct.toFixed(1)}%` : null,
       deltaPositive: wowPct !== null ? wowPct >= 0 : undefined,
     },
-    { label: 'Заказов', value: totalOrders.toLocaleString(), color: '' },
+    { label: 'Заказов', value: totalOrders.toLocaleString('ru-RU'), color: '' },
     { label: 'Ср. чек', value: `${(avgCheck / 1000).toFixed(1)}к ₽`, color: '' },
     { label: 'Реклама', value: `${(totalSpend / 1000).toFixed(0)}к ₽`, color: '' },
-    { label: 'ДРР', value: `${drr}%`, color: '' },
+    { label: 'ДРР', value: `${drr}%`, color: drrColorClass(drr === '—' ? null : Number(drr)) },
     {
       label: 'WoW',
       value: wowPct !== null
         ? `${wowPct >= 0 ? '↑' : '↓'}${Math.abs(wowPct).toFixed(1)}%`
         : '—',
-      color: wowPct === null ? '' : wowPct >= 0 ? 'text-green-600' : 'text-red-500',
+      color: wowPct === null ? '' : wowPct >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400',
     },
   ] : []
 
@@ -244,6 +267,7 @@ export default function App() {
   const showFilters = tab === 'dashboard' || tab === 'reports'
 
   return (
+    <MainButtonProvider>
     <div
       className="min-h-screen p-3 space-y-3 md:max-w-3xl lg:max-w-5xl md:mx-auto"
       style={{ background: 'var(--tg-theme-bg-color, #f5f5f5)' }}
@@ -332,6 +356,12 @@ export default function App() {
         })}
       </div>
 
+      {error && data === null && (
+        <div className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-xl p-4 text-sm flex items-center gap-1.5">
+          <AlertCircle size={16} className="shrink-0" /> {error}
+        </div>
+      )}
+
       {tab === 'dashboard' && loading && (
         <>
           <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
@@ -343,12 +373,6 @@ export default function App() {
             {Array.from({ length: 12 }).map((_, i) => <CardSkeleton key={i} />)}
           </div>
         </>
-      )}
-
-      {tab === 'dashboard' && error && (
-        <div className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-xl p-4 text-sm flex items-center gap-1.5">
-          <AlertCircle size={16} className="shrink-0" /> {error}
-        </div>
       )}
 
       {tab === 'dashboard' && displayData && !loading && (
@@ -375,10 +399,15 @@ export default function App() {
           <div className="space-y-3 md:space-y-0 md:grid md:grid-cols-2 lg:grid-cols-3 md:gap-3 md:items-start">
             <WowTrend data={displayData.trend} />
             <RevenueChart data={displayData.revenue_by_day} sales={displayData.sales_by_day ?? []} />
+            <OrdersChart data={displayData.orders_by_day ?? []} />
             <TopProducts data={displayData.top_products} />
             {/* id для скролла из AlertBanner */}
             <div id="section-drr"><DrrGauge adv={displayData.adv} salesByDay={displayData.revenue_by_day ?? []} /></div>
-            <MarginChart data={displayData.net_margin ?? []} />
+            <MarginChart
+              data={displayData.net_margin ?? []}
+              marginWb={displayData.margin_wb ?? []}
+              marginOzon={displayData.margin_ozon ?? []}
+            />
             <NetMarginTable data={displayData.net_margin ?? []} abcData={displayData.abc_data ?? []} />
             <BidSuggestions data={displayData.bid_suggestions ?? []} />
             <FunnelChart data={displayData.funnel ?? []} />
@@ -394,6 +423,8 @@ export default function App() {
             За {displayData.period_days} дней с {displayData.date_from}
             {isStale
               ? ' · из кеша, обновление...'
+              : staleRefreshFailed
+              ? ' · не удалось обновить, попробуй позже'
               : updatedAtStr ? ` · обновлено в ${updatedAtStr}` : ''
             }
           </div>
@@ -410,14 +441,24 @@ export default function App() {
         <div className="space-y-3">
           <div className="text-xs text-gray-400 dark:text-gray-500 px-1">
             Данные за {days} дней
-            {isStale ? ' · из кеша, обновление...' : updatedAtStr ? ` · обновлено в ${updatedAtStr}` : ''}
+            {isStale
+              ? ' · из кеша, обновление...'
+              : staleRefreshFailed
+              ? ' · не удалось обновить, попробуй позже'
+              : updatedAtStr ? ` · обновлено в ${updatedAtStr}` : ''
+            }
           </div>
           <KwTable data={data?.kw_top ?? []} />
           <SupplyPlan data={displayData?.supply_plan ?? { products: [], lead_days: 0, safety_days: 0 }} />
         </div>
       )}
 
-      {tab === 'catalog' && (
+      {tab === 'catalog' && loading && (
+        <div className="space-y-3">
+          {Array.from({ length: 2 }).map((_, i) => <CardSkeleton key={i} />)}
+        </div>
+      )}
+      {tab === 'catalog' && !loading && (
         <div className="space-y-3">
           <ProductsTable data={data?.catalog?.products ?? []} />
           <ShopKpiCard data={data?.catalog?.shop_kpi ?? {}} />
@@ -426,12 +467,18 @@ export default function App() {
         </div>
       )}
 
-      {tab === 'settings' && (
+      {tab === 'settings' && loading && (
+        <div className="space-y-3">
+          {Array.from({ length: 2 }).map((_, i) => <CardSkeleton key={i} />)}
+        </div>
+      )}
+      {tab === 'settings' && !loading && (
         <div className="space-y-3">
           <CostEditor />
           <AddShopForm />
         </div>
       )}
     </div>
+    </MainButtonProvider>
   )
 }

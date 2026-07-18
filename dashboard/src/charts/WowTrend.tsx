@@ -4,13 +4,16 @@ import EmptyState from '../components/EmptyState'
 import MarketplaceBadge from '../components/MarketplaceBadge'
 import { trendColorClass } from '../theme'
 
-function pct(current: number, prev: number) {
-  if (!prev) return null
+// prev === 0 && current === 0 → действительно нет данных за обе недели.
+// prev === 0 && current > 0 → рост с нуля, а не "нет данных" — Infinity, не null.
+function pct(current: number, prev: number): number | null {
+  if (prev === 0) return current > 0 ? Infinity : null
   return ((current - prev) / prev) * 100
 }
 
 function arrow(v: number | null) {
   if (v === null) return '—'
+  if (v === Infinity) return '🆕 новое'
   return v >= 0 ? `↑${v.toFixed(1)}%` : `↓${Math.abs(v).toFixed(1)}%`
 }
 

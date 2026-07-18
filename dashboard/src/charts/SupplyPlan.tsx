@@ -18,7 +18,7 @@ function ProductRow({ row }: { row: SupplyRow }) {
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 min-w-0">
           <MarketplaceBadge marketplace={row.marketplace} />
-          <span className="text-xs font-medium truncate">{row.name}</span>
+          <span className="text-xs font-medium truncate min-w-0">{row.name}</span>
         </div>
         <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
           запас {row.total_days_left === 999 ? '∞' : `${row.total_days_left} дн`}
@@ -115,7 +115,7 @@ export default function SupplyPlan({ data }: { data: SupplyPlanData }) {
                 <div key={`${p.marketplace}-${p.name}`} className="flex items-center justify-between gap-2 py-1 text-xs text-gray-500 dark:text-gray-400">
                   <div className="flex items-center gap-1.5 min-w-0">
                     <MarketplaceBadge marketplace={p.marketplace} />
-                    <span className="truncate">{p.name}</span>
+                    <span className="truncate min-w-0">{p.name}</span>
                   </div>
                   <span className="whitespace-nowrap">{p.total_days_left === 999 ? '∞' : `${p.total_days_left} дн`}</span>
                 </div>

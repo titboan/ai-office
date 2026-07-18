@@ -1,7 +1,6 @@
-export interface RevenueRow { marketplace: string; revenue: number; orders: number; skus: number }
+export interface RevenueRow { marketplace: string; revenue: number; orders: number }
 export interface ProductRow { marketplace: string; product_id: string; product_name: string; revenue: number; qty: number }
-export interface AdvRow { marketplace: string; spend: number; views: number; clicks: number }
-export interface StockRow { marketplace: string; product_id: string; product_name: string; stock: number }
+export interface AdvRow { marketplace: string; spend: number }
 export interface TrendRow { marketplace: string; week_current: number; week_prev: number }
 export interface ProductMetric {
   product_id: string; name: string; marketplace: string
@@ -25,22 +24,35 @@ export interface NetMarginRow {
 }
 export interface MomRow { month: string; revenue: number; orders: number }
 export interface ReturnRow {
-  product_id: string; product_name: string
-  returns_count: number; return_amount: number; return_rate: number
+  product_id: string; product_name: string; marketplace: string
+  returns_count: number; return_amount: number; return_rate: number | null
 }
 export interface KwRow {
-  keyword: string; position: number; search_count: number; ctr: number
+  keyword: string; position: number | null; search_count: number | null; ctr: number | null
   position_drop: number | null   // (позиция сейчас − позиция на прошлом снапшоте), null если истории нет
   priority: boolean              // просадка >= config.SEO_POSITION_DROP_THRESHOLD (10 мест)
 }
 export interface AbcRow {
   product_id: string
   name: string
+  marketplace: string
   revenue: number
   qty: number
   share_pct: number
   cumulative_pct: number
   group: 'A' | 'B' | 'C'
+}
+
+// GROSS-маржа (комиссия/логистика МП грубо оценены, без налога) — запасной фоллбэк для
+// MarginChart, если net_margin пуст (см. agents/peter.py::_collect_data п.3-4).
+export interface GrossMarginRow {
+  product_id: string
+  product_name: string
+  revenue: number
+  qty: number
+  cost: number
+  op_profit: number
+  profitability: number   // проценты, уже округлено до 1 знака
 }
 
 export interface FunnelRow {
@@ -112,7 +124,6 @@ export interface DashboardData {
   revenue: RevenueRow[]
   top_products: ProductRow[]
   adv: AdvRow[]
-  low_stocks: StockRow[]
   trend: TrendRow[]
   product_metrics: ProductMetric[]
   stock_velocity: StockVelocity[]
@@ -120,6 +131,8 @@ export interface DashboardData {
   orders_by_day: DayRevenue[]
   sales_by_day: DayRevenue[]
   net_margin: NetMarginRow[]
+  margin_wb: GrossMarginRow[]
+  margin_ozon: GrossMarginRow[]
   mom_trends: MomRow[]
   returns_top: ReturnRow[]
   kw_top: KwRow[]
@@ -149,6 +162,21 @@ export interface TimelineData {
 }
 
 const API_URL = import.meta.env.VITE_API_URL ?? ''
+const DEFAULT_TIMEOUT_MS = 20000
+
+// Без клиентского таймаута зависший запрос (плохая сеть, забуксовавший бэкенд)
+// оставляет UI в состоянии "загрузка"/"обновление" навсегда — Telegram WebView не
+// прерывает fetch сам. Оборачиваем каждый вызов в AbortController с таймаутом,
+// сигнатуры экспортируемых функций (fetchDashboard и т.д.) не меняются.
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...options, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 export async function fetchDashboard(days = 14): Promise<DashboardData> {
   const urlToken = new URLSearchParams(window.location.search).get('token') ?? ''
@@ -159,7 +187,7 @@ export async function fetchDashboard(days = 14): Promise<DashboardData> {
   }
 
   const tokenParam = urlToken ? `&token=${encodeURIComponent(urlToken)}` : ''
-  const res = await fetch(`${API_URL}/api/dashboard?days=${days}${tokenParam}`, { headers })
+  const res = await fetchWithTimeout(`${API_URL}/api/dashboard?days=${days}${tokenParam}`, { headers })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   return res.json()
 }
@@ -170,7 +198,7 @@ export async function applyPrice(
   marketplace: 'wb' | 'ozon', productId: string, newPrice: number
 ): Promise<{ ok: boolean }> {
   const tg = (window as any).Telegram?.WebApp
-  const res = await fetch(`${API_URL}/api/apply_price`, {
+  const res = await fetchWithTimeout(`${API_URL}/api/apply_price`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -189,7 +217,7 @@ export async function applyBid(
   shopId: string | null
 ): Promise<{ ok: boolean; current?: number; new?: number }> {
   const tg = (window as any).Telegram?.WebApp
-  const res = await fetch(`${API_URL}/api/apply_bid`, {
+  const res = await fetchWithTimeout(`${API_URL}/api/apply_bid`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -220,7 +248,7 @@ export interface CostRow {
 // только настоящий Telegram initData, без ?token= (та ссылка read-only для коллег).
 export async function getCosts(): Promise<CostRow[]> {
   const tg = (window as any).Telegram?.WebApp
-  const res = await fetch(`${API_URL}/api/costs`, {
+  const res = await fetchWithTimeout(`${API_URL}/api/costs`, {
     headers: { 'X-Telegram-Init-Data': tg?.initData ?? '' },
   })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
@@ -231,7 +259,7 @@ export async function setCost(
   marketplace: 'wb' | 'ozon', productId: string, purchaseLogistics: number, packagingMarking: number
 ): Promise<{ ok: boolean }> {
   const tg = (window as any).Telegram?.WebApp
-  const res = await fetch(`${API_URL}/api/set_cost`, {
+  const res = await fetchWithTimeout(`${API_URL}/api/set_cost`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -254,7 +282,7 @@ export async function createProduct(
   name: string, wbArticle: string, ozonOfferId: string, category: string
 ): Promise<{ ok: boolean }> {
   const tg = (window as any).Telegram?.WebApp
-  const res = await fetch(`${API_URL}/api/product`, {
+  const res = await fetchWithTimeout(`${API_URL}/api/product`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -274,7 +302,7 @@ export async function mergeProduct(
   wbArticle: string, ozonOfferId: string
 ): Promise<{ ok: boolean; error?: string }> {
   const tg = (window as any).Telegram?.WebApp
-  const res = await fetch(`${API_URL}/api/merge_product`, {
+  const res = await fetchWithTimeout(`${API_URL}/api/merge_product`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -293,7 +321,7 @@ export async function addShop(
   marketplace: 'wb' | 'ozon', apiToken: string, clientId: string, shopName: string
 ): Promise<{ ok: boolean }> {
   const tg = (window as any).Telegram?.WebApp
-  const res = await fetch(`${API_URL}/api/add_shop`, {
+  const res = await fetchWithTimeout(`${API_URL}/api/add_shop`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -315,7 +343,7 @@ export async function fetchTimeline(): Promise<TimelineData> {
     headers['X-Telegram-Init-Data'] = tg?.initData ?? ''
   }
   const tokenParam = urlToken ? `?token=${encodeURIComponent(urlToken)}` : ''
-  const res = await fetch(`${API_URL}/api/timeline${tokenParam}`, { headers })
+  const res = await fetchWithTimeout(`${API_URL}/api/timeline${tokenParam}`, { headers })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   return res.json()
 }

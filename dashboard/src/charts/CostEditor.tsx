@@ -14,7 +14,7 @@ function sumLabel(a: string, b: string): string {
   const pb = parseFloat(b)
   if (isNaN(pa) && isNaN(pb)) return '—'
   const total = (isNaN(pa) ? 0 : pa) + (isNaN(pb) ? 0 : pb)
-  return `${total.toLocaleString()} ₽`
+  return `${total.toLocaleString('ru-RU')} ₽`
 }
 
 const CARD_TITLE = 'Себестоимость'
@@ -248,7 +248,7 @@ export default function CostEditor() {
                 onClick={toggle}
                 className="w-full flex items-center justify-between py-2.5 text-left"
               >
-                <span className="font-medium text-sm truncate pr-2">{r.display_name}</span>
+                <span className="font-medium text-sm truncate pr-2 min-w-0">{r.display_name}</span>
                 <span className="flex items-center gap-2 shrink-0">
                   {r.wb_article && (
                     <span className="text-xs text-gray-500 dark:text-gray-400">WB {wbTotal}</span>

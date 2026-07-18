@@ -37,7 +37,7 @@ export default function RevenueChart({ data, sales }: Props) {
           <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'currentColor' }} tickFormatter={fmtDate} />
           <YAxis tick={{ fontSize: 10, fill: 'currentColor' }} tickFormatter={fmt} width={36} />
           <Tooltip
-            formatter={(v: number) => `${v.toLocaleString()} ₽`}
+            formatter={(v: number) => `${v.toLocaleString('ru-RU')} ₽`}
             labelFormatter={fmtDate}
             contentStyle={TOOLTIP_STYLE}
           />

@@ -34,10 +34,10 @@ export const MARGIN_TARGET_PCT = 50
 
 export function marginColorClass(pct: number | null): string {
   if (pct === null) return 'text-gray-400 dark:text-gray-500'
-  if (pct < 10) return 'text-red-600'
-  if (pct < 30) return 'text-yellow-600'
-  if (pct < MARGIN_TARGET_PCT) return 'text-orange-500'
-  return 'text-green-600'
+  if (pct < 10) return 'text-red-600 dark:text-red-400'
+  if (pct < 30) return 'text-yellow-600 dark:text-yellow-400'
+  if (pct < MARGIN_TARGET_PCT) return 'text-orange-500 dark:text-orange-400'
+  return 'text-green-600 dark:text-green-400'
 }
 
 export function marginColorHex(pct: number): string {
@@ -62,14 +62,33 @@ export function stockBarClass(days: number): string {
 
 // ── ДРР (доля рекламных расходов) ───────────────────────────────────────────
 export function drrColorClass(pct: number | null): string {
-  if (pct === null) return 'text-gray-400'
-  if (pct > 30) return 'text-red-500'
-  if (pct > 20) return 'text-yellow-500'
-  return 'text-green-600'
+  if (pct === null) return 'text-gray-400 dark:text-gray-500'
+  if (pct >= 30) return 'text-red-500 dark:text-red-400'
+  if (pct >= 20) return 'text-yellow-500 dark:text-yellow-400'
+  return 'text-green-600 dark:text-green-400'
 }
 
 // ── Знак роста/падения (WoW-тренд и т.п.) ───────────────────────────────────
 export function trendColorClass(v: number | null): string {
-  if (v === null) return 'text-gray-400'
-  return v >= 0 ? 'text-green-600' : 'text-red-500'
+  if (v === null) return 'text-gray-400 dark:text-gray-500'
+  return v >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400'
+}
+
+// ── Воронка конверсии: отдельная пара цветов, намеренно не совпадающая с WB/Ozon
+// (иначе цвет стадии воронки визуально путают с цветом площадки) ────────────
+export const FUNNEL_STAGE = {
+  viewToCart:  { color: '#0d9488', colorDark: '#2dd4bf' },  // teal
+  cartToOrder: { color: '#0891b2', colorDark: '#22d3ee' },  // cyan
+} as const
+
+export function funnelStageColor(stage: keyof typeof FUNNEL_STAGE, isDark: boolean): string {
+  const s = FUNNEL_STAGE[stage]
+  return isDark ? s.colorDark : s.color
+}
+
+// ── ABC-анализ: стили групп A/B/C (используются в AbcBadge и AbcTable) ─────
+export const ABC_GROUP_STYLE: Record<string, string> = {
+  A: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
+  B: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400',
+  C: 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
 }
