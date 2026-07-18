@@ -82,9 +82,24 @@ class Config:
 
     @classmethod
     def validate(cls) -> None:
-        # Единственная переменная, без которой не работает ни один агент
-        if not cls.ANTHROPIC_API_KEY:
-            raise ValueError("ANTHROPIC_API_KEY не задан — без него агенты не смогут думать")
+        # Переменные, без которых процесс стартует, но тихо ломается в рантайме —
+        # проверяем все сразу, чтобы не чинить по одной за перезапуск
+        required = {
+            "ANTHROPIC_API_KEY": cls.ANTHROPIC_API_KEY,  # без него агенты не смогут думать
+            "DATABASE_URL": cls.DATABASE_URL,  # без него не работает task queue
+            # Telegram-токены активных агентов (Дэн и Ева заморожены — не проверяем)
+            "MARTA_BOT_TOKEN": cls.MARTA_BOT_TOKEN,
+            "KEVIN_BOT_TOKEN": cls.KEVIN_BOT_TOKEN,
+            "KASPER_BOT_TOKEN": cls.KASPER_BOT_TOKEN,
+            "PETER_BOT_TOKEN": cls.PETER_BOT_TOKEN,
+            "ELINA_BOT_TOKEN": cls.ELINA_BOT_TOKEN,
+            "ALEX_BOT_TOKEN": cls.ALEX_BOT_TOKEN,
+            "MAX_BOT_TOKEN": cls.MAX_BOT_TOKEN,
+            "TINA_BOT_TOKEN": cls.TINA_BOT_TOKEN,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise ValueError(f"Не заданы обязательные переменные окружения: {', '.join(missing)}")
 
 
 config = Config()
