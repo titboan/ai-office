@@ -34,7 +34,7 @@
   (`agents/max.py:1187-1191`) всегда `now() - 7 дней` вместо «с последнего чек-ина» —
   добавить проставление `last_checked_at = NOW()` после успешного цикла синка магазина.
 
-### Фаза 4 — `shop_id` в ключах KPI и остатков «в пути» [ ]
+### Фаза 4 — `shop_id` в ключах KPI и остатков «в пути» [x]
 - `db.py:1839-1864` (`upsert_shop_kpi`, ключ конфликта `(snapshot_date, chat_id, marketplace)`)
   и `db.py:704-711` (`marketplace_in_transit`, `PRIMARY KEY (chat_id, marketplace, product_id)`)
   — оба без `shop_id`, из-за чего второй магазин Ozon/WB у одного продавца затирает данные

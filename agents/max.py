@@ -1539,7 +1539,7 @@ class MaxAgent(BaseAgent):
                     if deleted:
                         logger.info(f"[Макс/sync] Ozon: удалено {deleted} старых записей с числовым SKU")
                     for pid, qty in ozon_in_transit.items():
-                        await upsert_in_transit(chat_id, "ozon", pid, qty)
+                        await upsert_in_transit(chat_id, "ozon", pid, qty, shop["id"])
                     if ozon_in_transit:
                         logger.info(f"[Макс/sync] Ozon: {len(ozon_in_transit)} товаров в пути на склад")
             except Exception as e:
@@ -1558,7 +1558,7 @@ class MaxAgent(BaseAgent):
                 try:
                     in_transit_items = await client.get_in_transit()
                     for item in in_transit_items:
-                        await upsert_in_transit(chat_id, "wb", item["product_id"], item["qty"])
+                        await upsert_in_transit(chat_id, "wb", item["product_id"], item["qty"], shop["id"])
                     if in_transit_items:
                         logger.info(f"[Макс/sync] WB: {len(in_transit_items)} артикулов в пути на склад")
                 except Exception as e:
@@ -2810,7 +2810,8 @@ class MaxAgent(BaseAgent):
             await update.message.reply_text("\n".join(lines))
 
     async def sync_shop_kpi(self, chat_id: int) -> dict:
-        """Снимок рейтинга и KPI продавца Ozon."""
+        """Снимок рейтинга и KPI продавца Ozon. Ключ результата — shop_id, а не marketplace,
+        чтобы несколько магазинов Ozon у одного продавца не затирали друг друга."""
         from db import get_marketplace_shops, upsert_shop_kpi
         from tools.marketplace import OzonClient
         from datetime import date as _date
@@ -2827,8 +2828,11 @@ class MaxAgent(BaseAgent):
                     client = OzonClient(shop["api_token"], shop.get("client_id", ""))
                     kpi = await client.get_shop_kpi()
                     if kpi:
+                        kpi = dict(kpi)
+                        kpi["marketplace"] = mp
+                        kpi["shop_name"] = shop.get("shop_name") or ""
                         await upsert_shop_kpi(
-                            chat_id=chat_id, marketplace="ozon",
+                            chat_id=chat_id, marketplace="ozon", shop_id=shop["id"],
                             snapshot_date=today,
                             rating=kpi.get("rating"),
                             return_pct=kpi.get("return_pct"),
@@ -2837,10 +2841,12 @@ class MaxAgent(BaseAgent):
                             extra_data=kpi.get("extra_data", {}),
                         )
                         logger.info(f"[Макс/kpi] Ozon: рейтинг {kpi.get('rating')}")
-                    results["ozon"] = kpi  # всегда, даже пустой — для отображения
+                        results[shop["id"]] = kpi
+                    else:
+                        results[shop["id"]] = {"marketplace": mp, "shop_name": shop.get("shop_name") or ""}
                 except Exception as e:
                     logger.error(f"[Макс/kpi] Ozon: {e}", exc_info=True)
-                    results["ozon"] = {}
+                    results[shop["id"]] = {"marketplace": mp, "shop_name": shop.get("shop_name") or ""}
 
         return results
 
@@ -2849,9 +2855,11 @@ class MaxAgent(BaseAgent):
         if not results:
             return "⚠️ Данные KPI недоступны (магазины не подключены или API не поддерживается)."
         lines = ["<b>Рейтинг продавца</b>"]
-        for mp, kpi in results.items():
-            label = _mp_label(mp)
-            if not kpi:
+        for shop_id, kpi in results.items():
+            mp = kpi.get("marketplace", "?")
+            shop_name = kpi.get("shop_name") or ""
+            label = _mp_label(mp) + (f" ({shop_name})" if shop_name else "")
+            if not kpi or not kpi.get("rating"):
                 lines.append(f"\n{label}\n<i>данные временно недоступны</i>")
                 continue
             is_proxy = kpi.get("_proxy")
@@ -6955,9 +6963,10 @@ class MaxAgent(BaseAgent):
         shop_kpi: dict = {}
         try:
             results = await self.sync_shop_kpi(chat_id)
-            for mp, kpi in results.items():
-                if not kpi:
+            for kpi in results.values():
+                if not kpi or not kpi.get("rating"):
                     continue
+                mp = kpi.get("marketplace", "?")
                 shop_kpi[mp] = {
                     "rating": kpi.get("rating"),
                     "return_pct": kpi.get("return_pct"),
@@ -7229,8 +7238,10 @@ class MaxAgent(BaseAgent):
                         await msg.reply_text("⚠️ Данные KPI недоступны.", reply_markup=_back_kb)
                         return
                     lines = ["<b>Рейтинг продавца</b>"]
-                    for mp, kpi in results.items():
-                        label = _mp_label(mp)
+                    for shop_id, kpi in results.items():
+                        mp = kpi.get("marketplace", "?")
+                        shop_name = kpi.get("shop_name") or ""
+                        label = _mp_label(mp) + (f" ({shop_name})" if shop_name else "")
                         rating = kpi.get("rating") or 0
                         ret    = kpi.get("return_pct") or 0
                         cancel = kpi.get("cancellation_pct") or 0

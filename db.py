@@ -701,6 +701,39 @@ async def _create_schema() -> None:
         """)
 
         await conn.execute("""
+            ALTER TABLE shop_kpi_snapshots
+            ADD COLUMN IF NOT EXISTS shop_id BIGINT NOT NULL DEFAULT 0
+        """)
+        await conn.execute("""
+            UPDATE shop_kpi_snapshots sks
+            SET shop_id = COALESCE(
+                (SELECT id FROM marketplace_shops s
+                 WHERE s.chat_id = sks.chat_id AND s.marketplace = sks.marketplace
+                 LIMIT 1), 0)
+            WHERE sks.shop_id = 0
+        """)
+        await conn.execute("""
+            DO $$
+            DECLARE v_conname text;
+            BEGIN
+                SELECT c.conname INTO v_conname
+                FROM pg_constraint c
+                JOIN pg_class t ON c.conrelid = t.oid
+                WHERE t.relname = 'shop_kpi_snapshots' AND c.contype = 'u'
+                AND NOT EXISTS (
+                    SELECT 1 FROM pg_attribute a
+                    WHERE a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+                    AND a.attname = 'shop_id'
+                );
+                IF v_conname IS NOT NULL THEN
+                    EXECUTE 'ALTER TABLE shop_kpi_snapshots DROP CONSTRAINT ' || quote_ident(v_conname);
+                    ALTER TABLE shop_kpi_snapshots ADD CONSTRAINT shop_kpi_snapshots_shop_date_key
+                        UNIQUE (shop_id, snapshot_date);
+                END IF;
+            END $$
+        """)
+
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS marketplace_in_transit (
                 chat_id     BIGINT       NOT NULL,
                 marketplace TEXT         NOT NULL,
@@ -709,6 +742,39 @@ async def _create_schema() -> None:
                 updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (chat_id, marketplace, product_id)
             )
+        """)
+
+        await conn.execute("""
+            ALTER TABLE marketplace_in_transit
+            ADD COLUMN IF NOT EXISTS shop_id BIGINT NOT NULL DEFAULT 0
+        """)
+        await conn.execute("""
+            UPDATE marketplace_in_transit mit
+            SET shop_id = COALESCE(
+                (SELECT id FROM marketplace_shops s
+                 WHERE s.chat_id = mit.chat_id AND s.marketplace = mit.marketplace
+                 LIMIT 1), 0)
+            WHERE mit.shop_id = 0
+        """)
+        await conn.execute("""
+            DO $$
+            DECLARE v_conname text;
+            BEGIN
+                SELECT c.conname INTO v_conname
+                FROM pg_constraint c
+                JOIN pg_class t ON c.conrelid = t.oid
+                WHERE t.relname = 'marketplace_in_transit' AND c.contype = 'p'
+                AND NOT EXISTS (
+                    SELECT 1 FROM pg_attribute a
+                    WHERE a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+                    AND a.attname = 'shop_id'
+                );
+                IF v_conname IS NOT NULL THEN
+                    EXECUTE 'ALTER TABLE marketplace_in_transit DROP CONSTRAINT ' || quote_ident(v_conname);
+                    ALTER TABLE marketplace_in_transit ADD CONSTRAINT marketplace_in_transit_shop_product_key
+                        PRIMARY KEY (shop_id, product_id);
+                END IF;
+            END $$
         """)
 
         await conn.execute("""
@@ -1174,19 +1240,20 @@ async def upsert_in_transit(
     marketplace: str,
     product_id: str,
     qty: int,
+    shop_id: int,
 ) -> None:
     """Обновить количество товара в пути на склад маркетплейса (агрегат по товару)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO marketplace_in_transit (chat_id, marketplace, product_id, qty, updated_at)
-            VALUES ($1, $2, $3, $4, NOW())
-            ON CONFLICT (chat_id, marketplace, product_id) DO UPDATE
+            INSERT INTO marketplace_in_transit (chat_id, marketplace, product_id, qty, shop_id, updated_at)
+            VALUES ($1, $2, $3, $4, $5, NOW())
+            ON CONFLICT (shop_id, product_id) DO UPDATE
                 SET qty        = EXCLUDED.qty,
                     updated_at = NOW()
             """,
-            chat_id, marketplace, product_id, qty,
+            chat_id, marketplace, product_id, qty, shop_id,
         )
 
 
@@ -1849,6 +1916,7 @@ async def upsert_promotion(
 async def upsert_shop_kpi(
     chat_id: int,
     marketplace: str,
+    shop_id: int,
     snapshot_date,
     rating: float | None,
     return_pct: float | None,
@@ -1861,15 +1929,15 @@ async def upsert_shop_kpi(
     async with pool.acquire() as conn:
         await conn.execute("""
             INSERT INTO shop_kpi_snapshots
-                (chat_id, marketplace, snapshot_date, rating, return_pct, cancellation_pct, penalty_count, extra_data)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            ON CONFLICT (snapshot_date, chat_id, marketplace) DO UPDATE SET
+                (chat_id, marketplace, shop_id, snapshot_date, rating, return_pct, cancellation_pct, penalty_count, extra_data)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (shop_id, snapshot_date) DO UPDATE SET
                 rating           = EXCLUDED.rating,
                 return_pct       = EXCLUDED.return_pct,
                 cancellation_pct = EXCLUDED.cancellation_pct,
                 penalty_count    = EXCLUDED.penalty_count,
                 extra_data       = EXCLUDED.extra_data
-        """, chat_id, marketplace, snapshot_date,
+        """, chat_id, marketplace, shop_id, snapshot_date,
              rating, return_pct, cancellation_pct, penalty_count or 0,
              _json.dumps(extra_data or {}))
 
