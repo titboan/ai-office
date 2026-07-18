@@ -276,6 +276,7 @@ def clamp_wb_cpm(current_cpm: float, direction: str, delta_pct: float) -> int:
     и в превью предложения, и непосредственно перед записью в API.
     """
     ceiling = getattr(config, "WB_MAX_CPM_RUB", 3000)
+    delta_pct = abs(delta_pct)
     if direction == "down":
         new_cpm = int(current_cpm * (1 - delta_pct / 100))
     else:
@@ -286,6 +287,7 @@ def clamp_wb_cpm(current_cpm: float, direction: str, delta_pct: float) -> int:
 def clamp_ozon_bid(current_bid: float, direction: str, delta_pct: float) -> float:
     """Новая ставка Ozon per-SKU по проценту, зажатая в [1.0, config.OZON_MAX_BID_RUB]."""
     ceiling = getattr(config, "OZON_MAX_BID_RUB", 500)
+    delta_pct = abs(delta_pct)
     multiplier = (1 - delta_pct / 100) if direction == "down" else (1 + delta_pct / 100)
     return max(1.0, min(ceiling, round(current_bid * multiplier, 2)))
 
@@ -2660,20 +2662,16 @@ class MaxAgent(BaseAgent):
                 try:
                     client = WBClient(shop["api_token"])
                     res = await client.update_prices(wb_items)
-                    ok = res.get("success")
-                    results.append(f"WB: {'✅' if ok else '❌'} {len(wb_items)} товаров")
+                    if res.get("queued"):
+                        results.append(f"WB: 🕐 {len(wb_items)} товаров отправлено в очередь (см. /sync)")
+                    else:
+                        results.append(f"WB: ❌ {len(wb_items)} товаров — запрос не принят")
                 except Exception as e:
                     results.append(f"WB: ❌ {e}")
             if wb_items:
                 await clear_price_recommendations(chat_id, "wb")
-                # Обновляем wb_price в product_mapping
-                async with pool.acquire() as conn:
-                    for item in wb_items:
-                        await conn.execute(
-                            "UPDATE product_mapping SET wb_price=$1, prices_updated_at=NOW() "
-                            "WHERE chat_id=$2 AND wb_nm_id=$3",
-                            float(item["price"]), chat_id, str(item["nm_id"]),
-                        )
+                # wb_price не пишем оптимистично — WB uploadID подтверждает только
+                # постановку в очередь, реальную цену подтвердит следующий sync_prices().
 
         if action in ("ozon", "all"):
             ozon_items = [
@@ -2686,19 +2684,31 @@ class MaxAgent(BaseAgent):
                 try:
                     client = OzonClient(shop["api_token"], shop.get("client_id", ""))
                     res = await client.update_prices(ozon_items)
-                    ok = res.get("success")
-                    results.append(f"Ozon: {'✅' if ok else '❌'} {len(ozon_items)} товаров")
+                    updated_ids = res.get("updated_offer_ids", [])
+                    rejected = res.get("rejected", [])
+                    results.append(f"Ozon: ✅ {len(updated_ids)} из {len(ozon_items)} товаров обновлено")
+                    if rejected:
+                        shown = rejected[:3]
+                        for r in shown:
+                            errs = "; ".join(r["errors"])
+                            results.append(f"  ⚠️ {r['offer_id']}: {errs}")
+                        if len(rejected) > len(shown):
+                            results.append(f"  ⚠️ и ещё {len(rejected) - len(shown)} отклонено")
+                    if updated_ids:
+                        async with pool.acquire() as conn:
+                            for offer_id in updated_ids:
+                                price = next((it["price"] for it in ozon_items if it["offer_id"] == offer_id), None)
+                                if price is None:
+                                    continue
+                                await conn.execute(
+                                    "UPDATE product_mapping SET ozon_price=$1, prices_updated_at=NOW() "
+                                    "WHERE chat_id=$2 AND ozon_sku=$3",
+                                    float(price), chat_id, offer_id,
+                                )
                 except Exception as e:
                     results.append(f"Ozon: ❌ {e}")
             if ozon_items:
                 await clear_price_recommendations(chat_id, "ozon")
-                async with pool.acquire() as conn:
-                    for item in ozon_items:
-                        await conn.execute(
-                            "UPDATE product_mapping SET ozon_price=$1, prices_updated_at=NOW() "
-                            "WHERE chat_id=$2 AND ozon_sku=$3",
-                            float(item["price"]), chat_id, item["offer_id"],
-                        )
 
         if not results:
             await query.edit_message_text("⚠️ Нет товаров для обновления (не хватает данных маппинга).")
@@ -5536,6 +5546,9 @@ class MaxAgent(BaseAgent):
             )
             sent += 1
 
+        if sent > 0:
+            await self._redis_set(f"reprice_pending:{chat_id}", str(sent), ttl=600)
+
         if sent == 0:
             await context.bot.send_message(chat_id=chat_id, text="✅ Предложений нет.")
 
@@ -5553,13 +5566,12 @@ class MaxAgent(BaseAgent):
         chat_id = query.from_user.id
         new_price = int(price_str)
 
-        lock_key = f"reprice_lock:{chat_id}"
-
         if action == "skip":
             await query.edit_message_text(
                 query.message.text + "\n\n🚫 Пропущено",
                 reply_markup=None,
             )
+            await self._reprice_mark_card_done(chat_id)
             return
 
         if action == "edit":
@@ -5580,15 +5592,15 @@ class MaxAgent(BaseAgent):
                 await query.answer("Уже применяется…", show_alert=False)
                 return
 
-            ok = await self._apply_price(chat_id, mp, product_id, new_price)
-            suffix = f"\n\n{'✅ Цена обновлена → {new_price} ₽'.format(new_price=new_price) if ok else '❌ Ошибка при обновлении цены — проверь логи'}"
+            result = await self._apply_price(chat_id, mp, product_id, new_price)
+            emoji = "✅" if result["ok"] else "❌"
+            suffix = f"\n\n{emoji} {result['detail']}"
             await query.edit_message_text(
                 query.message.text + suffix,
                 reply_markup=None,
                 parse_mode="HTML",
             )
-            # Снимаем lock репрайсера если все карточки обработаны
-            await self._redis_set(lock_key, "", ttl=1)
+            await self._reprice_mark_card_done(chat_id)
 
     async def _handle_reprice_text(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -5611,15 +5623,37 @@ class MaxAgent(BaseAgent):
         new_price = int(raw)
         await self._redis_set(f"pending_reprice:{chat_id}", "", ttl=1)
 
-        ok = await self._apply_price(chat_id, mp, product_id, new_price)
-        if ok:
-            await update.message.reply_text(f"✅ Цена обновлена → {new_price} ₽")
-        else:
-            await update.message.reply_text("❌ Ошибка при обновлении цены — проверь логи")
+        result = await self._apply_price(chat_id, mp, product_id, new_price)
+        emoji = "✅" if result["ok"] else "❌"
+        await update.message.reply_text(f"{emoji} {result['detail']}")
+        await self._reprice_mark_card_done(chat_id)
         return True
 
-    async def _apply_price(self, chat_id: int, mp: str, product_id: str, new_price: int) -> bool:
-        """Отправляет новую цену на WB или Ozon. Возвращает True при успехе."""
+    async def _reprice_mark_card_done(self, chat_id: int) -> None:
+        """Уменьшает счётчик необработанных карточек батча /reprice; снимает
+        reprice_lock только когда обработаны все карточки батча — иначе новый
+        /reprice может запуститься поверх ещё не разобранного старого батча."""
+        key = f"reprice_pending:{chat_id}"
+        redis = await self._get_redis()
+        if redis is not None:
+            try:
+                remaining = await redis.decr(key)
+            except Exception as e:
+                logger.warning(f"[Макс/reprice] decr pending error: {e}")
+                remaining = 0
+        else:
+            current = await self._redis_get(key)
+            remaining = (int(current) if current else 1) - 1
+            await self._redis_set(key, str(remaining), ttl=600)
+        if remaining <= 0:
+            await self._redis_set(f"reprice_lock:{chat_id}", "", ttl=1)
+
+    async def _apply_price(self, chat_id: int, mp: str, product_id: str, new_price: int) -> dict:
+        """Отправляет новую цену на WB или Ozon.
+
+        Возвращает {"ok": bool, "detail": str} — detail поясняет пользователю
+        реальный результат (в т.ч. причину отказа маркетплейса).
+        """
         from db import get_marketplace_shops, get_pool
         from tools.marketplace import WBClient, OzonClient
 
@@ -5627,45 +5661,93 @@ class MaxAgent(BaseAgent):
         shop  = next((s for s in shops if s["marketplace"] == mp), None)
         if not shop:
             logger.error(f"[Макс/reprice] магазин {mp} не найден для chat_id={chat_id}")
-            return False
+            return {"ok": False, "detail": f"Магазин {mp} не найден"}
+
+        if new_price <= 0:
+            return {"ok": False, "detail": "Цена должна быть больше 0 ₽"}
+
+        price_col = "wb_price" if mp == "wb" else "ozon_price"
+        id_col    = "wb_article" if mp == "wb" else "ozon_offer_id"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"""SELECT m.{price_col} AS current_price, c.cost
+                    FROM product_mapping m
+                    LEFT JOIN product_costs c ON c.mapping_id = m.id AND c.marketplace = $1
+                    WHERE m.{id_col} = $2""",
+                mp, product_id,
+            )
+        current_price = float(row["current_price"]) if row and row["current_price"] else None
+        cost = float(row["cost"]) if row and row["cost"] else None
+
+        if current_price is not None and new_price > current_price * config.PRICE_SANITY_MAX_MULTIPLIER:
+            return {
+                "ok": False,
+                "detail": (
+                    f"Цена {new_price:.0f}₽ более чем в {config.PRICE_SANITY_MAX_MULTIPLIER:.0f} раза "
+                    f"выше текущей ({current_price:.0f}₽) — похоже на опечатку, проверь ввод"
+                ),
+            }
+
+        if cost is not None and new_price < cost:
+            return {
+                "ok": False,
+                "detail": (
+                    f"Цена {new_price:.0f}₽ ниже себестоимости ({cost:.0f}₽) — это гарантированный "
+                    f"убыток, проверь ввод или себестоимость (/cost)"
+                ),
+            }
 
         try:
             if mp == "wb":
                 # Нужен wb_nm_id для WB price API
                 pool = await get_pool()
                 async with pool.acquire() as conn:
-                    row = await conn.fetchrow(
+                    rows = await conn.fetch(
                         "SELECT wb_nm_id FROM product_mapping WHERE wb_article = $1",
                         product_id,
                     )
-                if not row or not row["wb_nm_id"]:
+                if not rows:
                     logger.error(f"[Макс/reprice] wb_nm_id не найден для {product_id}")
-                    return False
+                    return {"ok": False, "detail": "Не найден wb_nm_id товара"}
+                if len(rows) > 1:
+                    logger.warning(
+                        f"[Макс/reprice] найдено {len(rows)} строк product_mapping с wb_article={product_id} "
+                        "— отказ от применения цены вслепую к случайной из них"
+                    )
+                    return {"ok": False, "detail": "Найдено несколько товаров с артикулом WB — уточни маппинг (/map)"}
+                wb_nm_id = rows[0]["wb_nm_id"]
+                if not wb_nm_id:
+                    logger.error(f"[Макс/reprice] wb_nm_id не найден для {product_id}")
+                    return {"ok": False, "detail": "Не найден wb_nm_id товара"}
                 client = WBClient(shop["api_token"])
-                result = await client.update_prices([{"nm_id": int(row["wb_nm_id"]), "price": new_price}])
-                ok = result.get("success", False)
+                result = await client.update_prices([{"nm_id": int(wb_nm_id), "price": new_price}])
+                if result.get("success"):
+                    # WB-цену не пишем в БД оптимистично — uploadID подтверждает только
+                    # постановку в очередь, реальную цену подтвердит следующий sync_prices().
+                    logger.info(f"[Макс/reprice] wb {product_id} отправлено в очередь, upload_id={result.get('upload_id')}")
+                    return {"ok": True, "detail": "Цена отправлена в WB, обновится в течение нескольких минут (см. /sync)"}
+                return {"ok": False, "detail": "WB отклонил запрос на изменение цены"}
 
             else:  # ozon
                 client = OzonClient(shop["api_token"], shop["client_id"])
                 result = await client.update_prices([{"offer_id": product_id, "price": new_price}])
-                ok = result.get("success", False)
-
-            if ok:
-                # Обновить локально чтобы margin_check сразу показал новую цену
-                pool = await get_pool()
-                price_col = "wb_price" if mp == "wb" else "ozon_price"
-                id_col    = "wb_article" if mp == "wb" else "ozon_offer_id"
-                async with pool.acquire() as conn:
-                    await conn.execute(
-                        f"UPDATE product_mapping SET {price_col} = $1, prices_updated_at = NOW() WHERE {id_col} = $2",
-                        float(new_price), product_id,
-                    )
-                logger.info(f"[Макс/reprice] {mp} {product_id} → {new_price} ₽ ✓")
-            return ok
+                if product_id in result.get("updated_offer_ids", []):
+                    pool = await get_pool()
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            "UPDATE product_mapping SET ozon_price = $1, prices_updated_at = NOW() WHERE ozon_offer_id = $2",
+                            float(new_price), product_id,
+                        )
+                    logger.info(f"[Макс/reprice] ozon {product_id} → {new_price} ₽ ✓")
+                    return {"ok": True, "detail": f"Цена обновлена → {new_price} ₽"}
+                rejected = next((r for r in result.get("rejected", []) if r["offer_id"] == product_id), None)
+                errors = "; ".join(rejected["errors"]) if rejected else "неизвестная ошибка"
+                return {"ok": False, "detail": f"Ozon отклонил: {errors}"}
 
         except Exception as e:
             logger.error(f"[Макс/reprice] ошибка: {e}", exc_info=True)
-            return False
+            return {"ok": False, "detail": "Ошибка при обновлении цены — проверь логи"}
 
     async def _check_drr_alerts(self, chat_id: int) -> None:
         """Проверяет ДРР по товарам за 7 дней и шлёт алерт если ДРР > 25% при расходе > 500₽."""
@@ -6265,7 +6347,14 @@ class MaxAgent(BaseAgent):
         ]
         ok = await client.update_campaign_bids(campaign_id, new_bids)
 
-        arrow = "📉 Снижены" if direction == "down" else "📈 Повышены"
+        avg_cur = sum(b["bid"] for b in bids) / len(bids)
+        avg_new = sum(nb["bid"] for nb in new_bids) / len(new_bids)
+        if avg_new < avg_cur:
+            arrow = "📉 Снижены"
+        elif avg_new > avg_cur:
+            arrow = "📈 Повышены"
+        else:
+            arrow = "↔️ Без изменений"
         if ok:
             await self._invalidate_dashboard_bid_cache(chat_id)
             result = f"✅ Ставки {arrow} на {delta_pct}% ({len(new_bids)} SKU)"
@@ -6683,7 +6772,10 @@ class MaxAgent(BaseAgent):
             )
             return
 
-        delta_pct = int(delta_str)
+        try:
+            delta_pct = int(delta_str)
+        except ValueError:
+            delta_pct = 0
 
         lock = f"bid_apply:wb:{campaign_id}"
         if not await self._redis_acquire_lock(lock, "1", ttl=60):

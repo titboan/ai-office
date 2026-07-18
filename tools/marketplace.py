@@ -579,13 +579,21 @@ class WBClient:
         return results
 
     async def update_prices(self, items: list[dict]) -> dict:
-        """Обновить цены товаров на WB через /api/v2/upload/task.
+        """Поставить в очередь на обновление цены товаров на WB через /api/v2/upload/task.
 
         items: [{"nm_id": int, "price": int}] — price в рублях (итоговая цена без скидки).
-        Возвращает {"success": bool, "upload_id": str}.
+
+        WB Price API асинхронный: uploadID подтверждает только факт постановки задачи
+        в очередь на обработку WB, а НЕ факт применения цены к товару. Документированного
+        эндпоинта для проверки статуса конкретной задачи по uploadID в API нет, поэтому
+        реальную применённую цену нужно проверять отдельно через get_current_prices()
+        (например, при следующем /sync).
+
+        Возвращает {"success": bool, "upload_id": str, "queued": bool} — success/queued
+        означают «WB принял задачу в очередь», а не «цена применена».
         """
         if not items:
-            return {"success": True, "upload_id": ""}
+            return {"success": True, "upload_id": "", "queued": True}
         _PRICES_BASE = "https://discounts-prices-api.wildberries.ru"
         payload = {"data": [{"nmID": int(item["nm_id"]), "price": int(item["price"])} for item in items]}
         async with aiohttp.ClientSession() as session:
@@ -594,10 +602,11 @@ class WBClient:
                 headers=self._headers(), json=payload, label="WB.update_prices",
             )
         if not data:
-            return {"success": False, "upload_id": ""}
+            return {"success": False, "upload_id": "", "queued": False}
         upload_id = (data.get("data") or {}).get("uploadID", "")
+        queued = bool(upload_id)
         logger.info(f"[WB.update_prices] upload_id={upload_id} товаров={len(items)}")
-        return {"success": bool(upload_id), "upload_id": upload_id}
+        return {"success": queued, "upload_id": upload_id, "queued": queued}
 
     async def get_competitor_prices(self, keyword: str, limit: int = 100) -> list[dict]:
         """Публичный API WB (без токена) — топ-N товаров по запросу.
@@ -2538,10 +2547,14 @@ class OzonClient:
         """Обновить цены товаров на Ozon через /v1/product/import/prices.
 
         items: [{"offer_id": str, "price": float}].
-        Возвращает {"success": bool, "task_id": int|None}.
+        Возвращает {
+            "success": bool,                # True только если ВСЕ offer_id обновились без ошибок
+            "updated_offer_ids": [str, ...], # offer_id, реально принятые Ozon (updated=true)
+            "rejected": [{"offer_id": str, "errors": [str, ...]}, ...],
+        }
         """
         if not items:
-            return {"success": True, "task_id": None}
+            return {"success": True, "updated_offer_ids": [], "rejected": []}
         url = f"{self._BASE}/v1/product/import/prices"
         payload = {
             "prices": [
@@ -2560,10 +2573,30 @@ class OzonClient:
                 headers=self._headers(), json=payload, label="Ozon.update_prices",
             )
         if not data:
-            return {"success": False, "task_id": None}
-        task_id = (data.get("result") or {}).get("task_id")
-        logger.info(f"[Ozon.update_prices] task_id={task_id} товаров={len(items)}")
-        return {"success": True, "task_id": task_id}
+            return {
+                "success": False,
+                "updated_offer_ids": [],
+                "rejected": [{"offer_id": it["offer_id"], "errors": ["запрос не выполнен"]} for it in items],
+            }
+        result = data.get("result") or []
+        updated_offer_ids = []
+        rejected = []
+        for entry in result:
+            offer_id = entry.get("offer_id")
+            errors = entry.get("errors") or []
+            updated = entry.get("updated")
+            if updated is None:
+                updated = not errors
+            if updated and not errors:
+                updated_offer_ids.append(offer_id)
+            else:
+                rejected.append({
+                    "offer_id": offer_id,
+                    "errors": [e.get("message") or e.get("code") or "неизвестная ошибка" for e in errors] or ["отклонено Ozon"],
+                })
+        success = bool(updated_offer_ids) and not rejected and len(updated_offer_ids) == len(items)
+        logger.info(f"[Ozon.update_prices] updated={len(updated_offer_ids)} rejected={len(rejected)} товаров={len(items)}")
+        return {"success": success, "updated_offer_ids": updated_offer_ids, "rejected": rejected}
 
 
     async def get_product_content(self, offer_ids: list[str]) -> dict[str, dict]:

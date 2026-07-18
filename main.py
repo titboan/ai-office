@@ -990,8 +990,8 @@ async def run_all_async() -> None:
         if not await max_agent._redis_acquire_lock(lock, "1", ttl=60):
             return web.json_response({"ok": False, "error": "already_applying"}, status=409, headers=cors)
 
-        ok = await max_agent._apply_price(chat_id, mp, product_id, new_price)
-        return web.json_response({"ok": ok}, headers=cors)
+        result = await max_agent._apply_price(chat_id, mp, product_id, new_price)
+        return web.json_response({"ok": result["ok"], "detail": result["detail"]}, headers=cors)
 
     async def _handle_get_costs(request: web.Request) -> web.Response:
         """GET /api/costs — таблица себестоимости (закупка+логистика, упаковка+маркировка) для дашборда.
@@ -1132,6 +1132,8 @@ async def run_all_async() -> None:
         except Exception:
             return web.Response(status=400, text="Bad Request", headers=cors)
         if mp not in ("wb", "ozon") or not campaign_id or direction not in ("up", "down"):
+            return web.Response(status=400, text="Bad Request", headers=cors)
+        if not (0 < delta_pct <= 90):
             return web.Response(status=400, text="Bad Request", headers=cors)
         if mp == "ozon" and not shop_id:
             return web.Response(status=400, text="Bad Request", headers=cors)
