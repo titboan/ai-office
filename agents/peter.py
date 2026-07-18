@@ -590,6 +590,7 @@ class PeterAgent(BaseAgent):
             infographic_ctr = await _q(conn, "infographic_ctr", """
                 SELECT
                     COALESCE(m.display_name, m.wb_article) AS name,
+                    p.marketplace                           AS marketplace,
                     m.infographic_updated_at::date          AS updated_at,
                     ROUND(AVG(CASE WHEN p.stat_date <  m.infographic_updated_at::date
                                         AND p.stat_date >= (m.infographic_updated_at - INTERVAL '14 days')::date
@@ -603,7 +604,7 @@ class PeterAgent(BaseAgent):
                       AND p.chat_id = $1
                       AND p.stat_date >= (m.infographic_updated_at - INTERVAL '14 days')::date
                 WHERE m.infographic_updated_at IS NOT NULL
-                GROUP BY m.display_name, m.wb_article, m.infographic_updated_at
+                GROUP BY m.display_name, m.wb_article, m.infographic_updated_at, p.marketplace
                 ORDER BY m.infographic_updated_at DESC
                 LIMIT 10
             """, chat_id)
@@ -1210,7 +1211,7 @@ class PeterAgent(BaseAgent):
 - mom_trends — помесячная выручка и заказы за последние 60 дней. Если 2 месяца — посчитай MoM рост: (текущий месяц / предыдущий − 1) × 100%. Выведи одной строкой в блоке отчёта.
 - returns_top — товары с наибольшей суммой возвратов за 30 дней (если есть данные после /sync_returns). Укажи топ-3 по return_amount и возможные причины. Если пусто — данные не синхронизированы (/sync_returns у Макса).
 - kw_top — топ ключевых слов WB по охвату (исторические данные из БД). Укажи ключи с лучшей позицией (чем меньше число, тем выше в поиске) и наибольшим search_count. Если пусто — данных по ключевым словам нет (WB API недоступен).
-- infographic_ctr — эффект замены инфографики: ctr_before/ctr_after в %. days_after = сколько дней прошло после загрузки. Если ctr_after IS NULL или days_after < 7 — данных ещё недостаточно (накапливается), напиши "CTR ещё накапливается (X дн. из 14)". Если есть оба значения — покажи дельту: было → стало (+X% или −X%). Блок выводить только если список непустой.
+- infographic_ctr — эффект замены инфографики: ctr_before/ctr_after в %. marketplace — WB или Ozon; если один и тот же товар (name) продаётся на обеих площадках, в списке будет ДВЕ отдельные строки (по одной на marketplace) — не складывай и не усредняй их в одну цифру, показывай CTR отдельно на WB и отдельно на Ozon. days_after = сколько дней прошло после загрузки. Если ctr_after IS NULL или days_after < 7 — данных ещё недостаточно (накапливается), напиши "CTR ещё накапливается (X дн. из 14)". Если есть оба значения — покажи дельту: было → стало (+X% или −X%). Блок выводить только если список непустой.
 {"- Цель: " + str(goal) + " ₽/день суммарно WB+Ozon." if goal else ""}
 {"- ЦЕНЫ КОНКУРЕНТОВ: median_price — медиана топ-100 товаров WB по ключевому запросу ниши. Сравни свои цены (из product_mapping через adv_data) с медианой. Если цена выше медианы >15% — укажи это как риск; если ниже — возможность поднять." if comp_data else ""}
 
