@@ -5546,6 +5546,9 @@ class MaxAgent(BaseAgent):
             )
             sent += 1
 
+        if sent > 0:
+            await self._redis_set(f"reprice_pending:{chat_id}", str(sent), ttl=600)
+
         if sent == 0:
             await context.bot.send_message(chat_id=chat_id, text="✅ Предложений нет.")
 
@@ -5563,13 +5566,12 @@ class MaxAgent(BaseAgent):
         chat_id = query.from_user.id
         new_price = int(price_str)
 
-        lock_key = f"reprice_lock:{chat_id}"
-
         if action == "skip":
             await query.edit_message_text(
                 query.message.text + "\n\n🚫 Пропущено",
                 reply_markup=None,
             )
+            await self._reprice_mark_card_done(chat_id)
             return
 
         if action == "edit":
@@ -5598,8 +5600,7 @@ class MaxAgent(BaseAgent):
                 reply_markup=None,
                 parse_mode="HTML",
             )
-            # Снимаем lock репрайсера если все карточки обработаны
-            await self._redis_set(lock_key, "", ttl=1)
+            await self._reprice_mark_card_done(chat_id)
 
     async def _handle_reprice_text(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -5625,7 +5626,27 @@ class MaxAgent(BaseAgent):
         result = await self._apply_price(chat_id, mp, product_id, new_price)
         emoji = "✅" if result["ok"] else "❌"
         await update.message.reply_text(f"{emoji} {result['detail']}")
+        await self._reprice_mark_card_done(chat_id)
         return True
+
+    async def _reprice_mark_card_done(self, chat_id: int) -> None:
+        """Уменьшает счётчик необработанных карточек батча /reprice; снимает
+        reprice_lock только когда обработаны все карточки батча — иначе новый
+        /reprice может запуститься поверх ещё не разобранного старого батча."""
+        key = f"reprice_pending:{chat_id}"
+        redis = await self._get_redis()
+        if redis is not None:
+            try:
+                remaining = await redis.decr(key)
+            except Exception as e:
+                logger.warning(f"[Макс/reprice] decr pending error: {e}")
+                remaining = 0
+        else:
+            current = await self._redis_get(key)
+            remaining = (int(current) if current else 1) - 1
+            await self._redis_set(key, str(remaining), ttl=600)
+        if remaining <= 0:
+            await self._redis_set(f"reprice_lock:{chat_id}", "", ttl=1)
 
     async def _apply_price(self, chat_id: int, mp: str, product_id: str, new_price: int) -> dict:
         """Отправляет новую цену на WB или Ozon.
