@@ -3,12 +3,7 @@ import { AbcRow } from '../api'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
 import AbcBadge from '../components/AbcBadge'
-
-const GROUP_STYLE: Record<string, string> = {
-  A: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
-  B: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400',
-  C: 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
-}
+import { ABC_GROUP_STYLE } from '../theme'
 
 const GROUP_ROW: Record<string, string> = {
   A: 'bg-green-50/40 dark:bg-green-900/10',
@@ -34,9 +29,9 @@ export default function AbcTable({ data }: { data: AbcRow[] }) {
       title={<span className="text-gray-700 dark:text-gray-200 flex items-center gap-1.5"><Layers size={15} /> ABC-анализ</span>}
       headerExtra={
         <div className="flex gap-1 text-xs">
-          <span className={`px-2 py-0.5 rounded-full font-medium ${GROUP_STYLE.A}`}>A: {countA}</span>
-          <span className={`px-2 py-0.5 rounded-full font-medium ${GROUP_STYLE.B}`}>B: {countB}</span>
-          <span className={`px-2 py-0.5 rounded-full font-medium ${GROUP_STYLE.C}`}>C: {countC}</span>
+          <span className={`px-2 py-0.5 rounded-full font-medium ${ABC_GROUP_STYLE.A}`}>A: {countA}</span>
+          <span className={`px-2 py-0.5 rounded-full font-medium ${ABC_GROUP_STYLE.B}`}>B: {countB}</span>
+          <span className={`px-2 py-0.5 rounded-full font-medium ${ABC_GROUP_STYLE.C}`}>C: {countC}</span>
         </div>
       }
     >

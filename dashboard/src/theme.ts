@@ -85,3 +85,10 @@ export function funnelStageColor(stage: keyof typeof FUNNEL_STAGE, isDark: boole
   const s = FUNNEL_STAGE[stage]
   return isDark ? s.colorDark : s.color
 }
+
+// ── ABC-анализ: стили групп A/B/C (используются в AbcBadge и AbcTable) ─────
+export const ABC_GROUP_STYLE: Record<string, string> = {
+  A: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
+  B: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400',
+  C: 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
+}

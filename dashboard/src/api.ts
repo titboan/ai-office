@@ -1,6 +1,6 @@
-export interface RevenueRow { marketplace: string; revenue: number; orders: number; skus: number }
+export interface RevenueRow { marketplace: string; revenue: number; orders: number }
 export interface ProductRow { marketplace: string; product_id: string; product_name: string; revenue: number; qty: number }
-export interface AdvRow { marketplace: string; spend: number; views: number; clicks: number }
+export interface AdvRow { marketplace: string; spend: number }
 export interface TrendRow { marketplace: string; week_current: number; week_prev: number }
 export interface ProductMetric {
   product_id: string; name: string; marketplace: string

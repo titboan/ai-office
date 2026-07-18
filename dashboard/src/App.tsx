@@ -356,6 +356,12 @@ export default function App() {
         })}
       </div>
 
+      {error && data === null && (
+        <div className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-xl p-4 text-sm flex items-center gap-1.5">
+          <AlertCircle size={16} className="shrink-0" /> {error}
+        </div>
+      )}
+
       {tab === 'dashboard' && loading && (
         <>
           <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
@@ -367,12 +373,6 @@ export default function App() {
             {Array.from({ length: 12 }).map((_, i) => <CardSkeleton key={i} />)}
           </div>
         </>
-      )}
-
-      {tab === 'dashboard' && error && (
-        <div className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-xl p-4 text-sm flex items-center gap-1.5">
-          <AlertCircle size={16} className="shrink-0" /> {error}
-        </div>
       )}
 
       {tab === 'dashboard' && displayData && !loading && (
@@ -453,7 +453,12 @@ export default function App() {
         </div>
       )}
 
-      {tab === 'catalog' && (
+      {tab === 'catalog' && loading && (
+        <div className="space-y-3">
+          {Array.from({ length: 2 }).map((_, i) => <CardSkeleton key={i} />)}
+        </div>
+      )}
+      {tab === 'catalog' && !loading && (
         <div className="space-y-3">
           <ProductsTable data={data?.catalog?.products ?? []} />
           <ShopKpiCard data={data?.catalog?.shop_kpi ?? {}} />
@@ -462,7 +467,12 @@ export default function App() {
         </div>
       )}
 
-      {tab === 'settings' && (
+      {tab === 'settings' && loading && (
+        <div className="space-y-3">
+          {Array.from({ length: 2 }).map((_, i) => <CardSkeleton key={i} />)}
+        </div>
+      )}
+      {tab === 'settings' && !loading && (
         <div className="space-y-3">
           <CostEditor />
           <AddShopForm />

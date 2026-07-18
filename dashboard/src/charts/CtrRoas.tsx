@@ -1,6 +1,7 @@
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, ReferenceLine } from 'recharts'
 import { ProductMetric } from '../api'
 import Card from '../components/Card'
+import EmptyState from '../components/EmptyState'
 import { useIsDarkMode } from '../hooks/useIsDarkMode'
 import { TOOLTIP_STYLE } from '../theme'
 
@@ -22,6 +23,10 @@ export default function CtrRoas({ data }: { data: ProductMetric[] }) {
   const redLine = isDark ? '#f87171' : '#dc2626'
   const greenLine = isDark ? '#34d399' : '#059669'
   const withSpend = data.filter(d => d.adv_spend > 0).slice(0, 12)
+
+  if (!withSpend.length) {
+    return <Card><EmptyState message="Нет данных по рекламе за период — запусти /sync_adv у Макса" /></Card>
+  }
 
   return (
     <Card>
