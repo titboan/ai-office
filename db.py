@@ -1582,6 +1582,16 @@ async def reset_last_checked(chat_id: int) -> None:
         )
 
 
+async def update_shop_last_checked(shop_id: int) -> None:
+    """Проставить last_checked_at = NOW() после успешного синка отзывов магазина."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE marketplace_shops SET last_checked_at = NOW() WHERE id = $1",
+            shop_id,
+        )
+
+
 async def get_reviews_stats(owner_chat_id: int, days: int = 7) -> list[dict]:
     """Статистика по отзывам за N дней, сгруппированная по площадке."""
     pool = await get_pool()

@@ -1173,7 +1173,7 @@ class MaxAgent(BaseAgent):
 
     async def process_reviews(self, chat_id: int) -> dict:
         """Обработать отзывы. Возвращает итоги по каждой площадке."""
-        from db import get_marketplace_shops, save_review, update_review_status
+        from db import get_marketplace_shops, save_review, update_review_status, update_shop_last_checked
         from tools.marketplace import make_client
 
         shops = await get_marketplace_shops(chat_id)
@@ -1289,6 +1289,7 @@ class MaxAgent(BaseAgent):
                             f"review={rv['review_id'][:8]} rating={rating} — статус остаётся 'new'"
                         )
 
+            await update_shop_last_checked(shop["id"])
             results[mp] = stats
 
         return results
