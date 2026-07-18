@@ -40,13 +40,13 @@
 - `get_cost_history(mapping_id: int, marketplace: str, limit: int = 20) -> list[dict]` —
   последние записи по товару+площадке, `ORDER BY created_at DESC`.
 
-### Фаза 2 — main.py: API
+### Фаза 2 — main.py: API [x]
 - `POST /api/set_cost` (`main.py:1033-1090`) — передать `chat_id` (уже есть в хендлере,
   строка 1054) в `set_product_cost_breakdown(..., changed_by=chat_id)`.
 - `GET /api/cost_history?mapping_id=&marketplace=` — по образцу `_handle_get_costs`
   (`main.py:991-1031`), тот же initData-only паттерн без `?token=`, rate-limit.
 
-### Фаза 3 — dashboard: показать историю
+### Фаза 3 — dashboard: показать историю [x]
 - `dashboard/src/api.ts`: тип `CostHistoryRow`, функция `getCostHistory(mappingId,
   marketplace)`.
 - В `CostEditor.tsx` — при клике на "Итого" (или отдельная иконка часов рядом) открыть
