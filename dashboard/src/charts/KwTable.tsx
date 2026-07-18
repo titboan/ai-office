@@ -3,9 +3,9 @@ import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
 
 // Позиции WB: чем меньше число — тем выше в поиске.
-function positionColor(priority: boolean, position: number) {
+function positionColor(priority: boolean, position: number | null) {
   if (priority) return 'text-red-600 dark:text-red-400'
-  if (position > 50) return 'text-yellow-600 dark:text-yellow-400'
+  if (position != null && position > 50) return 'text-yellow-600 dark:text-yellow-400'
   return 'text-gray-600 dark:text-gray-400'
 }
 

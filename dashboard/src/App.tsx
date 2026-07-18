@@ -90,12 +90,13 @@ function filterDataByMp(data: DashboardData, mp: 'wb' | 'ozon'): DashboardData {
     revenue: data.revenue.filter(r => r.marketplace === mp),
     top_products: data.top_products.filter(r => r.marketplace === mp),
     adv: data.adv.filter(r => r.marketplace === mp),
-    low_stocks: data.low_stocks.filter(r => r.marketplace === mp),
     trend: data.trend.filter(r => r.marketplace === mp),
     product_metrics: data.product_metrics.filter(r => r.marketplace === mp),
     stock_velocity: data.stock_velocity.filter(r => r.marketplace === mp),
     funnel: (data.funnel ?? []).filter(r => r.marketplace === mp),
     bid_suggestions: (data.bid_suggestions ?? []).filter(r => r.marketplace === mp),
+    abc_data: (data.abc_data ?? []).filter(r => r.marketplace === mp),
+    returns_top: (data.returns_top ?? []).filter(r => r.marketplace === mp),
     supply_plan: {
       ...data.supply_plan,
       products: (data.supply_plan?.products ?? []).filter(r => r.marketplace === mp),
@@ -378,7 +379,11 @@ export default function App() {
             <TopProducts data={displayData.top_products} />
             {/* id для скролла из AlertBanner */}
             <div id="section-drr"><DrrGauge adv={displayData.adv} salesByDay={displayData.revenue_by_day ?? []} /></div>
-            <MarginChart data={displayData.net_margin ?? []} />
+            <MarginChart
+              data={displayData.net_margin ?? []}
+              marginWb={displayData.margin_wb ?? []}
+              marginOzon={displayData.margin_ozon ?? []}
+            />
             <NetMarginTable data={displayData.net_margin ?? []} abcData={displayData.abc_data ?? []} />
             <BidSuggestions data={displayData.bid_suggestions ?? []} />
             <FunnelChart data={displayData.funnel ?? []} />

@@ -509,19 +509,6 @@ class PeterAgent(BaseAgent):
                 ) fa USING (marketplace)
             """, chat_id, date_from)
 
-            # 6. Остатки — товары с низким стоком
-            low_stocks = await _q(conn, "low_stocks", """
-                SELECT marketplace, product_id,
-                       MAX(product_name) AS product_name,
-                       SUM(stock)        AS stock
-                FROM marketplace_stocks
-                WHERE chat_id = $1
-                GROUP BY marketplace, product_id
-                HAVING SUM(stock) < 10
-                ORDER BY stock ASC
-                LIMIT 10
-            """, chat_id)
-
             # 7. MoM тренды из ночных снимков (последние 2 месяца)
             mom = await _q(conn, "mom", """
                 SELECT DATE_TRUNC('month', snapshot_date) AS month,
@@ -534,13 +521,13 @@ class PeterAgent(BaseAgent):
 
             # 8. Топ возвратов за 30 дней
             returns_top = await _q(conn, "returns_top", """
-                SELECT product_id, product_name,
+                SELECT product_id, product_name, marketplace,
                        SUM(returns_count)::int          AS returns_count,
                        SUM(return_amount)::numeric(12,2) AS return_amount,
                        AVG(return_rate)::numeric(6,4)    AS return_rate
                 FROM product_returns_analytics
                 WHERE chat_id = $1 AND stat_date >= NOW() - INTERVAL '30 days'
-                GROUP BY product_id, product_name
+                GROUP BY product_id, product_name, marketplace
                 ORDER BY return_amount DESC
                 LIMIT 10
             """, chat_id)
@@ -648,7 +635,6 @@ class PeterAgent(BaseAgent):
             "net_margin":       [dict(r) for r in net_margin],
             "adv":              [dict(r) for r in adv],
             "fin_payout":       [dict(r) for r in fin_payout],
-            "low_stocks":       [dict(r) for r in low_stocks],
             "mom_trends":       [dict(r) for r in mom],
             "returns_top":      [dict(r) for r in returns_top],
             "kw_top":           [
@@ -817,6 +803,7 @@ class PeterAgent(BaseAgent):
             abc_rows = await _q(conn, "abc_rows", """
                 SELECT
                     o.product_id,
+                    o.marketplace,
                     COALESCE(m.display_name, MAX(o.product_name)) AS name,
                     SUM(o.seller_price * o.quantity)::numeric(12,2) AS revenue,
                     SUM(o.quantity)::int AS qty
@@ -825,7 +812,7 @@ class PeterAgent(BaseAgent):
                     m.wb_article = o.product_id OR m.ozon_sku = o.product_id
                 )
                 WHERE o.chat_id = $1 AND o.order_date >= $2
-                GROUP BY o.product_id, m.display_name
+                GROUP BY o.product_id, o.marketplace, m.display_name
                 ORDER BY revenue DESC
             """, chat_id, date_from)
 
@@ -840,6 +827,7 @@ class PeterAgent(BaseAgent):
                 abc_data.append({
                     "name":           r["name"],
                     "product_id":     r["product_id"],
+                    "marketplace":    r["marketplace"],
                     "revenue":        rev,
                     "qty":            int(r["qty"] or 0),
                     "share_pct":      round(rev / total_rev * 100, 1),

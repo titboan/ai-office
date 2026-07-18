@@ -2,7 +2,8 @@ import { ReturnRow } from '../api'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
 
-function rateColor(rate: number) {
+function rateColor(rate: number | null) {
+  if (rate == null) return 'text-gray-400 dark:text-gray-500'
   const pct = rate * 100
   if (pct > 20) return 'text-red-600'
   if (pct > 10) return 'text-yellow-600'
@@ -35,7 +36,7 @@ export default function ReturnsTable({ data }: { data: ReturnRow[] }) {
                 <td className="text-right py-1.5">{r.returns_count}</td>
                 <td className="text-right py-1.5">{fmt(r.return_amount)} ₽</td>
                 <td className={`text-right py-1.5 font-bold ${rateColor(r.return_rate)}`}>
-                  {(r.return_rate * 100).toFixed(1)}%
+                  {r.return_rate == null ? '—' : `${(r.return_rate * 100).toFixed(1)}%`}
                 </td>
               </tr>
             ))}

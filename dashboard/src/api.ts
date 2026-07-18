@@ -1,7 +1,6 @@
 export interface RevenueRow { marketplace: string; revenue: number; orders: number; skus: number }
 export interface ProductRow { marketplace: string; product_id: string; product_name: string; revenue: number; qty: number }
 export interface AdvRow { marketplace: string; spend: number; views: number; clicks: number }
-export interface StockRow { marketplace: string; product_id: string; product_name: string; stock: number }
 export interface TrendRow { marketplace: string; week_current: number; week_prev: number }
 export interface ProductMetric {
   product_id: string; name: string; marketplace: string
@@ -25,22 +24,35 @@ export interface NetMarginRow {
 }
 export interface MomRow { month: string; revenue: number; orders: number }
 export interface ReturnRow {
-  product_id: string; product_name: string
-  returns_count: number; return_amount: number; return_rate: number
+  product_id: string; product_name: string; marketplace: string
+  returns_count: number; return_amount: number; return_rate: number | null
 }
 export interface KwRow {
-  keyword: string; position: number; search_count: number; ctr: number
+  keyword: string; position: number | null; search_count: number | null; ctr: number | null
   position_drop: number | null   // (позиция сейчас − позиция на прошлом снапшоте), null если истории нет
   priority: boolean              // просадка >= config.SEO_POSITION_DROP_THRESHOLD (10 мест)
 }
 export interface AbcRow {
   product_id: string
   name: string
+  marketplace: string
   revenue: number
   qty: number
   share_pct: number
   cumulative_pct: number
   group: 'A' | 'B' | 'C'
+}
+
+// GROSS-маржа (комиссия/логистика МП грубо оценены, без налога) — запасной фоллбэк для
+// MarginChart, если net_margin пуст (см. agents/peter.py::_collect_data п.3-4).
+export interface GrossMarginRow {
+  product_id: string
+  product_name: string
+  revenue: number
+  qty: number
+  cost: number
+  op_profit: number
+  profitability: number   // проценты, уже округлено до 1 знака
 }
 
 export interface FunnelRow {
@@ -112,7 +124,6 @@ export interface DashboardData {
   revenue: RevenueRow[]
   top_products: ProductRow[]
   adv: AdvRow[]
-  low_stocks: StockRow[]
   trend: TrendRow[]
   product_metrics: ProductMetric[]
   stock_velocity: StockVelocity[]
@@ -120,6 +131,8 @@ export interface DashboardData {
   orders_by_day: DayRevenue[]
   sales_by_day: DayRevenue[]
   net_margin: NetMarginRow[]
+  margin_wb: GrossMarginRow[]
+  margin_ozon: GrossMarginRow[]
   mom_trends: MomRow[]
   returns_top: ReturnRow[]
   kw_top: KwRow[]
