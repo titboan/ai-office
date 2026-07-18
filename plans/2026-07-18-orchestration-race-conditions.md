@@ -40,7 +40,7 @@
   (`base_agent.py:209-228`, тот же примитив, что защищает `/reprice` и apply_price/apply_bid)
   на ключ вида `chain_start:{chat_id}:{chain_id}` перед стартом цепочки.
 
-### Фаза 4 — убрать гонку на `self._current_chat_id` [ ]
+### Фаза 4 — убрать гонку на `self._current_chat_id` [x]
 - `agents/base_agent.py:714` и `agents/marta.py:743-747, 1198-1202` — атрибут инстанса
   `_current_chat_id` пишется в shared-агенте (один инстанс на процесс, из `_agent_pool`)
   и читается конкурентно из воркер-лупа и прямых прокси-вызовов Марты. Заменить на явную

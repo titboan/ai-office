@@ -767,11 +767,12 @@ class MartaAgent(BaseAgent):
         else:
             logger.warning("[Марта] task_queue недоступен — fallback на прямой вызов")
             await reply_func(f"⏳ {agent.emoji} **{agent.name}** работает…")
-            agent._current_chat_id = chat_id
-            try:
-                result = await agent.run_task(subtask, from_agent="Марты")
-            finally:
-                agent._current_chat_id = None
+            async with agent._chat_id_lock:
+                agent._current_chat_id = chat_id
+                try:
+                    result = await agent.run_task(subtask, from_agent="Марты")
+                finally:
+                    agent._current_chat_id = None
             if looks_like_html(result):
                 header = f"📬 {agent.emoji} <b>{agent.name}</b> выполнил задачу:\n\n"
                 await self._send_agent_text(chat_id, header + result)
@@ -1222,11 +1223,12 @@ class MartaAgent(BaseAgent):
             agent = self._get_agent(agent_key)
             if agent:
                 logger.info(f"[Марта] Делегирую (handle_task) → {agent.name}")
-                agent._current_chat_id = getattr(self, "_current_chat_id", None)
-                try:
-                    result = await agent.run_task(subtask, from_agent="Марты")
-                finally:
-                    agent._current_chat_id = None
+                async with agent._chat_id_lock:
+                    agent._current_chat_id = getattr(self, "_current_chat_id", None)
+                    try:
+                        result = await agent.run_task(subtask, from_agent="Марты")
+                    finally:
+                        agent._current_chat_id = None
                 return result
 
         # Fallback: Марта отвечает сама
