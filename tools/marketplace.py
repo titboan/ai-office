@@ -82,63 +82,77 @@ class WBClient:
         if since is None:
             since = datetime.now(timezone.utc) - timedelta(days=7)
         reviews: list[dict] = []
-        url    = f"{self._BASE}/api/v1/feedbacks"
-        params = {"isAnswered": "false", "take": 100, "skip": 0}
-        logger.debug(f"[WB.get_new_reviews] since={since}, params={params}")
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url,
-                    headers=self._headers(),
-                    params=params,
-                    timeout=_TIMEOUT,
-                ) as resp:
-                    text = await resp.text()
-                    logger.debug(
-                        f"[WB.get_new_reviews] status={resp.status}, body[:300]={text[:300]}"
-                    )
-                    if resp.status != 200:
-                        return reviews
-                    import json as _json
-                    data = _json.loads(text)
-        except asyncio.TimeoutError:
-            logger.error(f"[marketplace] timeout: GET {url}")
-            return reviews
-        except Exception as e:
-            logger.error(f"[WB.get_new_reviews] exception: {e}")
-            return reviews
-        if not data:
-            return reviews
-
-        for item in data.get("data", {}).get("feedbacks", []):
-            created_raw = item.get("createdDate", "")
+        url = f"{self._BASE}/api/v1/feedbacks"
+        take = 100
+        skip = 0
+        max_pages = 10  # безопасный предел — 1000 отзывов за один синк
+        for _page in range(max_pages):
+            params = {"isAnswered": "false", "take": take, "skip": skip}
+            logger.debug(f"[WB.get_new_reviews] since={since}, params={params}")
             try:
-                created = datetime.fromisoformat(created_raw.rstrip("Z")).replace(
-                    tzinfo=since.tzinfo
-                )
-                if created < since:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        url,
+                        headers=self._headers(),
+                        params=params,
+                        timeout=_TIMEOUT,
+                    ) as resp:
+                        text = await resp.text()
+                        logger.debug(
+                            f"[WB.get_new_reviews] status={resp.status}, body[:300]={text[:300]}"
+                        )
+                        if resp.status != 200:
+                            break
+                        import json as _json
+                        data = _json.loads(text)
+            except asyncio.TimeoutError:
+                logger.error(f"[marketplace] timeout: GET {url}")
+                break
+            except Exception as e:
+                logger.error(f"[WB.get_new_reviews] exception: {e}")
+                break
+            if not data:
+                break
+
+            feedbacks = data.get("data", {}).get("feedbacks", []) or []
+            for item in feedbacks:
+                created_raw = item.get("createdDate", "")
+                try:
+                    created = datetime.fromisoformat(created_raw.rstrip("Z")).replace(
+                        tzinfo=since.tzinfo
+                    )
+                    if created < since:
+                        continue
+                except Exception:
+                    pass
+
+                parts = []
+                if item.get("text"): parts.append(item["text"])
+                if item.get("pros"): parts.append(f"Плюсы: {item['pros']}")
+                if item.get("cons"): parts.append(f"Минусы: {item['cons']}")
+                full_text = "\n".join(parts) if parts else ""
+
+                rating = item.get("productValuation", 0)
+                if rating > max_rating:
                     continue
-            except Exception:
-                pass
 
-            parts = []
-            if item.get("text"): parts.append(item["text"])
-            if item.get("pros"): parts.append(f"Плюсы: {item['pros']}")
-            if item.get("cons"): parts.append(f"Минусы: {item['cons']}")
-            full_text = "\n".join(parts) if parts else ""
+                reviews.append({
+                    "review_id":    item.get("id", ""),
+                    "product_id":   str(item.get("subjectId", "") or ""),
+                    "product_name": item.get("subjectName", ""),
+                    "rating":       rating,
+                    "text":         full_text,
+                    "author":       item.get("userName", ""),
+                })
 
-            rating = item.get("productValuation", 0)
-            if rating > max_rating:
-                continue
-
-            reviews.append({
-                "review_id":    item.get("id", ""),
-                "product_id":   str(item.get("subjectId", "") or ""),
-                "product_name": item.get("subjectName", ""),
-                "rating":       rating,
-                "text":         full_text,
-                "author":       item.get("userName", ""),
-            })
+            if len(feedbacks) < take:
+                break
+            skip += take
+        else:
+            logger.warning(
+                f"[WB.get_new_reviews] достигнут предел {max_pages} страниц "
+                f"({max_pages * take}) — возможен незагруженный остаток отзывов"
+            )
         return reviews
 
     async def send_reply(self, review_id: str, text: str) -> bool:
@@ -1156,35 +1170,47 @@ class WBClient:
         _Q_BASE = "https://feedbacks-api.wildberries.ru"
         url = f"{_Q_BASE}/api/v1/questions"
         headers = {"Authorization": self._token, "Content-Type": "application/json"}
-        params = {"isAnswered": str(is_answered).lower(), "take": take, "skip": 0}
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, params=params, timeout=_TIMEOUT) as resp:
-                    raw = await resp.text()
-                    if resp.status != 200:
-                        logger.error(f"[WB.get_questions] HTTP {resp.status}: {raw[:200]}")
-                        raise RuntimeError(f"WB questions API HTTP {resp.status}")
-                    data = _json.loads(raw)
-        except asyncio.TimeoutError:
-            logger.error("[marketplace] timeout: WB.get_questions")
-            return []
-        except Exception as e:
-            logger.error(f"[WB.get_questions] exception: {e}")
-            return []
         results = []
-        for item in (data.get("data") or {}).get("questions") or []:
-            results.append({
-                "question_id":   str(item.get("id", "")),
-                "product_id":    str(item.get("productDetails", {}).get("nmId", "") or ""),
-                "product_name":  item.get("productDetails", {}).get("productName", ""),
-                "question_text": item.get("text", ""),
-                "created_at":    item.get("createdDate", ""),
-            })
-        if not results:
-            inner = data.get("data") or {}
+        skip = 0
+        max_pages = 10  # безопасный предел — 1000 вопросов за один синк
+        for page in range(max_pages):
+            params = {"isAnswered": str(is_answered).lower(), "take": take, "skip": skip}
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers=headers, params=params, timeout=_TIMEOUT) as resp:
+                        raw = await resp.text()
+                        if resp.status != 200:
+                            logger.error(f"[WB.get_questions] HTTP {resp.status}: {raw[:200]}")
+                            raise RuntimeError(f"WB questions API HTTP {resp.status}")
+                        data = _json.loads(raw)
+            except asyncio.TimeoutError:
+                logger.error("[marketplace] timeout: WB.get_questions")
+                break
+            except Exception as e:
+                logger.error(f"[WB.get_questions] exception: {e}")
+                break
+            items = (data.get("data") or {}).get("questions") or []
+            for item in items:
+                results.append({
+                    "question_id":   str(item.get("id", "")),
+                    "product_id":    str(item.get("productDetails", {}).get("nmId", "") or ""),
+                    "product_name":  item.get("productDetails", {}).get("productName", ""),
+                    "question_text": item.get("text", ""),
+                    "created_at":    item.get("createdDate", ""),
+                })
+            if page == 0 and not items:
+                inner = data.get("data") or {}
+                logger.warning(
+                    f"[WB.get_questions] 0 вопросов — countUnanswered={inner.get('countUnanswered')}, "
+                    f"keys={list(inner.keys())}, raw[:300]={str(data)[:300]}"
+                )
+            if len(items) < take:
+                break
+            skip += take
+        else:
             logger.warning(
-                f"[WB.get_questions] 0 вопросов — countUnanswered={inner.get('countUnanswered')}, "
-                f"keys={list(inner.keys())}, raw[:300]={str(data)[:300]}"
+                f"[WB.get_questions] достигнут предел {max_pages} страниц "
+                f"({max_pages * take}) — возможен незагруженный остаток вопросов"
             )
         logger.info(f"[WB.get_questions] {len(results)} вопросов (is_answered={is_answered})")
         return results
@@ -1300,36 +1326,47 @@ class OzonClient:
     async def get_new_reviews(self, since: datetime) -> list[dict]:
         now = datetime.now(since.tzinfo)
         reviews: list[dict] = []
+        offset = 0
+        max_pages = 25  # безопасный предел — 500 отзывов (_OZON_LIMIT=20) за один синк
         async with aiohttp.ClientSession() as session:
-            data = await _request(
-                session, "POST",
-                f"{self._BASE}/v2/review/list",
-                headers=self._headers(),
-                json={
-                    "sort_dir": "DESC",
-                    "filter": {
-                        "posting_date": {
-                            "time_from": since.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                            "time_to":   now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        }
+            for _page in range(max_pages):
+                data = await _request(
+                    session, "POST",
+                    f"{self._BASE}/v2/review/list",
+                    headers=self._headers(),
+                    json={
+                        "sort_dir": "DESC",
+                        "filter": {
+                            "posting_date": {
+                                "time_from": since.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                "time_to":   now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            }
+                        },
+                        "limit":  _OZON_LIMIT,
+                        "offset": offset,
                     },
-                    "limit":  _OZON_LIMIT,
-                    "offset": 0,
-                },
-                label="Ozon.get_new_reviews",
-            )
-        if not data:
-            return reviews
-
-        for item in data.get("reviews", []):
-            reviews.append({
-                "review_id":    item.get("review_uuid", ""),
-                "product_id":   str(item.get("sku", "") or ""),
-                "product_name": item.get("product_name", ""),
-                "rating":       item.get("rating", 0),
-                "text":         (item.get("text") or {}).get("positive", "") or "",
-                "author":       item.get("reviewer_name", ""),
-            })
+                    label="Ozon.get_new_reviews",
+                )
+                if not data:
+                    break
+                items = data.get("reviews", []) or []
+                for item in items:
+                    reviews.append({
+                        "review_id":    item.get("review_uuid", ""),
+                        "product_id":   str(item.get("sku", "") or ""),
+                        "product_name": item.get("product_name", ""),
+                        "rating":       item.get("rating", 0),
+                        "text":         (item.get("text") or {}).get("positive", "") or "",
+                        "author":       item.get("reviewer_name", ""),
+                    })
+                if len(items) < _OZON_LIMIT:
+                    break
+                offset += _OZON_LIMIT
+            else:
+                logger.warning(
+                    f"[Ozon.get_new_reviews] достигнут предел {max_pages} страниц "
+                    f"({max_pages * _OZON_LIMIT}) — возможен незагруженный остаток отзывов"
+                )
         return reviews
 
     async def send_reply(self, review_id: str, text: str) -> bool:
