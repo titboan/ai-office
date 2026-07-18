@@ -990,8 +990,8 @@ async def run_all_async() -> None:
         if not await max_agent._redis_acquire_lock(lock, "1", ttl=60):
             return web.json_response({"ok": False, "error": "already_applying"}, status=409, headers=cors)
 
-        ok = await max_agent._apply_price(chat_id, mp, product_id, new_price)
-        return web.json_response({"ok": ok}, headers=cors)
+        result = await max_agent._apply_price(chat_id, mp, product_id, new_price)
+        return web.json_response({"ok": result["ok"], "detail": result["detail"]}, headers=cors)
 
     async def _handle_get_costs(request: web.Request) -> web.Response:
         """GET /api/costs — таблица себестоимости (закупка+логистика, упаковка+маркировка) для дашборда.
