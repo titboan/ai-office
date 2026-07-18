@@ -447,6 +447,12 @@ class MartaAgent(BaseAgent):
         chat_id = query.message.chat_id
 
         if query.data == "chain_confirm":
+            # Атомарный лок против двойного тапа: без него две одновременные
+            # callback-обработки могут обе успеть прочитать pending_chain до того,
+            # как первая его удалит, и обе запустят цепочку.
+            got_lock = await self._redis_acquire_lock(f"chain_start:{chat_id}", "1", ttl=15)
+            if not got_lock:
+                return
             plan, user_text = await self._load_pending_chain(chat_id)
             await self._delete_pending_chain(chat_id)
             if plan:
