@@ -2956,18 +2956,33 @@ class OzonClient:
         return result
 
 
-def _extract_csv_texts_from_zip(raw_bytes: bytes) -> list[str]:
-    """Читает ВСЕ файлы из ZIP-архива Ozon Performance (по одному CSV на кампанию в батче)."""
+def _extract_csv_texts_from_zip(raw_bytes: bytes) -> list[tuple[str, str]]:
+    """Читает ВСЕ файлы из ZIP-архива Ozon Performance (по одному CSV на кампанию в батче).
+
+    Возвращает [(filename, text), ...]. utf-8-sig — основная кодировка; если декодирование
+    даёт replacement-символы (значит байты не utf-8), пробуем cp1251 — часть выгрузок
+    Ozon Performance приходит в этой кодировке.
+    """
     import zipfile as _zipfile, io as _io
-    csv_texts = []
+    csv_texts: list[tuple[str, str]] = []
     with _zipfile.ZipFile(_io.BytesIO(raw_bytes)) as zf:
         for fname in zf.namelist():
-            csv_texts.append(zf.read(fname).decode("utf-8-sig", errors="replace"))
+            raw = zf.read(fname)
+            text = raw.decode("utf-8-sig", errors="replace")
+            if "�" in text:
+                try:
+                    text = raw.decode("cp1251")
+                except UnicodeDecodeError:
+                    logger.warning(
+                        f"[Ozon.get_ad_stats_csv] {fname}: не удалось декодировать ни как "
+                        "utf-8-sig, ни как cp1251 — используется текст с заменой символов"
+                    )
+            csv_texts.append((fname, text))
     return csv_texts
 
 
 def _parse_ozon_ad_stats_csv(
-    csv_texts: list[str],
+    csv_texts: list[tuple[str, str]],
     campaign_names: dict[str, str],
     date_from: str,
     date_to: str,
@@ -2989,12 +3004,20 @@ def _parse_ozon_ad_stats_csv(
     from datetime import datetime as _dt, timedelta as _td
 
     results = []
-    for csv_text_batch in csv_texts:
+    for fname, csv_text_batch in csv_texts:
         lines = csv_text_batch.splitlines()
         if len(lines) < 2:
+            logger.warning(
+                f"[Ozon.get_ad_stats_csv] {fname}: пустой/слишком короткий CSV "
+                f"({len(lines)} строк) — пропущен"
+            )
             continue
         m = _re.search(r"№\s*(\d+)", lines[0])
         if not m:
+            logger.warning(
+                f"[Ozon.get_ad_stats_csv] {fname}: не найден ID кампании в первой строке "
+                f"({lines[0][:100]!r}) — пропущен"
+            )
             continue
         cid = m.group(1)
         header_and_data = "\n".join(lines[1:])
