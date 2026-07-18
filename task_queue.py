@@ -349,6 +349,30 @@ async def get_chain_plan(pool, chain_id: str) -> dict | None:  # pool устар
         return None
 
 
+async def get_stalled_chains(threshold_minutes: int) -> list[dict]:
+    """Цепочки, которые перестали продвигаться: все существующие задачи в терминальном
+    статусе, но последняя известная группа не финальная (значит _advance_chain должна была
+    поставить задачи следующей группы, но не поставила — барьер завис или enqueue провалился),
+    и с последнего finished_at прошло больше threshold_minutes минут."""
+    try:
+        db_pool = await get_pool()
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT chain_id, MAX(chat_id) AS chat_id, MAX(chain_total) AS chain_total,
+                       MAX(chain_index) AS max_index, MAX(finished_at) AS last_finished
+                FROM tasks
+                WHERE chain_id IS NOT NULL
+                GROUP BY chain_id
+                HAVING bool_and(status IN ('completed', 'failed', 'timeout'))
+                   AND MAX(chain_index) < MAX(chain_total) - 1
+                   AND MAX(finished_at) < NOW() - make_interval(mins => $1::int)
+            """, threshold_minutes)
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"[task_queue] get_stalled_chains error: {e}")
+        return []
+
+
 async def get_due_reminders() -> list[Task]:
     """Получить задачи-напоминания у которых наступило время."""
     try:

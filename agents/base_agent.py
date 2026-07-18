@@ -695,6 +695,23 @@ class BaseAgent(ABC):
                                 bot_token=config.MARTA_BOT_TOKEN,
                             )
                         await mark_completed(reminder.id, "reminder_sent")
+
+                    # Зависшие цепочки: все известные задачи в терминальном статусе, но
+                    # следующая группа так и не была создана (barrier завис/enqueue провалился).
+                    # Уведомляем пользователя один раз на цепочку (NX-лок).
+                    from task_queue import get_stalled_chains
+                    stalled = await get_stalled_chains(config.CHAIN_STALL_TIMEOUT_MINUTES)
+                    for chain in stalled:
+                        chain_id = chain["chain_id"]
+                        acquired = await self._redis_acquire_lock(
+                            f"chain_stall_notified:{chain_id}", "1", ttl=86_400
+                        )
+                        if acquired and chain.get("chat_id"):
+                            await self._notify_user(
+                                chain["chat_id"],
+                                "⚠️ Цепочка задач зависла и не продвигается. Проверь `📋 Статус` или начни заново.",
+                                bot_token=config.MARTA_BOT_TOKEN,
+                            )
                 task = await get_next_task(self.agent_key or self.name.lower())
                 if task is None:
                     await asyncio.sleep(2)
@@ -1057,13 +1074,35 @@ class BaseAgent(ABC):
             if task_id:
                 enqueued_ids.append(task_id)
 
-        # Устанавливаем Redis-барьер для параллельной следующей группы
+        # Устанавливаем Redis-барьер для параллельной следующей группы —
+        # по реально поставленным в очередь задачам, не по заявленному числу шагов
+        # (enqueue_chain_task может вернуть None при сбое БД — тогда барьер по len(next_steps)
+        # никогда не досчитается до нуля декрементами, и цепочка зависнет молча).
+        if len(enqueued_ids) == 0 and len(next_steps) > 0:
+            logger.error(
+                f"chain_advance | chain_id={chain_id[:8]} | group={next_index} | "
+                f"ни одна из {len(next_steps)} задач не встала в очередь — цепочка остановлена"
+            )
+            if chat_id:
+                await self._notify_user(
+                    chat_id,
+                    "⚠️ Не удалось запустить следующий шаг цепочки — очередь недоступна.",
+                    bot_token=_chain_reply_token,
+                )
+            return
+
         if is_parallel_next:
+            if len(enqueued_ids) < len(next_steps):
+                logger.warning(
+                    f"chain_advance | chain_id={chain_id[:8]} | group={next_index} | "
+                    f"в очередь встало {len(enqueued_ids)} из {len(next_steps)} задач — "
+                    f"барьер выставлен на фактическое число"
+                )
             redis = await self._get_redis()
             if redis:
                 await redis.set(
                     f"chain_barrier:{chain_id}:{next_index}",
-                    len(next_steps),
+                    len(enqueued_ids),
                     ex=86_400,
                 )
 

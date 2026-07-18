@@ -23,7 +23,7 @@
   задачу, если её текущий статус уже `completed` (добавить `AND status != 'completed'` в
   `UPDATE`).
 
-### Фаза 2 — chain barrier не должен ждать задачи, которые не встали в очередь [ ]
+### Фаза 2 — chain barrier не должен ждать задачи, которые не встали в очередь [x]
 - `agents/base_agent.py:912-1048` (`_advance_chain`) и `agents/marta.py:358-451`
   (`_start_chain`) — барьер `chain_barrier:{chain_id}:{group}` сейчас выставляется на
   заявленное число шагов, а не на реально созданные `enqueue_chain_task` (который может
