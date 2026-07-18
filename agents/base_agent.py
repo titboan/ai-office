@@ -1143,7 +1143,20 @@ class BaseAgent(ABC):
         if not plan:
             return
 
-        step     = plan["steps"][chain_index]
+        # chain_index — номер группы, а не позиция в списке шагов: в параллельных
+        # группах несколько шагов могут иметь одинаковый group, поэтому ищем шаг
+        # по (group, agent) провалившейся задачи, а не по plan["steps"][chain_index].
+        group_steps = [s for s in plan["steps"] if s.get("group") == chain_index]
+        step = next(
+            (s for s in group_steps if s.get("agent") == failed_task.assigned_agent),
+            group_steps[0] if group_steps else None,
+        )
+        if step is None:
+            logger.error(
+                f"chain_failed | chain_id={chain_id[:8]} | "
+                f"не найден шаг group={chain_index} agent={failed_task.assigned_agent} в плане"
+            )
+            return
         required = step.get("required", True)
         me       = _AGENT_NAMES.get(self.agent_key, self.name)
         err_msg  = getattr(failed_task, "error_message", None) or "неизвестно"
