@@ -520,10 +520,9 @@ class MartaAgent(BaseAgent):
         # Обработка кнопок клавиатуры
         _QUICK_ACTIONS = {
             "📊 Отчёт":  ("peter", "Дай сводный отчёт по продажам WB и Ozon за последние 7 дней"),
-            "⭐ Отзывы": ("max",   "Обработай новые отзывы на маркетплейсах"),
         }
         _AGENT_QUICK_LABEL = {
-            "peter": "📊 Питер", "max": "🛒 Макс",
+            "peter": "📊 Питер",
         }
         btn = user_text.strip()
 
@@ -542,24 +541,6 @@ class MartaAgent(BaseAgent):
                 await reply_func(
                     "⚠️ Дашборд не настроен. Добавь `DASHBOARD_URL` в переменные Railway.",
                 )
-            return
-
-        if btn == "🔄 Синхронизация":
-            await enqueue_task(
-                assigned_agent="max",
-                payload="Синхронизируй данные: заказы, остатки, отзывы",
-                from_agent="marta",
-                chat_id=chat_id,
-                priority=0,
-            )
-            await reply_func(
-                "🔄 **Синхронизация запущена**\n\n"
-                "Макс подтянет: заказы, остатки, отзывы — пришлю сводку когда готово.\n\n"
-                "⚠️ **Финансы и реклама синхронизируются отдельно у Макса:**\n"
-                "/sync_adv — рекламная статистика (CTR, ROAS)\n"
-                "/sync_fin — выплаты и комиссии маркетплейсов\n\n"
-                "*Финансовые данные МП обновляются с задержкой до 24 ч.*",
-            )
             return
 
         if btn in _QUICK_ACTIONS:
@@ -587,44 +568,6 @@ class MartaAgent(BaseAgent):
 
         if user_text.strip() == "❓ Помощь":
             await reply_func(self._help_text())
-            return
-
-        if user_text.strip() == "📋 Статус":
-            tasks = await get_active_tasks()
-            if not tasks:
-                await reply_func("✅ Очередь пуста — нет активных задач.")
-                return
-            lines = ["📋 **Активные задачи:**\n"]
-            for t in tasks:
-                status_emoji = {"queued": "🟡", "acknowledged": "🔵", "running": "🔵"}.get(t["status"], "⚪")
-                priority_label = {20: "🔴", 10: "🟠", 0: ""}.get(t.get("priority", 0), "")
-                created = t["created_at"].strftime("%H:%M:%S")
-                short_payload = (t["payload"][:50] + "…") if len(t["payload"]) > 50 else t["payload"]
-                lines.append(
-                    f"{status_emoji}{priority_label} **{t['assigned_agent']}** | id={t['id']}\n"
-                    f"    `{short_payload}`\n"
-                    f"    corr={t['correlation_id'][:8]} | {created}"
-                )
-            await reply_func("\n".join(lines))
-            return
-
-        if user_text.strip() == "📜 История":
-            from task_queue import get_recent_tasks
-            tasks = await get_recent_tasks(10)
-            if not tasks:
-                await reply_func("📭 История задач пуста.")
-                return
-            lines = ["📜 **Последние задачи:**\n"]
-            for t in tasks:
-                status_emoji = {"completed": "✅", "failed": "❌", "timeout": "⏱️"}.get(t["status"], "⚪")
-                finished = t["finished_at"].strftime("%d.%m %H:%M") if t["finished_at"] else "—"
-                short_payload = (t["payload"][:50] + "…") if len(t["payload"]) > 50 else t["payload"]
-                lines.append(
-                    f"{status_emoji} **{t['assigned_agent']}** | id={t['id']}\n"
-                    f"    `{short_payload}`\n"
-                    f"    {finished} | corr={t['correlation_id'][:8]}"
-                )
-            await reply_func("\n".join(lines))
             return
 
         if user_text.strip() == "❌ Отмена задачи":
