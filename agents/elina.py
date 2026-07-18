@@ -196,7 +196,7 @@ class ElinaAgent(BaseAgent):
         )
 
     async def _do_seo_task(self, product_id: str, chat_id: int) -> str:
-        """Полный SEO-пайплайн: авто-синк → контекст → бриф → Claude → Notion."""
+        """Полный SEO-пайплайн: авто-синк → контекст → бриф → Claude."""
         from db import get_seo_context
 
         await self._auto_sync_cards(chat_id)
@@ -216,7 +216,7 @@ class ElinaAgent(BaseAgent):
     # ------------------------------------------------------------------ #
 
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
-        """Создать контент по заданию и сохранить в Notion Content DB.
+        """Создать контент по заданию.
 
         Если в задаче обнаружен SEO-запрос с числовым product_id —
         автоматически запускает sync + context и передаёт обогащённый бриф Claude.
