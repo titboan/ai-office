@@ -16,7 +16,7 @@ from db import (
     get_user_plans,
     update_user_plan,
 )
-from task_queue import create_reminder
+from task_queue import create_reminder, get_due_reminders, mark_completed
 from tools.ntfy import send_push
 from utils.tg_rich import send_rich_or_fallback as _send_rich
 from .base_agent import BaseAgent, with_company_context
@@ -224,6 +224,37 @@ class AlexAgent(BaseAgent):
 
     def __init__(self) -> None:
         super().__init__(config.ALEX_BOT_TOKEN)
+
+    async def _periodic_maintenance(self) -> None:
+        """Как у BaseAgent (cleanup + зависшие цепочки), плюс проверка напоминаний —
+        раньше эту проверку делал каждый агент по отдельности (Фаза 4,
+        plans/2026-06-24-antipatterns-refactor.md), хотя это исключительно зона Алекса."""
+        await super()._periodic_maintenance()
+
+        reminders = await get_due_reminders()
+        for reminder in reminders:
+            sent = False
+            if config.NTFY_TOPIC:
+                sent = await send_push(
+                    title="⏰ Напоминание",
+                    message=reminder.payload,
+                    topic=config.NTFY_TOPIC,
+                    priority="high",
+                )
+                if sent:
+                    logger.info(f"reminder_sent | ntfy | task_id={reminder.id}")
+                else:
+                    logger.warning(f"ntfy_failed | topic={config.NTFY_TOPIC!r} | task_id={reminder.id}")
+            else:
+                logger.warning(f"ntfy_topic_not_set | fallback to telegram | task_id={reminder.id}")
+
+            if not sent and reminder.chat_id:
+                await self._notify_user(
+                    reminder.chat_id,
+                    f"⏰ Напоминание: {reminder.payload}",
+                    bot_token=config.MARTA_BOT_TOKEN,
+                )
+            await mark_completed(reminder.id, "reminder_sent")
 
     # ------------------------------------------------------------------ #
     #  Tool execution                                                      #

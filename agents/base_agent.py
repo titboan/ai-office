@@ -644,6 +644,30 @@ class BaseAgent(ABC):
     #  Worker loop — агент поллит свои задачи из Postgres                 #
     # ------------------------------------------------------------------ #
 
+    async def _periodic_maintenance(self) -> None:
+        """Каждые ~30 итераций worker loop: чистка зависших задач + уведомление о
+        зависших цепочках. Переопределяется в AlexAgent, который добавляет сюда же
+        проверку напоминаний (Фаза 4, plans/2026-06-24-antipatterns-refactor.md) —
+        раньше этим занимался каждый агент по отдельности."""
+        await cleanup_timed_out_tasks()
+
+        # Зависшие цепочки: все известные задачи в терминальном статусе, но
+        # следующая группа так и не была создана (barrier завис/enqueue провалился).
+        # Уведомляем пользователя один раз на цепочку (NX-лок).
+        from task_queue import get_stalled_chains
+        stalled = await get_stalled_chains(config.CHAIN_STALL_TIMEOUT_MINUTES)
+        for chain in stalled:
+            chain_id = chain["chain_id"]
+            acquired = await self._redis_acquire_lock(
+                f"chain_stall_notified:{chain_id}", "1", ttl=86_400
+            )
+            if acquired and chain.get("chat_id"):
+                await self._notify_user(
+                    chain["chat_id"],
+                    "⚠️ Цепочка задач зависла и не продвигается. Проверь `📋 Статус` или начни заново.",
+                    bot_token=config.MARTA_BOT_TOKEN,
+                )
+
     async def _worker_loop(self) -> None:
         """Фоновый цикл: берёт задачи из очереди и выполняет.
 
@@ -655,7 +679,8 @@ class BaseAgent(ABC):
           5. asyncio.wait_for(handle_task(), timeout) — выполняем с таймаутом
           6. mark_completed() / mark_failed() — пишем результат
           7. Уведомляем пользователя: 🟢 готово / 🔴 ошибка
-        Каждые ~60 сек — cleanup_timed_out_tasks() для зависших задач других агентов.
+        Каждые ~30 итераций — self._periodic_maintenance() (cleanup зависших задач,
+        уведомление о зависших цепочках; AlexAgent переопределяет с добавлением напоминаний).
         """
         logger.info(f"[{self.name}] Worker loop запущен")
         if not self.agent_key:
@@ -667,50 +692,7 @@ class BaseAgent(ABC):
             try:
                 iteration += 1
                 if iteration % 30 == 0:
-                    await cleanup_timed_out_tasks()
-                    from task_queue import get_due_reminders
-                    from tools.ntfy import send_push
-                    reminders = await get_due_reminders()
-                    for reminder in reminders:
-                        sent = False
-                        if config.NTFY_TOPIC:
-                            sent = await send_push(
-                                title="⏰ Напоминание",
-                                message=reminder.payload,
-                                topic=config.NTFY_TOPIC,
-                                priority="high",
-                            )
-                            if sent:
-                                logger.info(f"reminder_sent | ntfy | task_id={reminder.id}")
-                            else:
-                                logger.warning(f"ntfy_failed | topic={config.NTFY_TOPIC!r} | task_id={reminder.id}")
-                        else:
-                            logger.warning(f"ntfy_topic_not_set | fallback to telegram | task_id={reminder.id}")
-
-                        if not sent and reminder.chat_id:
-                            await self._notify_user(
-                                reminder.chat_id,
-                                f"⏰ Напоминание: {reminder.payload}",
-                                bot_token=config.MARTA_BOT_TOKEN,
-                            )
-                        await mark_completed(reminder.id, "reminder_sent")
-
-                    # Зависшие цепочки: все известные задачи в терминальном статусе, но
-                    # следующая группа так и не была создана (barrier завис/enqueue провалился).
-                    # Уведомляем пользователя один раз на цепочку (NX-лок).
-                    from task_queue import get_stalled_chains
-                    stalled = await get_stalled_chains(config.CHAIN_STALL_TIMEOUT_MINUTES)
-                    for chain in stalled:
-                        chain_id = chain["chain_id"]
-                        acquired = await self._redis_acquire_lock(
-                            f"chain_stall_notified:{chain_id}", "1", ttl=86_400
-                        )
-                        if acquired and chain.get("chat_id"):
-                            await self._notify_user(
-                                chain["chat_id"],
-                                "⚠️ Цепочка задач зависла и не продвигается. Проверь `📋 Статус` или начни заново.",
-                                bot_token=config.MARTA_BOT_TOKEN,
-                            )
+                    await self._periodic_maintenance()
                 task = await get_next_task(self.agent_key or self.name.lower())
                 if task is None:
                     await asyncio.sleep(2)
@@ -958,7 +940,7 @@ class BaseAgent(ABC):
         # Единственная точка входа/выхода для пользователя — бот Марты.
         _chain_reply_token: str | None = config.MARTA_BOT_TOKEN
 
-        plan = await get_chain_plan(None, chain_id)
+        plan = await get_chain_plan(chain_id)
         if not plan:
             logger.error(f"chain_advance | chain_id={chain_id} | plan not found")
             return
@@ -996,7 +978,7 @@ class BaseAgent(ABC):
             logger.info(f"chain_done | chain_id={chain_id[:8]} | total={chain_total}")
 
             if chat_id:
-                chain_results = await get_chain_results(None, chain_id)
+                chain_results = await get_chain_results(chain_id)
                 final_msg, keyboard = self._format_chain_completion_message(chain_results)
                 await self._notify_user(chat_id, final_msg, reply_markup=keyboard, bot_token=_chain_reply_token)
             return
@@ -1032,7 +1014,7 @@ class BaseAgent(ABC):
             )
 
         # Собираем контекст из всех завершённых задач
-        prev_results = await get_chain_results(None, chain_id)
+        prev_results = await get_chain_results(chain_id)
 
         # Ставим задачи для каждого шага следующей группы
         enqueued_ids: list[int] = []
@@ -1051,7 +1033,6 @@ class BaseAgent(ABC):
                 if context_str else step["task"]
             )
             task_id = await enqueue_chain_task(
-                pool=None,
                 agent_key=next_agent,
                 payload=full_payload,
                 chat_id=chat_id,
@@ -1128,7 +1109,7 @@ class BaseAgent(ABC):
         chain_total = failed_task.chain_total
         chat_id     = failed_task.chat_id
 
-        plan = await get_chain_plan(None, chain_id)
+        plan = await get_chain_plan(chain_id)
         if not plan:
             return
 

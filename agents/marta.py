@@ -359,7 +359,6 @@ class MartaAgent(BaseAgent):
         enqueued_ids: list[int] = []
         for step in group0_steps:
             task_id = await enqueue_chain_task(
-                pool=None,
                 agent_key=step["agent"],
                 payload=step["task"],
                 chat_id=chat_id,
