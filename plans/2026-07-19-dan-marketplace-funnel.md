@@ -16,7 +16,7 @@
 
 **Бренд-контекст уже есть в `config.COMPANY_CONTEXT`** (DoggyDog, премиум-сегмент, натуральность состава, не демпингуем ценой) и подмешивается во все агентские system-промпты — Дэн получит его бесплатно, не нужно отдельно прокидывать.
 
-**Модели генерации** (решено в обсуждении): GPT Image 1.5/2 через RU-реселлер [ProxyAPI](https://proxyapi.ru) или [AITUNNEL](https://aitunnel.ru) (OpenAI-совместимый API, рубли, без VPN) — основной инструмент. Recraft V4 через [GenAPI](https://gen-api.ru) — опционально для более «дизайнерских» слайдов, отдельным тумблером, не в MVP.
+**Модели генерации** (решено в обсуждении): [AITUNNEL](https://aitunnel.ru) (OpenAI-совместимый API, рубли, без VPN), модель `gpt-image-2` — основной инструмент. Выбран вместо ProxyAPI: дешевле и понятнее по цене (фиксированная цена за изображение, а не за токены) — см. сравнение в сессии 2026-07-19. `gpt-image-1-mini` — дешёвый вариант на будущее, если качества `gpt-image-2` не хватит для баланса цена/качество. Recraft V4 через [GenAPI](https://gen-api.ru) — опционально для более «дизайнерских» слайдов, отдельным тумблером, не в MVP.
 
 **Структура воронки** (по практике WB/Ozon, см. `retrospectives/` или контекст сессии 2026-07-19): 1 обложка + 6-9 слайдов (УТП, состав, размер/комплектация, сценарий использования, сравнение, соц. доказательство, гарантии). Без явных маркетинговых плашек (цена/скидка/«хит продаж») — штрафуется WB до 25 000 ₽, инфографика только описательная.
 
@@ -25,8 +25,8 @@
 ## Фазы
 
 - [x] **Фаза 1**: `tools/image_gen.py` — клиент генерации изображений
-  - `generate_image(prompt, size, quality) -> bytes` через ProxyAPI/AITUNNEL (`/v1/images/generations`, OpenAI-совместимый), обрабатывает и `b64_json`, и `url` в ответе
-  - `config.IMAGE_GEN_API_KEY` / `IMAGE_GEN_BASE_URL` / `IMAGE_GEN_MODEL` (дефолт `gpt-image-1.5`)
+  - `generate_image(prompt, size, quality) -> bytes` через AITUNNEL (`/v1/images/generations`, OpenAI-совместимый — код универсален, ProxyAPI тоже подходит сменой `IMAGE_GEN_BASE_URL`), обрабатывает и `b64_json`, и `url` в ответе
+  - `config.IMAGE_GEN_API_KEY` / `IMAGE_GEN_BASE_URL` (дефолт `https://api.aitunnel.ru`) / `IMAGE_GEN_MODEL` (дефолт `gpt-image-2`)
 
 - [x] **Фаза 2**: `agents/dan.py` — переписан под воронку WB/Ozon
   - Один инструмент `generate_slide(role, prompt, size)` — Claude сам в рамках tool-use loop решает набор ролей слайдов и вызывает его по очереди (отдельный `plan_funnel` не понадобился — это просто рассуждение модели перед вызовами)
@@ -52,7 +52,7 @@
   - Добавлялись по мере надобности в каждой фазе, а не единым блоком: `IMAGE_GEN_*` (Фаза 1), `FUNNEL_READY_TTL_SECONDS` (Фаза 2), `GITHUB_ASSETS_REPO` (Фаза 3), `MISSING_INFOGRAPHIC_HOUR_UTC` (Фаза 5). `FUNNEL_SLIDE_COUNT_DEFAULT` не понадобился — количество слайдов (6-9) задаётся текстом в system-промпте Дэна, не читается кодом как параметр
 
 - [ ] **Фаза 7**: Деплой и проверка
-  - [ ] Завести `IMAGE_GEN_API_KEY`, `IMAGE_GEN_BASE_URL` в Railway env (ProxyAPI или AITUNNEL — оплата в рублях)
+  - [ ] Завести `IMAGE_GEN_API_KEY` в Railway env (ключ AITUNNEL — оплата в рублях; `IMAGE_GEN_BASE_URL`/`IMAGE_GEN_MODEL` можно не задавать, дефолты уже AITUNNEL/`gpt-image-2`)
   - [ ] Убедиться, что `GITHUB_TOKEN`/`GITHUB_USERNAME` в Railway актуальны (нужны для публикации в `ai-office-assets`)
   - [ ] Ручной прогон: написать Дэну «сделай воронку для <тестовый товар>, категория <...>» → альбом в Telegram → `funnel_regenerate` на одном слайде → `funnel_publish_all` → проверить карточку на WB (и Ozon, если товар там есть)
   - [ ] Проверить, что `product_mapping.infographic_updated_at` проставился и Питер через 14 дней увидит пару CTR до/после
@@ -62,7 +62,7 @@
 
 ## Известные ограничения (осознанно, не блокируют MVP)
 
-- Recraft (GenAPI) — не в MVP, только GPT Image через ProxyAPI/AITUNNEL. Добавить отдельной фазой, если качества GPT Image не хватит
+- Recraft (GenAPI) — не в MVP, только GPT Image через AITUNNEL. Добавить отдельной фазой, если качества `gpt-image-2` не хватит
 - Видео-обложка и рич-контент/Premium-контент — отдельный, более крупный контур, не в этом плане
 - Текст на слайдах (цифры/состав) всё равно требует взгляда человека перед публикацией — даже у лучших моделей ошибка в тексте не исключена, поэтому шаг подтверждения в Марте — обязательный, не опциональный
 - Триггер «смена цены/акции» не реализован — нет истории цен (`product_mapping` хранит только текущую `wb_price`/`ozon_price`), детект реального изменения потребует отдельной механики (история или лог событий) — не изобретали её вслепую в рамках этой фазы
@@ -74,7 +74,7 @@
 
 | Переменная | Обязательно | Описание |
 |---|---|---|
-| IMAGE_GEN_API_KEY | ✅ | Ключ ProxyAPI или AITUNNEL |
+| IMAGE_GEN_API_KEY | ✅ | Ключ AITUNNEL |
 | IMAGE_GEN_BASE_URL | ✅ | Базовый URL реселлера (OpenAI-совместимый) |
 
 ---
@@ -83,7 +83,7 @@
 
 | Файл | Изменение |
 |---|---|
-| `tools/image_gen.py` | Создан — `generate_image` (ProxyAPI/AITUNNEL) + `host_slides` (хостинг набора на GitHub) |
+| `tools/image_gen.py` | Создан — `generate_image` (AITUNNEL, OpenAI-совместимый) + `host_slides` (хостинг набора на GitHub) |
 | `tools/github.py` | +`create_binary_file` — публикация бинарных файлов без двойного base64 |
 | `tools/marketplace.py` | +`WBClient.upload_product_photos_by_url`, +`OzonClient.get_product_id`/`upload_product_pictures` |
 | `agents/dan.py` | Переписан — воронка слайдов вместо лендингов; сам шлёт альбом+клавиатуру через бота Марты |
