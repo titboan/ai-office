@@ -1505,7 +1505,6 @@ class MartaAgent(BaseAgent):
         "order":        ("peter", "Проверь нужно ли заказывать у поставщика (30/60/90 дней)"),
         "seo_audit":    ("peter", "Проведи SEO-аудит карточек: CTR, позиции, приоритеты правок"),
         "analyze":      ("peter", "Проведи произвольный бизнес-анализ по данным маркетплейсов"),
-        "set":          ("peter", "Покажи и позволь изменить настройки поставок (срок доставки, страховой буфер)"),
         # Макс
         "reviews":      ("max", "Обработай новые отзывы на WB и Ozon"),
         "questions":    ("max", "__questions__"),
@@ -1662,10 +1661,8 @@ class MartaAgent(BaseAgent):
                     InlineKeyboardButton("🗺️ Маппинг артикулов (/map)",      callback_data="mmenu_run:map"),
                     InlineKeyboardButton("➕ Подключить магазин (/add_shop)", callback_data="mmenu_run:add_shop"),
                 ],
-                [
-                    InlineKeyboardButton("🔑 Ozon Performance (/set_performance)", callback_data="mmenu_run:set_performance"),
-                    InlineKeyboardButton("📦 Настройки поставок",                  callback_data="mmenu_run:set"),
-                ],
+                [InlineKeyboardButton("🔑 Ozon Performance (/set_performance)", callback_data="mmenu_run:set_performance")],
+                [InlineKeyboardButton("📦 Настройки поставок", callback_data="mmenu:supply_settings")],
                 [InlineKeyboardButton("◀️ Назад",             callback_data="mmenu:back")],
             ],
         ),
@@ -1694,7 +1691,7 @@ class MartaAgent(BaseAgent):
             ],
         ),
         "office": (
-            "⚙️ <b>Служебное — Марта</b>\nВыбери действие:",
+            "⚙️ <b>Служебное — только для владельца/разработчика</b>\nТехническая диагностика:",
             [
                 [
                     InlineKeyboardButton("📊 Статус очереди", callback_data="mmenu_run:queue_status"),
@@ -1704,7 +1701,6 @@ class MartaAgent(BaseAgent):
                     InlineKeyboardButton("🔴 Ошибки (24ч)",   callback_data="mmenu_run:logs_all"),
                     InlineKeyboardButton("📡 Ошибки WB рекл", callback_data="mmenu_run:logs_adv"),
                 ],
-                [InlineKeyboardButton("📦 Настройки поставок", callback_data="mmenu:supply_settings")],
                 [InlineKeyboardButton("🧪 Тест push", callback_data="mmenu_run:testpush")],
                 [
                     InlineKeyboardButton("🔁 Сброс проверки отзывов (/reset_checked)", callback_data="mmenu_run:reset_checked"),
@@ -1772,7 +1768,7 @@ class MartaAgent(BaseAgent):
                         InlineKeyboardButton("🛡 21 дн", callback_data="msset:safety:21"),
                         InlineKeyboardButton("🛡 30 дн", callback_data="msset:safety:30"),
                     ],
-                    [InlineKeyboardButton("◀️ Назад", callback_data="mmenu:office")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="mmenu:shops_catalog")],
                 ]),
             )
             return
@@ -2242,7 +2238,7 @@ class MartaAgent(BaseAgent):
                     InlineKeyboardButton("🛡 21 дн", callback_data="msset:safety:21"),
                     InlineKeyboardButton("🛡 30 дн", callback_data="msset:safety:30"),
                 ],
-                [InlineKeyboardButton("◀️ Назад", callback_data="mmenu:office")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="mmenu:shops_catalog")],
             ]),
         )
 
