@@ -67,7 +67,12 @@
     - `OzonClient.get_product_photo_url(product_id) -> str | None` — текущее главное фото товара (`/v2/product/pictures/info`, `images[0].file_name`, index=0)
     - `tools/image_gen.edit_image(prompt, reference_images, size) -> bytes` — image-to-image через AITUNNEL `/v1/images/edits` (multipart, один или несколько `image` референсов), без маски (не нужна для GPT Image моделей)
     - Общий разбор ответа (`b64_json`/`url`) вынесен в `_extract_image_bytes()`, переиспользуется и `generate_image()`, и `edit_image()`
-  - [ ] **Фаза 8б** (отдельным заданием): подключение к `agents/dan.py` — новый инструмент/режим генерации слайда с опорой на реальное фото (получить URL фото → скачать байты → `edit_image`), Марта/Питер/Макс не трогаются
+  - [x] **Фаза 8б**: подключение к `agents/dan.py` — новый инструмент/режим генерации слайда с опорой на реальное фото (получить URL фото → скачать байты → `edit_image`), Марта/Питер/Макс не трогаются
+    - `_fetch_reference_photo(article, marketplace, chat_id)` — лукап `product_mapping` (тот же паттерн запроса, что `_upload_funnel` в `agents/max.py`) → `WBClient.get_card_photo_url`/`OzonClient.get_product_photo_url` → скачивание байт, best-effort (никогда не бросает исключение)
+    - Машинный вызов (`build_funnel`) сам подтягивает референс-фото по `article`, если он указан, и подсказывает Клоду в промпте, использовать ли `use_reference=true`
+    - Новый инструмент `lookup_product_photo` — для свободного текста, когда пользователь называет товар из магазина
+    - `generate_slide` получил `use_reference: bool` — при `true` и наличии `self._reference_photo` вызывает `edit_image` вместо `generate_image`
+    - `DAN_SYSTEM` дополнен инструкцией, для каких ролей слайдов уместен референс
 
 ---
 
@@ -97,7 +102,7 @@
 | `tools/image_gen.py` | Создан — `generate_image` (AITUNNEL, OpenAI-совместимый) + `host_slides` (хостинг набора на GitHub) |
 | `tools/github.py` | +`create_binary_file` — публикация бинарных файлов без двойного base64 |
 | `tools/marketplace.py` | +`WBClient.upload_product_photos_by_url`, +`OzonClient.get_product_id`/`upload_product_pictures` |
-| `agents/dan.py` | Переписан — воронка слайдов вместо лендингов; сам шлёт альбом+клавиатуру через бота Марты |
+| `agents/dan.py` | Переписан — воронка слайдов вместо лендингов; сам шлёт альбом+клавиатуру через бота Марты; +Фаза 8б: `_fetch_reference_photo`/`lookup_product_photo`, `generate_slide.use_reference` → `edit_image` |
 | `agents/marta.py` | +`_handle_funnel_regenerate`/`_handle_funnel_publish_all`/`_handle_funnel_skip` (независимо от старого `pending_infographic`) |
 | `agents/max.py` | +`_upload_funnel` (публикация набора на WB/Ozon), +`_check_missing_infographics` (ежедневный триггер) |
 | `agents/peter.py` | Низкий CTR теперь параллельно ставит Дэну `build_funnel` |
