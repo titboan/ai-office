@@ -1476,16 +1476,19 @@ class MartaAgent(BaseAgent):
 
     _MARTA_MENU_KEYBOARD = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📊 Аналитика",      callback_data="mmenu:analytics"),
-            InlineKeyboardButton("🛒 Маркетплейсы",   callback_data="mmenu:market"),
+            InlineKeyboardButton("💰 Цены и реклама",   callback_data="mmenu:prices_ads"),
+            InlineKeyboardButton("⭐ Отзывы и вопросы",  callback_data="mmenu:reviews_qa"),
         ],
         [
-            InlineKeyboardButton("🔄 Синхронизация",  callback_data="mmenu:sync"),
-            InlineKeyboardButton("✍️ Контент",         callback_data="mmenu:content"),
+            InlineKeyboardButton("📊 Отчёты",           callback_data="mmenu:reports"),
+            InlineKeyboardButton("🔄 Данные",           callback_data="mmenu:sync"),
         ],
         [
-            InlineKeyboardButton("🏛️ Тендеры",        callback_data="mmenu:tenders"),
-            InlineKeyboardButton("⚙️ Офис",           callback_data="mmenu:office"),
+            InlineKeyboardButton("🏪 Магазины и каталог", callback_data="mmenu:shops_catalog"),
+            InlineKeyboardButton("✍️ Контент и планы",    callback_data="mmenu:content"),
+        ],
+        [
+            InlineKeyboardButton("⚙️ Служебное",        callback_data="mmenu:office"),
         ],
     ])
 
@@ -1523,6 +1526,7 @@ class MartaAgent(BaseAgent):
         "sync_funnel":  ("max", "__sync_funnel__"),
         "sync_returns": ("max", "__sync_returns__"),
         "sync_cards":   ("max", "__sync_cards__"),
+        "sync_sku":     ("max", "__sync_sku__"),
         # Элина
         "write":       ("elina", "Напиши текст"),
         "post":        ("elina", "Напиши пост для маркетплейса или соцсетей"),
@@ -1532,6 +1536,7 @@ class MartaAgent(BaseAgent):
         # Алекс
         "plans":  ("alex", "__plans__"),
         "remind": ("alex", "Установи напоминание"),
+        "testpush": ("alex", "testpush"),
         # Тина
         "tenders":        ("tina", "tenders"),
         "tenders_report": ("tina", "tenders_report"),
@@ -1542,53 +1547,35 @@ class MartaAgent(BaseAgent):
         "tina": "🏛️ Тина",  "alex": "🗓️ Алекс",
     }
 
+    # command_key → (точный текст команды, короткое описание) — для команд, которые
+    # нельзя запустить кнопкой напрямую (интерактивный флоу/мастер ввода, нужен
+    # настоящий update.message, а не callback_query) — кнопка показывает подсказку
+    _MMENU_HINTS: dict[str, tuple[str, str]] = {
+        "reprice":         ("/reprice", "рекомендации по ценам с кнопками подтверждения"),
+        "cost":            ("/cost", "мастер ввода себестоимости товара"),
+        "camp":            ("/camp", "вручную внести название рекламной кампании WB"),
+        "map":             ("/map", "маппинг артикулов WB/Ozon вручную"),
+        "add_shop":        ("/add_shop", "подключить новый магазин WB/Ozon"),
+        "set_performance": ("/set_performance", "привязать Ozon Performance API"),
+        "sync_promotions": ("/sync_promotions", "синхронизировать акции Ozon"),
+        "reset_checked":   ("/reset_checked", "сбросить время последней проверки отзывов (для отладки)"),
+        "reset_orders":    ("/reset_orders", "сбросить синхронизацию заказов (для отладки)"),
+        "roadmap":         ("/roadmap", "дорожная карта проекта"),
+        "tender":          ("/tender <номер лота>", "полный анализ конкретного тендера по номеру"),
+    }
+
     # (заголовок, строки InlineKeyboard) для каждого раздела
     _MARTA_MENU_SECTIONS: dict[str, tuple[str, list]] = {
-        "analytics": (
-            "📊 <b>Аналитика — Питер</b>\nВыбери отчёт:",
+        "prices_ads": (
+            "💰 <b>Цены и реклама — Макс + Питер</b>\nВыбери действие:",
             [
                 [
-                    InlineKeyboardButton("📊 Отчёт продаж",  callback_data="mmenu_run:report"),
-                    InlineKeyboardButton("🔍 Аудит",          callback_data="mmenu_run:audit"),
+                    InlineKeyboardButton("📐 Маржа товара",   callback_data="mmenu_run:margin"),
+                    InlineKeyboardButton("💲 Применить цены", callback_data="mmenu_run:apply_prices"),
                 ],
                 [
-                    InlineKeyboardButton("📣 ДРР / ROAS",         callback_data="mmenu_run:drr"),
-                    InlineKeyboardButton("📊 Воронка (анализ)",   callback_data="mmenu_run:funnel"),
-                ],
-                [
-                    InlineKeyboardButton("📦 Поставки",           callback_data="mmenu_run:supply"),
-                    InlineKeyboardButton("📬 Заказ",              callback_data="mmenu_run:order"),
-                ],
-                [
-                    InlineKeyboardButton("🔤 ABC-анализ",         callback_data="mmenu_run:abc"),
-                    InlineKeyboardButton("📊 Возвраты (анализ)",  callback_data="mmenu_run:returns"),
-                ],
-                [
-                    InlineKeyboardButton("🔤 SEO-аудит (Питер)", callback_data="mmenu_run:seo_audit"),
-                    InlineKeyboardButton("💬 Свободный вопрос",   callback_data="mmenu_run:analyze"),
-                ],
-                [InlineKeyboardButton("◀️ Назад",             callback_data="mmenu:back")],
-            ],
-        ),
-        "market": (
-            "🛒 <b>Маркетплейсы — Макс</b>\nВыбери действие:",
-            [
-                [InlineKeyboardButton("🔔 Обработать отзывы", callback_data="mmenu_run:reviews")],
-                [
-                    InlineKeyboardButton("❓ Вопросы",         callback_data="mmenu_run:questions"),
-                    InlineKeyboardButton("⏳ Модерация",       callback_data="mmenu_run:pending"),
-                ],
-                [
-                    InlineKeyboardButton("📊 KPI магазина",    callback_data="mmenu_run:shop_kpi"),
-                    InlineKeyboardButton("🗄️ Статус данных",   callback_data="mmenu_run:data_status"),
-                ],
-                [
-                    InlineKeyboardButton("🏪 Магазины",        callback_data="mmenu_run:shops"),
-                    InlineKeyboardButton("📦 Товары",          callback_data="mmenu_run:products"),
-                ],
-                [
-                    InlineKeyboardButton("🔻 Позиции ключей",  callback_data="mmenu_run:seo_check"),
-                    InlineKeyboardButton("🎯 Ставки рекламы",  callback_data="mmenu_run:bid_adjust"),
+                    InlineKeyboardButton("📣 ДРР / ROAS",     callback_data="mmenu_run:drr"),
+                    InlineKeyboardButton("🎯 Ставки рекламы", callback_data="mmenu_run:bid_adjust"),
                 ],
                 [
                     InlineKeyboardButton("📣 Кампании Ozon",   callback_data="mmenu_run:campaigns"),
@@ -1596,14 +1583,50 @@ class MartaAgent(BaseAgent):
                     InlineKeyboardButton("➕ Новая кампания",   callback_data="mmenu_run:new_campaign"),
                 ],
                 [
-                    InlineKeyboardButton("📐 Маржа товара",   callback_data="mmenu_run:margin"),
-                    InlineKeyboardButton("💲 Применить цены", callback_data="mmenu_run:apply_prices"),
+                    InlineKeyboardButton("🎯 Изменить цены (/reprice)", callback_data="mmenu_run:reprice"),
+                    InlineKeyboardButton("📐 Себестоимость (/cost)",     callback_data="mmenu_run:cost"),
+                ],
+                [InlineKeyboardButton("📣 WB-кампании (/camp)", callback_data="mmenu_run:camp")],
+                [InlineKeyboardButton("◀️ Назад",             callback_data="mmenu:back")],
+            ],
+        ),
+        "reviews_qa": (
+            "⭐ <b>Отзывы и вопросы — Макс</b>\nВыбери действие:",
+            [
+                [InlineKeyboardButton("🔔 Обработать отзывы", callback_data="mmenu_run:reviews")],
+                [
+                    InlineKeyboardButton("❓ Вопросы",         callback_data="mmenu_run:questions"),
+                    InlineKeyboardButton("⏳ Модерация",       callback_data="mmenu_run:pending"),
                 ],
                 [InlineKeyboardButton("◀️ Назад",             callback_data="mmenu:back")],
             ],
         ),
+        "reports": (
+            "📊 <b>Отчёты — Питер</b>\nВыбери отчёт:",
+            [
+                [
+                    InlineKeyboardButton("📊 Отчёт продаж",  callback_data="mmenu_run:report"),
+                    InlineKeyboardButton("🔍 Аудит",          callback_data="mmenu_run:audit"),
+                ],
+                [
+                    InlineKeyboardButton("📊 Воронка (анализ)",   callback_data="mmenu_run:funnel"),
+                    InlineKeyboardButton("🔤 ABC-анализ",         callback_data="mmenu_run:abc"),
+                ],
+                [
+                    InlineKeyboardButton("📊 Возвраты (анализ)",  callback_data="mmenu_run:returns"),
+                    InlineKeyboardButton("🔤 SEO-аудит (Питер)", callback_data="mmenu_run:seo_audit"),
+                ],
+                [
+                    InlineKeyboardButton("📦 Поставки",           callback_data="mmenu_run:supply"),
+                    InlineKeyboardButton("📬 Заказ",              callback_data="mmenu_run:order"),
+                ],
+                [InlineKeyboardButton("💬 Свободный вопрос",   callback_data="mmenu_run:analyze")],
+                [InlineKeyboardButton("📊 Открыть дашборд", callback_data="mmenu_run:dashboard")],
+                [InlineKeyboardButton("◀️ Назад",             callback_data="mmenu:back")],
+            ],
+        ),
         "sync": (
-            "🔄 <b>Синхронизация данных — Макс</b>\nВыбери тип:\n<i>💡 Финансы и реклама синхронизируются автоматически ночью.</i>",
+            "🔄 <b>Данные — Макс</b>\nВыбери тип синхронизации:\n<i>💡 Финансы и реклама синхронизируются автоматически ночью.</i>",
             [
                 [InlineKeyboardButton("🔄 Полный синк — заказы · остатки · продажи", callback_data="mmenu_run:sync")],
                 [
@@ -1615,11 +1638,36 @@ class MartaAgent(BaseAgent):
                     InlineKeyboardButton("🔄 Возвраты (данные)",  callback_data="mmenu_run:sync_returns"),
                 ],
                 [InlineKeyboardButton("🃏 Карточки",   callback_data="mmenu_run:sync_cards")],
+                [
+                    InlineKeyboardButton("🔄 Синк SKU",                       callback_data="mmenu_run:sync_sku"),
+                    InlineKeyboardButton("🎁 Синк акций (/sync_promotions)",  callback_data="mmenu_run:sync_promotions"),
+                ],
                 [InlineKeyboardButton("◀️ Назад",        callback_data="mmenu:back")],
             ],
         ),
+        "shops_catalog": (
+            "🏪 <b>Магазины и каталог — Макс</b>\nВыбери действие:",
+            [
+                [
+                    InlineKeyboardButton("🏪 Магазины",        callback_data="mmenu_run:shops"),
+                    InlineKeyboardButton("📦 Товары",          callback_data="mmenu_run:products"),
+                ],
+                [
+                    InlineKeyboardButton("📊 KPI магазина",    callback_data="mmenu_run:shop_kpi"),
+                    InlineKeyboardButton("🗄️ Статус данных",   callback_data="mmenu_run:data_status"),
+                ],
+                [InlineKeyboardButton("🔻 Позиции ключей",  callback_data="mmenu_run:seo_check")],
+                [
+                    InlineKeyboardButton("🗺️ Маппинг артикулов (/map)",      callback_data="mmenu_run:map"),
+                    InlineKeyboardButton("➕ Подключить магазин (/add_shop)", callback_data="mmenu_run:add_shop"),
+                ],
+                [InlineKeyboardButton("🔑 Ozon Performance (/set_performance)", callback_data="mmenu_run:set_performance")],
+                [InlineKeyboardButton("📦 Настройки поставок", callback_data="mmenu:supply_settings")],
+                [InlineKeyboardButton("◀️ Назад",             callback_data="mmenu:back")],
+            ],
+        ),
         "content": (
-            "✍️ <b>Контент и исследования</b>\nВыбери действие:",
+            "✍️ <b>Контент и планы</b>\nВыбери действие:",
             [
                 [InlineKeyboardButton("✍️ Написать текст (Элина)",    callback_data="mmenu_run:write")],
                 [
@@ -1627,22 +1675,24 @@ class MartaAgent(BaseAgent):
                     InlineKeyboardButton("✍️ SEO тексты (Элина)",       callback_data="mmenu_run:seo_elina"),
                 ],
                 [InlineKeyboardButton("🔍 Исследование (Каспер)",      callback_data="mmenu_run:research")],
-                [InlineKeyboardButton("⏰ Напоминание (Алекс)",        callback_data="mmenu_run:remind")],
+                [
+                    InlineKeyboardButton("⏰ Напоминание (Алекс)",      callback_data="mmenu_run:remind"),
+                    InlineKeyboardButton("📋 Активные планы",          callback_data="mmenu_run:plans"),
+                ],
+                [
+                    InlineKeyboardButton("🏛️ Дайджест тендеров",       callback_data="mmenu_run:tenders"),
+                    InlineKeyboardButton("📊 Аналитика по тендерам",   callback_data="mmenu_run:tenders_report"),
+                ],
+                [
+                    InlineKeyboardButton("🗺️ Roadmap (/roadmap)",      callback_data="mmenu_run:roadmap"),
+                    InlineKeyboardButton("🔎 Анализ тендера (/tender)", callback_data="mmenu_run:tender"),
+                ],
                 [InlineKeyboardButton("◀️ Назад",                      callback_data="mmenu:back")],
             ],
         ),
-        "tenders": (
-            "🏛️ <b>Тендеры 44-ФЗ — Тина</b>\nВыбери действие:\n<i>💡 Тина присылает дайджест автоматически в 08:00 МСК.</i>",
-            [
-                [InlineKeyboardButton("🏛️ Дайджест тендеров",    callback_data="mmenu_run:tenders")],
-                [InlineKeyboardButton("📊 Аналитика по тендерам", callback_data="mmenu_run:tenders_report")],
-                [InlineKeyboardButton("◀️ Назад",                 callback_data="mmenu:back")],
-            ],
-        ),
         "office": (
-            "⚙️ <b>Офис — Марта + Алекс</b>\nВыбери действие:",
+            "⚙️ <b>Служебное — только для владельца/разработчика</b>\nТехническая диагностика:",
             [
-                [InlineKeyboardButton("📋 Активные планы",  callback_data="mmenu_run:plans")],
                 [
                     InlineKeyboardButton("📊 Статус очереди", callback_data="mmenu_run:queue_status"),
                     InlineKeyboardButton("📜 История задач",  callback_data="mmenu_run:queue_history"),
@@ -1651,7 +1701,11 @@ class MartaAgent(BaseAgent):
                     InlineKeyboardButton("🔴 Ошибки (24ч)",   callback_data="mmenu_run:logs_all"),
                     InlineKeyboardButton("📡 Ошибки WB рекл", callback_data="mmenu_run:logs_adv"),
                 ],
-                [InlineKeyboardButton("📦 Настройки поставок", callback_data="mmenu:supply_settings")],
+                [InlineKeyboardButton("🧪 Тест push", callback_data="mmenu_run:testpush")],
+                [
+                    InlineKeyboardButton("🔁 Сброс проверки отзывов (/reset_checked)", callback_data="mmenu_run:reset_checked"),
+                    InlineKeyboardButton("🔁 Сброс заказов (/reset_orders)",           callback_data="mmenu_run:reset_orders"),
+                ],
                 [InlineKeyboardButton("◀️ Назад",           callback_data="mmenu:back")],
             ],
         ),
@@ -1714,7 +1768,7 @@ class MartaAgent(BaseAgent):
                         InlineKeyboardButton("🛡 21 дн", callback_data="msset:safety:21"),
                         InlineKeyboardButton("🛡 30 дн", callback_data="msset:safety:30"),
                     ],
-                    [InlineKeyboardButton("◀️ Назад", callback_data="mmenu:office")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="mmenu:shops_catalog")],
                 ]),
             )
             return
@@ -1787,6 +1841,28 @@ class MartaAgent(BaseAgent):
                 )
                 return
 
+            if cmd == "dashboard":
+                if config.DASHBOARD_URL:
+                    from telegram import WebAppInfo
+                    url = f"{config.DASHBOARD_URL}?token={config.DASHBOARD_TOKEN}" if config.DASHBOARD_TOKEN else config.DASHBOARD_URL
+                    markup = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("📊 Открыть дашборд", web_app=WebAppInfo(url=url))
+                    ]])
+                    await query.message.reply_text("Аналитика продаж WB + Ozon:", reply_markup=markup)
+                else:
+                    await query.message.reply_text("⚠️ Дашборд не настроен (DASHBOARD_URL пуст).")
+                return
+
+            hint = self._MMENU_HINTS.get(cmd)
+            if hint:
+                hint_cmd, hint_desc = hint
+                await query.message.reply_text(
+                    f"ℹ️ Отправь команду <code>{hint_cmd}</code> — {hint_desc}.\n"
+                    "Она интерактивная/денежно-чувствительная, поэтому запускается прямым вводом, не через меню.",
+                    parse_mode="HTML",
+                )
+                return
+
             # Все остальные команды — передаём агенту
             action = self._MMENU_ACTIONS.get(cmd)
             if not action:
@@ -1811,53 +1887,17 @@ class MartaAgent(BaseAgent):
         return [
             BotCommand("start", "Главное меню и помощь"),
             BotCommand("menu", "🗂️ Быстрое меню всех команд"),
+            BotCommand("help", "❓ Полный список команд"),
+            BotCommand("dashboard", "📊 Открыть дашборд аналитики"),
             BotCommand("status", "Состояние офиса и активные задачи"),
             BotCommand("history", "Последние 10 задач"),
-            BotCommand("logs", "🔴 Ошибки за 24ч (/logs adv — только реклама)"),
-            # ── Питер ─────────────────────────────────────────────────────
             BotCommand("report", "📊 Отчёт по продажам"),
-            BotCommand("order", "📬 Заказать ли у поставщика (30/60/90 дней)"),
-            BotCommand("supply", "🚚 План поставки по складам"),
-            BotCommand("drr", "💸 Доля рекламных расходов"),
-            BotCommand("abc", "🔠 ABC-анализ товаров"),
-            BotCommand("funnel", "🔽 Воронка конверсии"),
-            BotCommand("returns", "↩️ Анализ возвратов"),
             BotCommand("audit", "🔍 30-дневный аудит магазина"),
-            BotCommand("seo_audit", "🔤 SEO-аудит карточек"),
-            BotCommand("analyze", "🧠 Произвольный бизнес-анализ"),
-            # ── Макс ──────────────────────────────────────────────────────
-            BotCommand("sync", "🔄 Синхронизировать данные"),
-            BotCommand("sync_fin", "💰 Финансовый отчёт за 90 дней"),
-            BotCommand("sync_adv", "📣 Статистика рекламы"),
-            BotCommand("sync_funnel", "🔽 Синхронизация воронки"),
-            BotCommand("sync_returns", "↩️ Синхронизация возвратов"),
-            BotCommand("sync_cards", "🃏 Контент карточек"),
+            BotCommand("drr", "💸 Доля рекламных расходов"),
             BotCommand("reviews", "⭐ Обработать отзывы"),
             BotCommand("questions", "❓ Вопросы покупателей"),
             BotCommand("pending", "⏳ Ожидают модерации"),
-            BotCommand("products", "📦 Список товаров"),
-            BotCommand("shop_kpi", "📊 KPI магазина"),
-            BotCommand("data_status", "🗂️ Статус данных"),
-            BotCommand("shops", "🏪 Мои магазины"),
-            BotCommand("seo_check", "🔻 Падение позиций ключей"),
-            BotCommand("bid_adjust", "🎯 Рекомендации по ставкам"),
-            BotCommand("campaigns",    "📣 Управление кампаниями Ozon"),
-            BotCommand("promotions",   "🎁 Акции Ozon — анализ маржи"),
-            BotCommand("new_campaign", "➕ Создать кампанию Ozon из топ-товаров"),
-            BotCommand("margin", "📐 Проверить маржу товара"),
-            BotCommand("apply_prices", "✅ Применить рекомендованные цены"),
-            # ── Другие агенты ─────────────────────────────────────────────
-            BotCommand("write", "✍️ Элина: написать текст"),
-            BotCommand("post", "📝 Элина: написать пост"),
-            BotCommand("research", "🔍 Каспер: исследовать тему"),
-            BotCommand("plans",  "📋 Алекс: мои планы и задачи"),
-            BotCommand("remind", "⏰ Алекс: напоминание"),
-            BotCommand("tenders", "🏛️ Тина: дайджест тендеров"),
-            BotCommand("tenders_report", "📑 Тина: аналитика тендеров"),
-            # ── Служебные ─────────────────────────────────────────────────
-            BotCommand("delegate", "Передать задачу конкретному агенту"),
-            BotCommand("cancel", "Отменить задачу из очереди"),
-            BotCommand("reset", "Очистить историю диалога"),
+            BotCommand("sync", "🔄 Синхронизировать данные"),
         ]
 
     # ------------------------------------------------------------------ #
@@ -2198,7 +2238,7 @@ class MartaAgent(BaseAgent):
                     InlineKeyboardButton("🛡 21 дн", callback_data="msset:safety:21"),
                     InlineKeyboardButton("🛡 30 дн", callback_data="msset:safety:30"),
                 ],
-                [InlineKeyboardButton("◀️ Назад", callback_data="mmenu:office")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="mmenu:shops_catalog")],
             ]),
         )
 
