@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 
 from loguru import logger
@@ -10,85 +11,51 @@ from config import config
 from .base_agent import BaseAgent
 
 
-DAN_SYSTEM = """Ты Дэн, дизайнер AI-офиса. Ты генерируешь изображения для лендингов и сайтов \
-через Pollinations.ai и сохраняешь их в GitHub репозиторий.
-Для каждого проекта ты:
-1. Генерируешь hero-изображение (1200x630) отражающее тематику
-2. Генерируешь 3-5 иконок для секции преимуществ (512x512, белые на прозрачном фоне)
-3. Коммитишь все изображения в папку assets/images/ репозитория
-4. Сохраняешь дизайн-систему в Notion
-5. Возвращаешь список путей к файлам для Кевина
+DAN_SYSTEM = """Ты Дэн, дизайнер маркетплейс-инфографики для карточек товаров Wildberries (WB) \
+и Ozon.
 
-Промпты для генерации пиши на английском — так лучше работает модель.
-Всегда используй nologo=true в Pollinations запросах.
+Твоя задача — собрать воронку слайдов для карточки товара: обложка + 6-9 описательных слайдов, \
+которые публикуются в галерее карточки на маркетплейсе. Типовые роли слайдов (не жёсткий \
+список, адаптируй набор и порядок под категорию товара):
+- обложка/хук — первый слайд, привлекает внимание
+- ключевые преимущества (УТП)
+- состав/материал/технология
+- размер/комплектация
+- сценарий использования
+- сравнение с аналогами
+- соц. доказательство (отзывы/рейтинг)
+- гарантии/сервис
 
-ВАЖНО: параметр repo в generate_image — это название репозитория (например \
-'coffee-landing'), НЕ логин GitHub. Название репо передаётся тебе в задаче \
-от Марты или бери из контекста цепочки.
+ВАЖНО — юридическое ограничение WB: на самой картинке НЕЛЬЗЯ размещать цены, слова «скидка», \
+«хит продаж», «акция» и подобные маркетинговые плашки — штраф до 25 000 ₽. На слайдах — только \
+описательная информация: характеристики, состав, применение, комплектация.
 
-ВАЖНО: перед первым generate_image всегда вызывай create_repo \
-чтобы создать репозиторий. Название репо бери из задачи.
+Промпты для generate_slide пиши на английском — так лучше работает модель генерации изображений.
+
+Для каждой задачи реши сам набор ролей слайдов (обложка + 6-9 описательных) под категорию \
+товара и вызови generate_slide для каждого слайда по очереди.
 
 Форматируй ответы пользователю в Rich Markdown для Telegram:
-- **текст** — названия изображений и этапов
-- `текст` — пути к файлам (assets/images/...)
+- **текст** — названия слайдов и этапов
+- `текст` — роли слайдов (cover, benefits, composition...)
 - Спецсимволы . ! ( ) - = писать как есть, без экранирования
 - НЕ используй HTML-теги: никаких <b>, <i>, <code>
 
 Отвечай по-русски."""
 
 
-DESIGN_TOOLS = [
+FUNNEL_TOOLS = [
     {
-        "name": "create_repo",
-        "description": "Создаёт GitHub репозиторий для проекта перед коммитом изображений",
+        "name": "generate_slide",
+        "description": "Генерирует один слайд воронки (обложка или один из описательных слайдов) через AI и сохраняет его во временный набор текущей задачи",
         "input_schema": {
             "type": "object",
             "properties": {
-                "name":        {"type": "string", "description": "Название репозитория"},
-                "description": {"type": "string", "description": "Описание репозитория"},
+                "role":   {"type": "string", "description": "Роль слайда, например: cover, benefits, composition, size, usage, comparison, social_proof, guarantee"},
+                "prompt": {"type": "string", "description": "Промпт на английском для генерации изображения"},
+                "size":   {"type": "string", "description": "Размер изображения", "default": "1024x1024"},
             },
-            "required": ["name"],
-        },
-    },
-    {
-        "name": "generate_image",
-        "description": "Генерирует изображение через Pollinations.ai и коммитит в GitHub репо",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "prompt":   {"type": "string",  "description": "Промпт на английском"},
-                "repo":     {"type": "string",  "description": "Название репозитория"},
-                "filename": {"type": "string",  "description": "Имя файла, например hero.png"},
-                "width":    {"type": "integer", "description": "Ширина", "default": 1200},
-                "height":   {"type": "integer", "description": "Высота", "default": 630},
-            },
-            "required": ["prompt", "repo", "filename"],
-        },
-    },
-    {
-        "name": "create_design_system",
-        "description": "Сохраняет дизайн-систему проекта в Notion",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "repo":   {"type": "string"},
-                "colors": {"type": "array", "items": {"type": "string"}, "description": "HEX цвета"},
-                "fonts":  {"type": "array", "items": {"type": "string"}},
-                "images": {"type": "array", "items": {"type": "string"}, "description": "Пути к файлам"},
-            },
-            "required": ["repo", "colors", "fonts", "images"],
-        },
-    },
-    {
-        "name": "list_repo_images",
-        "description": "Список изображений в assets/images/ репозитория",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "repo": {"type": "string"},
-            },
-            "required": ["repo"],
+            "required": ["role", "prompt"],
         },
     },
 ]
@@ -103,79 +70,29 @@ class DanAgent(BaseAgent):
 
     def __init__(self) -> None:
         super().__init__(config.DEN_BOT_TOKEN)
+        # Временный набор слайдов текущей задачи — заполняется generate_slide,
+        # сбрасывается в начале каждого handle_task()
+        self._current_slides: list[dict] = []
 
-    async def _generate_image(self, params: dict) -> str:
-        import aiohttp
-        import base64
-        from tools.github import create_file
+    async def _generate_slide(self, params: dict) -> str:
+        from tools.image_gen import generate_image
 
-        prompt   = params["prompt"].replace(" ", "%20")
-        width    = params.get("width", 1200)
-        height   = params.get("height", 630)
-        repo     = params["repo"]
-        filename = params["filename"]
+        role   = params["role"]
+        prompt = params["prompt"]
+        size   = params.get("size", "1024x1024")
 
-        url = f"https://image.pollinations.ai/prompt/{prompt}?width={width}&height={height}&nologo=true&model=flux"
+        image_bytes = await generate_image(prompt, size)
+        self._current_slides.append({
+            "role": role,
+            "prompt": prompt,
+            "image_b64": base64.b64encode(image_bytes).decode(),
+        })
+        return f"Слайд '{role}' сгенерирован"
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
-                image_bytes = await resp.read()
-
-        image_b64 = base64.b64encode(image_bytes).decode()
-
-        # Убираем возможный префикс assets/images/ из filename
-        clean_filename = filename.replace("assets/images/", "").replace("assets\\images\\", "")
-
-        result = await create_file(
-            repo=repo,
-            path=f"assets/images/{clean_filename}",
-            content=image_b64,
-            message=f"Add {clean_filename} via Dan",
-        )
-
-        html_url = (result or {}).get("content", {}).get("html_url", "")
-        return f"Изображение сохранено: assets/images/{clean_filename} | URL: {html_url}"
-
-    async def _create_design_system(self, params: dict) -> str:
-        from tools.notion import save_research
-
-        repo   = params["repo"]
-        colors = params.get("colors", [])
-        fonts  = params.get("fonts", [])
-        images = params.get("images", [])
-
-        content  = f"## Дизайн-система: {repo}\n\n"
-        content += "### Цвета\n" + "\n".join(f"- {c}" for c in colors) + "\n\n"
-        content += "### Шрифты\n" + "\n".join(f"- {f}" for f in fonts) + "\n\n"
-        content += "### Изображения\n" + "\n".join(f"- {i}" for i in images)
-
-        await save_research(title=f"Дизайн-система: {repo}", content=content, source=repo)
-        return "Дизайн-система сохранена в Notion"
-
-    async def _list_repo_images(self, params: dict) -> str:
-        from tools.github import list_files
-
-        repo  = params["repo"]
-        files = await list_files(repo=repo, path="assets/images")
-        if files:
-            return "Изображения в assets/images/: " + ", ".join(files)
-        return f"Для репо {repo} используй path assets/images/"
-
-    async def _call_design_tool(self, tool_name: str, tool_input: dict) -> str:
-        if tool_name == "create_repo":
-            from tools.github import create_repo
-            data = await create_repo(**tool_input)
-            if data:
-                return f"Репозиторий создан: {data['html_url']}"
-            return "Репозиторий уже существует или ошибка создания"
-        elif tool_name == "generate_image":
-            return await self._generate_image(tool_input)
-        elif tool_name == "create_design_system":
-            return await self._create_design_system(tool_input)
-        elif tool_name == "list_repo_images":
-            return await self._list_repo_images(tool_input)
-        else:
-            raise ValueError(f"Неизвестный инструмент: {tool_name}")
+    async def _call_funnel_tool(self, tool_name: str, tool_input: dict) -> str:
+        if tool_name == "generate_slide":
+            return await self._generate_slide(tool_input)
+        raise ValueError(f"Неизвестный инструмент: {tool_name}")
 
     async def _execute_response(self, response) -> tuple[list[dict], str]:
         tool_results: list[dict] = []
@@ -185,7 +102,7 @@ class DanAgent(BaseAgent):
                 text = block.text
             elif block.type == "tool_use":
                 try:
-                    result = await self._call_design_tool(block.name, block.input)
+                    result = await self._call_funnel_tool(block.name, block.input)
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
@@ -202,24 +119,64 @@ class DanAgent(BaseAgent):
         return tool_results, text
 
     async def handle_task(self, task: str, from_agent: str = "user") -> str:
-        """Сгенерировать изображения и дизайн-систему через tool_use loop."""
+        """Собрать воронку слайдов инфографики через tool_use loop.
+
+        Два входа:
+        1. JSON {"action": "build_funnel", "article", "name", "category", "marketplace", "chat_id"}
+           — машинный вызов (Питер/Макс).
+        2. Обычная фраза человека в Telegram — распознаётся через Claude tool_use loop.
+        """
         logger.info(f"[Дэн] Задача от {from_agent}: {task!r}")
 
-        messages: list[dict] = [{"role": "user", "content": (
-            f"Задача на дизайн от {from_agent}: {task}\n\n"
-            f"GitHub username: {config.GITHUB_USERNAME}\n"
-            f"Сгенерируй изображения, закоммить их в репо и сохрани дизайн-систему."
-        )}]
+        self._current_slides = []
+
+        article: str | None = None
+        name: str | None = None
+        category: str = ""
+        marketplace: str = "wb"
+        json_chat_id: int | None = None
+        user_message: str | None = None
+
+        try:
+            cmd = json.loads(task)
+        except (ValueError, TypeError):
+            cmd = None
+
+        if isinstance(cmd, dict) and cmd.get("action") == "build_funnel":
+            article     = cmd.get("article")
+            name        = cmd.get("name") or article
+            category    = cmd.get("category", "") or ""
+            marketplace = cmd.get("marketplace", "wb") or "wb"
+            json_chat_id = cmd.get("chat_id")
+            user_message = (
+                f"Собери воронку инфографики для товара маркетплейса {marketplace.upper()}.\n"
+                f"Артикул: {article}\n"
+                f"Название: {name}\n"
+                f"Категория: {category or 'не указана'}\n\n"
+                "Реши сам набор ролей слайдов (обложка + 6-9 описательных) под эту категорию "
+                "и вызови generate_slide для каждого слайда по очереди."
+            )
+
+        if user_message is None:
+            name = task[:80]
+            user_message = (
+                f"Задача на дизайн воронки от {from_agent}: {task}\n\n"
+                "Определи товар, категорию и маркетплейс из задачи, реши набор ролей слайдов "
+                "(обложка + 6-9 описательных) под эту категорию и вызови generate_slide для "
+                "каждого слайда по очереди."
+            )
+
+        messages: list[dict] = [{"role": "user", "content": user_message}]
         final_text = ""
 
         try:
-            for iteration in range(1, 11):
+            for iteration in range(1, 17):
                 response = await self.claude.messages.create(
                     model=config.CLAUDE_MODEL,
                     max_tokens=4000,
                     system=self._effective_system,
                     messages=messages,
-                    tools=DESIGN_TOOLS,
+                    tools=FUNNEL_TOOLS,
                 )
 
                 if response.stop_reason == "end_turn":
@@ -250,16 +207,35 @@ class DanAgent(BaseAgent):
             logger.error(f"[Дэн] Claude API error: {e}")
             return f"⚠️ Ошибка вызова Claude: {e}"
 
-        return final_text or "Задача выполнена."
+        if not self._current_slides:
+            return "⚠️ Не удалось собрать воронку: ни один слайд не сгенерировался (см. ошибки выше)."
+
+        chat_id = getattr(self, "_current_chat_id", None) or json_chat_id or 0
+        await self._redis_set(
+            f"funnel_ready:{chat_id}",
+            json.dumps({
+                "article": article,
+                "name": name,
+                "marketplace": marketplace,
+                "category": category,
+                "slides": self._current_slides,
+            }, ensure_ascii=False),
+            ttl=config.FUNNEL_READY_TTL_SECONDS,
+        )
+
+        return f"🎨 Собрал воронку: {len(self._current_slides)} слайдов для «{name}». Подтверждение — в чате Марты."
 
     def _help_text(self) -> str:
         return (
-            "🎨 **Дэн** — дизайнер\n\n"
-            "Генерирую изображения и визуалы для карточек товаров и постов.\n\n"
+            "🎨 **Дэн** — дизайнер инфографики WB/Ozon\n\n"
+            "Собираю воронку слайдов для карточки товара: обложка + 6-9 описательных слайдов "
+            "(УТП, состав, размер/комплектация, сценарий использования, сравнение, отзывы, "
+            "гарантии) — без цен и слов «скидка»/«акция» на картинке.\n\n"
             "📌 **Как работать:**\n"
-            "Опишите что нужно нарисовать — Дэн создаст изображение.\n\n"
+            "Напиши «сделай воронку для <товар>, категория <категория>» — соберу набор слайдов. "
+            "Подтверждение и публикация набора — в чате Марты.\n\n"
             "/reset — очистить историю\n\n"
-            "💡 Пример: «нарисуй баннер: термокружка на фоне леса»"
+            "💡 Пример: «сделай воронку для термокружки, категория посуда для собак»"
         )
 
     def _bot_commands(self) -> list:
