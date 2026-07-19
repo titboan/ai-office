@@ -78,14 +78,9 @@ def _calc_cost(model: str, input_tokens: int, output_tokens: int) -> float:
 
 
 # Имена агентов для уведомлений в цепочках
-_AGENT_NAMES: dict[str, str] = {
-    "kasper": "🔍 Каспер",
-    "kevin":  "👨‍💻 Кевин",
-    "peter":  "📊 Питер",
-    "elina":  "✍️ Элина",
-    "alex":   "🗓️ Алекс",
-    "marta":  "👩‍💼 Марта",
-}
+from .registry import AGENTS, agent_label, agent_timeout
+
+_AGENT_NAMES: dict[str, str] = {k: agent_label(k) for k in AGENTS}
 
 
 def _build_context(prev_results: list[dict]) -> str:
@@ -891,16 +886,10 @@ class BaseAgent(ABC):
     #  Chain — продвижение цепочки агентов                                #
     # ------------------------------------------------------------------ #
 
-    _CHAIN_AGENT_EMOJI = {
-        "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
-        "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
-        "dan": "🎨", "tina": "📋", "digest": "📰",
-    }
-    _CHAIN_AGENT_NAME = {
-        "kasper": "Каспер", "kevin": "Кевин", "peter": "Питер",
-        "elina": "Элина", "alex": "Алекс", "marta": "Марта",
-        "dan": "Дэн", "tina": "Тина", "digest": "Дайджест",
-    }
+    _CHAIN_AGENT_EMOJI = {k: v["emoji"] for k, v in AGENTS.items()}
+    _CHAIN_AGENT_EMOJI["digest"] = "📰"
+    _CHAIN_AGENT_NAME = {k: v["name"] for k, v in AGENTS.items()}
+    _CHAIN_AGENT_NAME["digest"] = "Дайджест"
 
     @classmethod
     def _format_chain_completion_message(
@@ -1074,7 +1063,7 @@ class BaseAgent(ABC):
                 from_agent=self.agent_key,
                 correlation_id=completed_task.correlation_id,
                 priority=getattr(completed_task, "priority", 0),
-                timeout_seconds=600 if next_agent == "dan" else 300,
+                timeout_seconds=agent_timeout(next_agent),
             )
             if task_id:
                 enqueued_ids.append(task_id)
