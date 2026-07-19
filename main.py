@@ -548,6 +548,30 @@ async def run_all_async() -> None:
         )
     )
 
+    async def _missing_infographics_task():
+        """Ежедневно в MISSING_INFOGRAPHIC_HOUR_UTC — товары без инфографики получают AI-воронку от Дэна."""
+        from db import get_all_active_shops
+
+        if max_agent is None:
+            return
+        shops = await get_all_active_shops()
+        unique_chats = _unique_chats(shops)
+        for chat_id in unique_chats:
+            try:
+                await max_agent._check_missing_infographics(chat_id)
+                report_loop_success(f"missing_infographics:{chat_id}")
+            except Exception as e:
+                logger.error(f"[missing_infographics] chat_id={chat_id} ошибка: {e}")
+                await report_loop_failure(f"missing_infographics:{chat_id}", e)
+
+    asyncio.create_task(
+        run_scheduled_loop(
+            "missing_infographics",
+            _wait_daily_utc(getattr(config, "MISSING_INFOGRAPHIC_HOUR_UTC", 12), 0),
+            _missing_infographics_task,
+        )
+    )
+
     async def _promotions_weekly_task():
         """Еженедельно в понедельник 09:00 МСК (06:00 UTC) — сводка акций WB/Ozon."""
         from db import get_all_active_shops

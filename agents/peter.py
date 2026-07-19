@@ -2636,6 +2636,39 @@ net_margin_period.wb и net_margin_period.ozon — РАЗНЫЕ окна дат 
                         "article": article, "name": name,
                         "marketplace": mp, "ctr_before": ctr_val,
                     })
+                    # Авто-триггер Peter→Dan: параллельно с ручным флоу (pending_infographic
+                    # ниже, где пользователь сам присылает фото) сразу ставим Дэну задачу на
+                    # автосборку AI-воронки — пользователю останется только подтвердить альбом
+                    # в Telegram (Фаза 5, plans/2026-07-19-dan-marketplace-funnel.md).
+                    try:
+                        from db import get_pool
+                        pool = await get_pool()
+                        async with pool.acquire() as conn:
+                            cat_row = await conn.fetchrow(
+                                """
+                                SELECT category FROM product_mapping
+                                WHERE chat_id = $1 AND (wb_article = $2 OR display_name ILIKE $3)
+                                LIMIT 1
+                                """,
+                                chat_id, article, f"%{name}%",
+                            )
+                        category = (cat_row["category"] if cat_row else "") or ""
+                        await enqueue_task(
+                            assigned_agent="dan",
+                            payload=json.dumps({
+                                "action": "build_funnel",
+                                "article": article,
+                                "name": name,
+                                "category": category,
+                                "marketplace": mp,
+                                "chat_id": chat_id,
+                            }, ensure_ascii=False),
+                            from_agent="peter",
+                            chat_id=chat_id,
+                            task_type="build_funnel",
+                        )
+                    except Exception as _e:
+                        logger.warning(f"[Питер/daily_digest] enqueue dan build_funnel ошибка: {_e}")
             if infographic_items:
                 await self._redis_set(
                     f"pending_infographic:{chat_id}",
@@ -2652,8 +2685,9 @@ net_margin_period.wb и net_margin_period.ozon — РАЗНЫЕ окна дат 
                     chat_id,
                     f"📸 **Нужна новая инфографика**\n\n"
                     f"Обнаружены товары с низким CTR:\n\n{lines}\n\n"
-                    f"Подготовьте новые карточки и пришлите фото в бот — "
-                    f"Макс загрузит на WB автоматически.",
+                    f"Дэн уже собирает AI-воронку и пришлёт альбом на подтверждение — "
+                    f"а если хотите сделать карточку сами, пришлите своё фото в бот, "
+                    f"Макс загрузит его на WB автоматически.",
                     bot_token=config.MARTA_BOT_TOKEN,
                 )
 

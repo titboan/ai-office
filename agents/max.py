@@ -5564,6 +5564,73 @@ class MaxAgent(BaseAgent):
         except Exception as e:
             logger.error(f"[Макс/stock_alerts] ошибка: {e}", exc_info=True)
 
+    async def _check_missing_infographics(self, chat_id: int) -> None:
+        """Товары, у которых никогда не было инфографики — ставит Дэну задачу на автосборку
+        воронки. Дедупликация через Redis (не предлагать один товар каждую неделю).
+
+        prices_updated_at IS NOT NULL — признак, что товар реально подключён (хотя бы раз
+        синхронизировался); отдельного поля даты создания строки в product_mapping нет
+        (Фаза 5, plans/2026-07-19-dan-marketplace-funnel.md)."""
+        from db import get_pool
+        from task_queue import create_task
+
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT wb_article, ozon_offer_id, display_name, category
+                    FROM product_mapping
+                    WHERE chat_id = $1
+                      AND infographic_updated_at IS NULL
+                      AND prices_updated_at IS NOT NULL
+                """, chat_id)
+
+            queued_names: list[str] = []
+            for r in rows:
+                if len(queued_names) >= 3:
+                    break
+                if r["wb_article"]:
+                    marketplace, article = "wb", r["wb_article"]
+                elif r["ozon_offer_id"]:
+                    marketplace, article = "ozon", r["ozon_offer_id"]
+                else:
+                    continue  # нет артикула ни на одной площадке
+
+                rkey = f"missing_infographic:{chat_id}:{marketplace}:{article}"
+                if await self._redis_get(rkey):
+                    continue
+                await self._redis_set(rkey, "1", ttl=7 * 86_400)
+
+                name = r["display_name"] or article
+                try:
+                    await create_task(
+                        assigned_agent="dan",
+                        payload=json.dumps({
+                            "action": "build_funnel",
+                            "article": article,
+                            "name": name,
+                            "category": r["category"] or "",
+                            "marketplace": marketplace,
+                            "chat_id": chat_id,
+                        }, ensure_ascii=False),
+                        from_agent="max",
+                        chat_id=chat_id,
+                        task_type="build_funnel",
+                    )
+                    queued_names.append(name)
+                except Exception as _e:
+                    logger.warning(f"[Макс/missing_infographics] enqueue dan ошибка: {_e}")
+
+            if queued_names:
+                await self._notify_user(
+                    chat_id,
+                    f"🎨 Дэн собирает AI-воронку для {len(queued_names)} товаров без "
+                    f"инфографики: {', '.join(queued_names)} — пришлёт альбом на подтверждение.",
+                    bot_token=config.MARTA_BOT_TOKEN,
+                )
+        except Exception as e:
+            logger.error(f"[Макс/missing_infographics] chat={chat_id} ошибка: {e}", exc_info=True)
+
     async def _handle_stock_remind_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:

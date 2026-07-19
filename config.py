@@ -221,3 +221,10 @@ config.FUNNEL_READY_TTL_SECONDS = 24 * 3600  # 24 часа
 # для загрузки набора картинок на карточку Ozon/WB через их URL-based media API
 # (Фаза 3, plans/2026-07-19-dan-marketplace-funnel.md)
 config.GITHUB_ASSETS_REPO = "ai-office-assets"
+
+# Ежедневный алерт Макса: товары без инфографики получают AI-воронку от Дэна.
+# 12:00 UTC = 15:00 МСК — свободный час, не пересекается с другими джобами
+# (snapshot 01:00, kpi_sync 02:00, funnel_sync 02:30, adv_sync 03:00, auto_bid 03:30,
+# tender_scheduler 05:00, competitor_scan/promotions_weekly/fin_sync 06:00-06:01,
+# weekly_audit 07:00, stock_alerts 10:00, daily_digest 18:00) (Фаза 5, plans/2026-07-19-dan-marketplace-funnel.md)
+config.MISSING_INFOGRAPHIC_HOUR_UTC = 12
