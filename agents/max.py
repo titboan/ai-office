@@ -351,6 +351,8 @@ class MaxAgent(BaseAgent):
                     file_id=cmd["file_id"],
                     name=cmd.get("name", cmd["article"]),
                 )
+            elif isinstance(cmd, dict) and cmd.get("action") == "upload_funnel":
+                return await self._upload_funnel(chat_id=cmd["chat_id"])
         except (ValueError, TypeError, KeyError):
             pass
         if task.startswith("__"):
@@ -536,6 +538,121 @@ class MaxAgent(BaseAgent):
             )
 
         return f"❌ Маркетплейс {marketplace} пока не поддерживается для авто-загрузки"
+
+    async def _upload_funnel(self, chat_id: int) -> str:
+        """Захостить и опубликовать набор слайдов воронки Дэна на WB или Ozon.
+
+        Читает `funnel_ready:{chat_id}` из Redis (кладёт Дэн, подтверждает Марта —
+        см. plans/2026-07-19-dan-marketplace-funnel.md, Фаза 4). Redis-ключ чистится
+        только при успешной публикации — при любой неудаче (хостинг, маппинг товара,
+        HTTP-ошибка маркетплейса) набор остаётся в Redis, чтобы публикацию можно было
+        повторить без пересборки воронки у Дэна.
+        """
+        import json as _json
+        from db import get_pool, get_marketplace_shops
+        from tools.image_gen import host_slides
+
+        pending_raw = await self._redis_get(f"funnel_ready:{chat_id}")
+        if not pending_raw:
+            return "❌ Сессия воронки истекла — попроси Дэна собрать заново."
+
+        try:
+            funnel = _json.loads(pending_raw)
+            article     = funnel["article"]
+            name        = funnel.get("name") or article
+            marketplace = funnel.get("marketplace", "wb") or "wb"
+            slides      = funnel["slides"]
+        except Exception as e:
+            return f"❌ Ошибка данных воронки: {e}"
+
+        urls = await host_slides(article, slides)
+        if not urls:
+            return "❌ Не удалось захостить изображения воронки."
+
+        pool = await get_pool()
+
+        if marketplace == "wb":
+            from tools.marketplace import WBClient
+
+            shops = await get_marketplace_shops(chat_id)
+            wb_shop = next((s for s in shops if s["marketplace"] == "wb"), None)
+            if not wb_shop:
+                return "❌ Магазин WB не найден — добавь токен через /setup"
+
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow("""
+                    SELECT wb_nm_id FROM product_mapping
+                    WHERE chat_id = $1
+                      AND (wb_article = $2 OR display_name ILIKE $3)
+                    LIMIT 1
+                """, chat_id, article, f"%{article}%")
+
+            if not row or not row["wb_nm_id"]:
+                return (
+                    f"❌ nm_id не найден для артикула «{article}».\n"
+                    f"Запусти /sync чтобы обновить маппинг товаров."
+                )
+
+            nm_id = row["wb_nm_id"]
+            wb = WBClient(wb_shop["api_token"])
+            ok = await wb.upload_product_photos_by_url(nm_id, urls)
+            if not ok:
+                return f"❌ WB вернул ошибку при загрузке воронки для «{name}»"
+
+            async with pool.acquire() as conn:
+                await conn.execute("""
+                    UPDATE product_mapping
+                    SET infographic_updated_at = NOW()
+                    WHERE chat_id = $1 AND wb_nm_id = $2
+                """, chat_id, nm_id)
+
+        elif marketplace == "ozon":
+            from tools.marketplace import OzonClient
+
+            shops = await get_marketplace_shops(chat_id)
+            ozon_shop = next((s for s in shops if s["marketplace"] == "ozon"), None)
+            if not ozon_shop:
+                return "❌ Магазин Ozon не найден — добавь токен через /setup"
+
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow("""
+                    SELECT ozon_offer_id FROM product_mapping
+                    WHERE chat_id = $1
+                      AND (ozon_offer_id = $2 OR display_name ILIKE $3)
+                    LIMIT 1
+                """, chat_id, article, f"%{article}%")
+
+            if not row or not row["ozon_offer_id"]:
+                return (
+                    f"❌ offer_id не найден для артикула «{article}».\n"
+                    f"Запусти /sync чтобы обновить маппинг товаров."
+                )
+
+            offer_id = row["ozon_offer_id"]
+            ozon = OzonClient(ozon_shop["api_token"], ozon_shop.get("client_id", ""))
+            product_id = await ozon.get_product_id(offer_id)
+            if not product_id:
+                return f"❌ Не удалось найти product_id Ozon для offer_id «{offer_id}»"
+
+            ok = await ozon.upload_product_pictures(product_id, urls)
+            if not ok:
+                return f"❌ Ozon вернул ошибку при загрузке воронки для «{name}»"
+
+            async with pool.acquire() as conn:
+                await conn.execute("""
+                    UPDATE product_mapping
+                    SET infographic_updated_at = NOW()
+                    WHERE chat_id = $1 AND ozon_offer_id = $2
+                """, chat_id, offer_id)
+
+        else:
+            return f"❌ Маркетплейс {marketplace} не поддерживается для воронки."
+
+        await self._redis_set(f"funnel_ready:{chat_id}", "", ttl=1)
+        return (
+            f"✅ Воронка опубликована на {marketplace.upper()}: *{name}* ({len(urls)} слайдов).\n"
+            f"Питер отслеживает CTR — результат через 14 дней."
+        )
 
     # ------------------------------------------------------------------ #
     #  handle_message — блокируем Claude во время онбординга              #

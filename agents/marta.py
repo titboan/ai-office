@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import anthropic
 from loguru import logger
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, ReplyKeyboardMarkup
 from telegram.ext import CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 from config import config
@@ -949,6 +949,119 @@ class MartaAgent(BaseAgent):
             f"✅ Передала Максу — загружу на {item['marketplace'].upper()} в ближайшие минуты.\n"
             f"Через 14 дней Питер покажет CTR до/после."
         )
+
+    async def _handle_funnel_regenerate(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Перегенерировать один слайд воронки Дэна: callback_data 'funnel_regenerate:{index}'."""
+        import base64
+
+        query = update.callback_query
+        await query.answer()
+        chat_id = update.effective_chat.id
+        data = query.data
+
+        try:
+            idx = int(data.split(":")[1])
+        except (IndexError, ValueError):
+            await query.answer("Ошибка: неверный формат кнопки.", show_alert=True)
+            return
+
+        pending_raw = await self._redis_get(f"funnel_ready:{chat_id}")
+        if not pending_raw:
+            await query.answer("Сессия истекла — собери воронку заново", show_alert=True)
+            return
+
+        try:
+            funnel = json.loads(pending_raw)
+            slides = funnel["slides"]
+        except Exception:
+            await query.answer("Ошибка данных — собери воронку заново", show_alert=True)
+            return
+
+        if idx >= len(slides):
+            await query.answer("Слайд не найден.", show_alert=True)
+            return
+
+        slide = slides[idx]
+        message_id = slide.get("message_id")
+        if not message_id:
+            await query.answer(
+                "Слайд не был отправлен в Telegram (лимит альбома 10) — перегенерировать нельзя.",
+                show_alert=True,
+            )
+            return
+
+        from tools.image_gen import generate_image
+        try:
+            new_bytes = await generate_image(slide["prompt"], slide.get("size", "1024x1024"))
+        except Exception as e:
+            logger.warning(f"[Марта] funnel_regenerate: generate_image упал ({e})")
+            await query.answer("⚠️ Не удалось перегенерировать, попробуй ещё раз", show_alert=True)
+            return
+
+        slide["image_b64"] = base64.b64encode(new_bytes).decode()
+        await self._redis_set(
+            f"funnel_ready:{chat_id}",
+            json.dumps(funnel, ensure_ascii=False),
+            ttl=config.FUNNEL_READY_TTL_SECONDS,
+        )
+
+        try:
+            await context.bot.edit_message_media(
+                chat_id=chat_id,
+                message_id=message_id,
+                media=InputMediaPhoto(new_bytes, caption=slide["role"]),
+            )
+        except Exception as e:
+            logger.error(f"[Марта] funnel_regenerate: edit_message_media упал ({e})")
+            await query.answer(
+                "⚠️ Слайд перегенерирован, но не удалось обновить фото в Telegram", show_alert=True
+            )
+            return
+
+        await query.answer("🔄 Слайд обновлён")
+
+    async def _handle_funnel_publish_all(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Поставить Максу задачу публикации всей воронки: callback_data 'funnel_publish_all'."""
+        query = update.callback_query
+        await query.answer()
+        chat_id = update.effective_chat.id
+
+        pending_raw = await self._redis_get(f"funnel_ready:{chat_id}")
+        if not pending_raw:
+            await query.edit_message_text("Сессия истекла — собери воронку заново.")
+            return
+
+        from task_queue import create_task
+        payload = json.dumps({
+            "action": "upload_funnel",
+            "chat_id": chat_id,
+        }, ensure_ascii=False)
+        await create_task(
+            assigned_agent="max",
+            payload=payload,
+            from_agent="user",
+            chat_id=chat_id,
+            task_type="upload_funnel",
+        )
+
+        await query.edit_message_text(
+            "✅ Передала Максу — публикую воронку. Через 14 дней Питер покажет CTR до/после."
+        )
+
+    async def _handle_funnel_skip(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Отменить публикацию воронки: callback_data 'funnel_skip'."""
+        query = update.callback_query
+        await query.answer()
+        chat_id = update.effective_chat.id
+
+        await self._redis_set(f"funnel_ready:{chat_id}", "", ttl=1)
+        await query.edit_message_text("Ок, отменила публикацию воронки.")
 
     async def handle_photo(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -2608,6 +2721,9 @@ class MartaAgent(BaseAgent):
         self.app.add_handler(CallbackQueryHandler(self._handle_image_action, pattern="^img_action:"))
         self.app.add_handler(CallbackQueryHandler(self._handle_logs_callback, pattern="^logs:"))
         self.app.add_handler(CallbackQueryHandler(self._handle_infographic_callback, pattern="^infographic_"))
+        self.app.add_handler(CallbackQueryHandler(self._handle_funnel_regenerate, pattern="^funnel_regenerate:"))
+        self.app.add_handler(CallbackQueryHandler(self._handle_funnel_publish_all, pattern="^funnel_publish_all$"))
+        self.app.add_handler(CallbackQueryHandler(self._handle_funnel_skip, pattern="^funnel_skip$"))
         # Делегирование кнопок вопросов/отзывов Максу (когда уведомление пришло через Марту)
         self.app.add_handler(CallbackQueryHandler(self._delegate_max_question, pattern=r"^qrev:"))
         self.app.add_handler(CallbackQueryHandler(self._delegate_max_review,   pattern=r"^rev:"))

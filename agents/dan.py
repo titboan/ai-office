@@ -4,7 +4,7 @@ import base64
 import json
 
 from loguru import logger
-from telegram import Update
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from config import config
@@ -211,17 +211,64 @@ class DanAgent(BaseAgent):
             return "⚠️ Не удалось собрать воронку: ни один слайд не сгенерировался (см. ошибки выше)."
 
         chat_id = getattr(self, "_current_chat_id", None) or json_chat_id or 0
-        await self._redis_set(
-            f"funnel_ready:{chat_id}",
-            json.dumps({
-                "article": article,
-                "name": name,
-                "marketplace": marketplace,
-                "category": category,
-                "slides": self._current_slides,
-            }, ensure_ascii=False),
-            ttl=config.FUNNEL_READY_TTL_SECONDS,
-        )
+
+        async def _save_funnel_state() -> None:
+            await self._redis_set(
+                f"funnel_ready:{chat_id}",
+                json.dumps({
+                    "article": article,
+                    "name": name,
+                    "marketplace": marketplace,
+                    "category": category,
+                    "slides": self._current_slides,
+                }, ensure_ascii=False),
+                ttl=config.FUNNEL_READY_TTL_SECONDS,
+            )
+
+        await _save_funnel_state()
+
+        # Отправка альбома слайдов в Telegram — активная доставка, независимая от
+        # автоматической доставки короткого текста handle_task() через _worker_loop.
+        # Не роняем handle_task, если Telegram недоступен (например, машинный вызов
+        # без реального chat_id) — набор всё равно уже лежит в Redis.
+        try:
+            bot = Bot(token=config.MARTA_BOT_TOKEN)
+            slides_to_send = self._current_slides
+            if len(slides_to_send) > 10:
+                logger.warning(
+                    f"[Дэн] воронка из {len(slides_to_send)} слайдов превышает лимит "
+                    "Telegram-альбома (10) — отправляю первые 10"
+                )
+                slides_to_send = slides_to_send[:10]
+
+            media = [
+                InputMediaPhoto(base64.b64decode(s["image_b64"]), caption=s["role"])
+                for s in slides_to_send
+            ]
+            tg_messages = await bot.send_media_group(chat_id=chat_id, media=media)
+            for slide, tg_message in zip(slides_to_send, tg_messages):
+                slide["message_id"] = tg_message.message_id
+            await _save_funnel_state()
+
+            buttons: list[list[InlineKeyboardButton]] = []
+            row: list[InlineKeyboardButton] = []
+            for i, s in enumerate(slides_to_send):
+                row.append(InlineKeyboardButton(f"🔄 {s['role']}", callback_data=f"funnel_regenerate:{i}"))
+                if len(row) == 2:
+                    buttons.append(row)
+                    row = []
+            if row:
+                buttons.append(row)
+            buttons.append([InlineKeyboardButton("✅ Опубликовать всё", callback_data="funnel_publish_all")])
+            buttons.append([InlineKeyboardButton("❌ Отмена", callback_data="funnel_skip")])
+
+            await bot.send_message(
+                chat_id=chat_id,
+                text="Проверь слайды воронки — перегенерировать конкретный или опубликовать всё?",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+        except Exception as e:
+            logger.error(f"[Дэн] не удалось отправить альбом воронки в Telegram (chat={chat_id}): {e}")
 
         return f"🎨 Собрал воронку: {len(self._current_slides)} слайдов для «{name}». Подтверждение — в чате Марты."
 
