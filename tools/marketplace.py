@@ -1169,6 +1169,39 @@ class WBClient:
             logger.error(f"[WB.upload_photos_by_url] error: {e}")
             return False
 
+    async def get_card_photo_url(self, nm_id: str) -> str | None:
+        """Вернуть URL текущего главного фото карточки WB (photos[0].big, 900x1200 —
+        самое крупное, лучший референс для генерации).
+
+        Нужно для image-to-image редактирования: референс реального товара с
+        карточки вместо выдуманного AI-похожего предмета (Фаза 8а,
+        plans/2026-07-19-dan-marketplace-funnel.md). Read-only вспомогательный
+        метод — при любой ошибке возвращает None, не роняет вызывающий код."""
+        import json as _json
+        url = "https://content-api.wildberries.ru/content/v2/get/cards/list"
+        headers = {"Authorization": self._token, "Content-Type": "application/json"}
+        body = {"settings": {"cursor": {"limit": 1}, "filter": {"textSearch": str(nm_id), "withPhoto": 1}}}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=body, timeout=_TIMEOUT) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[WB.get_card_photo_url] HTTP {resp.status}: {raw[:200]}")
+                        return None
+                    data = _json.loads(raw)
+            cards = data.get("cards") or []
+            if not cards:
+                logger.error(f"[WB.get_card_photo_url] nm_id={nm_id} карточка не найдена")
+                return None
+            photos = cards[0].get("photos") or []
+            if not photos:
+                logger.error(f"[WB.get_card_photo_url] nm_id={nm_id} у карточки нет фото")
+                return None
+            return photos[0].get("big")
+        except Exception as e:
+            logger.error(f"[WB.get_card_photo_url] nm_id={nm_id} exception: {e}")
+            return None
+
     async def get_questions(self, is_answered: bool = False, take: int = 100) -> list[dict]:
         """Вопросы покупателей WB через feedbacks-api.wildberries.ru (questions-api устарел)."""
         import json as _json
@@ -2812,6 +2845,41 @@ class OzonClient:
                     return str(product_id)
         except Exception as e:
             logger.error(f"[Ozon.get_product_id] {e}", exc_info=True)
+            return None
+
+    async def get_product_photo_url(self, product_id: str) -> str | None:
+        """Вернуть URL текущего главного фото товара Ozon (images[0].file_name,
+        index=0) через /v2/product/pictures/info. product_id — внутренний ID
+        (см. get_product_id() выше), не offer_id.
+
+        Нужно для image-to-image редактирования: референс реального товара с
+        карточки вместо выдуманного AI-похожего предмета (Фаза 8а,
+        plans/2026-07-19-dan-marketplace-funnel.md). Read-only вспомогательный
+        метод — при любой ошибке возвращает None, не роняет вызывающий код."""
+        import json as _json
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self._BASE}/v2/product/pictures/info",
+                    headers=self._headers(),
+                    json={"product_id": [int(product_id)]},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[Ozon.get_product_photo_url] HTTP {resp.status}: {raw[:300]}")
+                        return None
+                    items = _json.loads(raw).get("items") or []
+                    if not items:
+                        logger.error(f"[Ozon.get_product_photo_url] product_id={product_id} не найден")
+                        return None
+                    images = items[0].get("images") or []
+                    if not images:
+                        logger.error(f"[Ozon.get_product_photo_url] product_id={product_id} нет фото")
+                        return None
+                    return images[0].get("file_name")
+        except Exception as e:
+            logger.error(f"[Ozon.get_product_photo_url] {e}", exc_info=True)
             return None
 
     async def upload_product_pictures(self, product_id: str, image_urls: list[str]) -> bool:

@@ -18,12 +18,30 @@ from config import config
 _TIMEOUT = aiohttp.ClientTimeout(total=120)  # генерация картинки медленнее обычного JSON-запроса
 
 
-async def generate_image(prompt: str, size: str = "1024x1024", quality: str = "low") -> bytes:
-    """Сгенерировать изображение по промпту, вернуть сырые байты PNG/JPEG.
+async def _extract_image_bytes(session: aiohttp.ClientSession, data: dict) -> bytes:
+    """Достать сырые байты изображения из ответа /v1/images/generations или
+    /v1/images/edits. Реселлер может отдать либо base64 (data[0].b64_json),
+    либо публичный URL (data[0].url) — обрабатываем оба варианта."""
+    item = data["data"][0]
+    b64 = item.get("b64_json")
+    if b64:
+        return base64.b64decode(b64)
 
-    Реселлер может отдать либо base64 (data[0].b64_json), либо публичный
-    URL (data[0].url) — обрабатываем оба варианта.
-    """
+    image_url = item.get("url")
+    if image_url:
+        async with session.get(image_url, timeout=_TIMEOUT) as img_resp:
+            if img_resp.status != 200:
+                raw = await img_resp.text()
+                logger.error(f"[image_gen] скачивание url HTTP {img_resp.status}: {raw[:200]}")
+                raise RuntimeError(f"image_gen скачивание url HTTP {img_resp.status}: {raw[:200]}")
+            return await img_resp.read()
+
+    logger.error(f"[image_gen] ответ без b64_json и url: {str(data)[:200]}")
+    raise RuntimeError("image_gen: ответ API не содержит ни b64_json, ни url")
+
+
+async def generate_image(prompt: str, size: str = "1024x1024", quality: str = "low") -> bytes:
+    """Сгенерировать изображение по промпту "с нуля", вернуть сырые байты PNG/JPEG."""
     url = f"{config.IMAGE_GEN_BASE_URL}/v1/images/generations"
     headers = {
         "Authorization": f"Bearer {config.IMAGE_GEN_API_KEY}",
@@ -44,22 +62,38 @@ async def generate_image(prompt: str, size: str = "1024x1024", quality: str = "l
                 raise RuntimeError(f"image_gen HTTP {resp.status}: {raw[:200]}")
             data = await resp.json()
 
-        item = data["data"][0]
-        b64 = item.get("b64_json")
-        if b64:
-            return base64.b64decode(b64)
+        return await _extract_image_bytes(session, data)
 
-        image_url = item.get("url")
-        if image_url:
-            async with session.get(image_url, timeout=_TIMEOUT) as img_resp:
-                if img_resp.status != 200:
-                    raw = await img_resp.text()
-                    logger.error(f"[image_gen] скачивание url HTTP {img_resp.status}: {raw[:200]}")
-                    raise RuntimeError(f"image_gen скачивание url HTTP {img_resp.status}: {raw[:200]}")
-                return await img_resp.read()
 
-    logger.error(f"[image_gen] ответ без b64_json и url: {str(data)[:200]}")
-    raise RuntimeError("image_gen: ответ API не содержит ни b64_json, ни url")
+async def edit_image(prompt: str, reference_images: list[bytes], size: str = "1024x1024") -> bytes:
+    """Отредактировать изображение по промпту, опираясь на одно или несколько
+    референсных фото (image-to-image), вернуть сырые байты PNG/JPEG.
+
+    Используется агентом Дэн, чтобы на слайдах воронки был настоящий товар
+    с карточки WB/Ozon, а не выдуманный AI похожий предмет (см.
+    plans/2026-07-19-dan-marketplace-funnel.md, Фаза 8а). Маска не обязательна
+    для GPT Image моделей — не передаём.
+    """
+    url = f"{config.IMAGE_GEN_BASE_URL}/v1/images/edits"
+    headers = {"Authorization": f"Bearer {config.IMAGE_GEN_API_KEY}"}
+
+    data = aiohttp.FormData()
+    for i, img_bytes in enumerate(reference_images):
+        data.add_field("image", img_bytes, filename=f"ref{i}.png", content_type="image/png")
+    data.add_field("prompt", prompt)
+    data.add_field("model", config.IMAGE_GEN_MODEL)
+    data.add_field("size", size)
+    data.add_field("n", "1")
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, data=data, timeout=_TIMEOUT) as resp:
+            if resp.status != 200:
+                raw = await resp.text()
+                logger.error(f"[image_gen.edit_image] HTTP {resp.status}: {raw[:200]}")
+                raise RuntimeError(f"image_gen.edit_image HTTP {resp.status}: {raw[:200]}")
+            resp_data = await resp.json()
+
+        return await _extract_image_bytes(session, resp_data)
 
 
 async def host_slides(article: str, slides: list[dict]) -> list[str]:
