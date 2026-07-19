@@ -12,6 +12,7 @@ import base64
 import aiohttp
 from loguru import logger
 
+import tools.github as github
 from config import config
 
 _TIMEOUT = aiohttp.ClientTimeout(total=120)  # генерация картинки медленнее обычного JSON-запроса
@@ -59,3 +60,43 @@ async def generate_image(prompt: str, size: str = "1024x1024", quality: str = "l
 
     logger.error(f"[image_gen] ответ без b64_json и url: {str(data)[:200]}")
     raise RuntimeError("image_gen: ответ API не содержит ни b64_json, ни url")
+
+
+async def host_slides(article: str, slides: list[dict]) -> list[str]:
+    """Захостить набор сгенерированных слайдов воронки в публичном GitHub-репо
+    и вернуть список публичных raw.githubusercontent.com URL по порядку слайдов.
+
+    slides — формат агента Дэн (см. plans/2026-07-19-dan-marketplace-funnel.md, Фаза 2):
+    [{"role": str, "prompt": str, "image_b64": str}, ...].
+
+    Нужен, т.к. и WB, и Ozon принимают только публичные URL для загрузки набора
+    изображений на карточку товара, а не сырые байты (Фаза 3).
+    """
+    await github.create_repo(
+        name=config.GITHUB_ASSETS_REPO,
+        description="Хостинг сгенерированных изображений AI Office",
+        private=False,
+    )
+
+    urls: list[str] = []
+    for index, slide in enumerate(slides):
+        role = slide.get("role", f"slide{index}")
+        image_b64 = slide.get("image_b64", "")
+        try:
+            content = base64.b64decode(image_b64)
+        except Exception as e:
+            logger.error(f"[image_gen.host_slides] не удалось декодировать base64 слайда {role}: {e}")
+            continue
+
+        url = await github.create_binary_file(
+            repo=config.GITHUB_ASSETS_REPO,
+            path=f"funnel/{article}/{index:02d}-{role}.png",
+            content=content,
+            message=f"funnel slide {role} for {article}",
+        )
+        if url is None:
+            logger.error(f"[image_gen.host_slides] не удалось захостить слайд {role} (index={index})")
+            continue
+        urls.append(url)
+
+    return urls

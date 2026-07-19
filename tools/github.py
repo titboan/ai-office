@@ -105,6 +105,54 @@ async def create_file(
         return None
 
 
+async def create_binary_file(
+    repo: str,
+    path: str,
+    content: bytes,
+    message: str,
+    branch: str = "main",
+) -> str | None:
+    """Создать или обновить бинарный файл (картинку) в репозитории, вернуть публичный raw-URL.
+
+    В отличие от create_file() (для текстовых файлов, content: str), здесь content —
+    уже сырые байты, поэтому base64-кодируем напрямую без .encode() — иначе получится
+    двойное base64-кодирование и битый файл на GitHub.
+    Репозиторий должен быть публичным, иначе raw.githubusercontent.com не откроется
+    анонимно — это ответственность вызывающего кода.
+    """
+    if not config.GITHUB_TOKEN:
+        return None
+
+    sha = await _get_file_sha(repo, path, branch)
+
+    encoded = base64.b64encode(content).decode()
+    payload: dict[str, Any] = {
+        "message": message,
+        "content": encoded,
+        "branch": branch,
+    }
+    if sha:
+        payload["sha"] = sha
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.put(
+                f"{_BASE_URL}/repos/{config.GITHUB_USERNAME}/{repo}/contents/{path}",
+                headers=_headers(),
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status in (200, 201):
+                    logger.info(f"[github] Бинарный файл создан: {path}")
+                    return f"https://raw.githubusercontent.com/{config.GITHUB_USERNAME}/{repo}/{branch}/{path}"
+                data = await resp.json()
+                logger.error(f"[github] create_binary_file error {resp.status}: {data.get('message')}")
+                return None
+    except Exception as e:
+        logger.error(f"[github] create_binary_file exception: {e}")
+        return None
+
+
 async def _get_file_sha(repo: str, path: str, branch: str) -> str | None:
     """Получить SHA файла если он существует."""
     try:

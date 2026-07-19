@@ -1141,6 +1141,34 @@ class WBClient:
             logger.error(f"[WB.upload_photo] error: {e}")
             return False
 
+    async def upload_product_photos_by_url(self, nm_id: str, image_urls: list[str]) -> bool:
+        """Загрузить набор фото в карточку WB по публичным URL через /content/v3/media/save.
+
+        ⚠️ Полностью ЗАМЕНЯЕТ текущий набор медиа карточки — если нужно сохранить
+        часть старых фото, их ссылки тоже нужно включить в image_urls. Порядок
+        ссылок = порядок фото в галерее (первая — главное фото).
+        Отдельный метод от upload_product_photo() (multipart/form-data, одно фото) —
+        этот шлёт JSON+URL, как того требует официальная спецификация эндпоинта."""
+        url = "https://content-api.wildberries.ru/content/v3/media/save"
+        headers = {"Authorization": self._token, "Content-Type": "application/json"}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    headers=headers,
+                    json={"nmId": int(nm_id), "data": image_urls},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    text = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[WB.upload_photos_by_url] HTTP {resp.status}: {text[:200]}")
+                        return False
+                    logger.info(f"[WB.upload_photos_by_url] nmId={nm_id} {len(image_urls)} фото ok")
+                    return True
+        except Exception as e:
+            logger.error(f"[WB.upload_photos_by_url] error: {e}")
+            return False
+
     async def get_questions(self, is_answered: bool = False, take: int = 100) -> list[dict]:
         """Вопросы покупателей WB через feedbacks-api.wildberries.ru (questions-api устарел)."""
         import json as _json
@@ -2752,6 +2780,61 @@ class OzonClient:
                     return True
         except Exception as e:
             logger.error(f"[Ozon.update_name] {e}", exc_info=True)
+            return False
+
+    async def get_product_id(self, offer_id: str) -> str | None:
+        """Резолюция offer_id → внутренний product_id Ozon через /v3/product/info/list.
+
+        Нужен для upload_product_pictures() — /v1/product/pictures/import принимает
+        product_id, не offer_id. Тот же паттерн запроса, что и в update_product_name()
+        выше (item_id) и в agents/max.py sync_sku (sku)."""
+        import json as _json
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self._BASE}/v3/product/info/list",
+                    headers=self._headers(),
+                    json={"offer_id": [offer_id]},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[Ozon.get_product_id] HTTP {resp.status}: {raw[:300]}")
+                        return None
+                    items = _json.loads(raw).get("items") or []
+                    if not items:
+                        logger.error(f"[Ozon.get_product_id] offer_id={offer_id} не найден")
+                        return None
+                    product_id = items[0].get("product_id")
+                    if not product_id:
+                        logger.error(f"[Ozon.get_product_id] нет product_id для offer_id={offer_id}")
+                        return None
+                    return str(product_id)
+        except Exception as e:
+            logger.error(f"[Ozon.get_product_id] {e}", exc_info=True)
+            return None
+
+    async def upload_product_pictures(self, product_id: str, image_urls: list[str]) -> bool:
+        """Загрузить набор изображений на карточку Ozon через /v1/product/pictures/import.
+
+        image_urls — публичные URL в том порядке, в котором они будут в галерее
+        карточки (первая ссылка — главное фото)."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self._BASE}/v1/product/pictures/import",
+                    headers=self._headers(),
+                    json={"product_id": int(product_id), "images": image_urls},
+                    timeout=_TIMEOUT,
+                ) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"[Ozon.upload_pictures] HTTP {resp.status}: {raw[:200]}")
+                        return False
+                    logger.info(f"[Ozon.upload_pictures] product_id={product_id} {len(image_urls)} фото ok")
+                    return True
+        except Exception as e:
+            logger.error(f"[Ozon.upload_pictures] {e}", exc_info=True)
             return False
 
     async def get_supply_statuses(self) -> list[dict]:

@@ -216,3 +216,8 @@ config.CHAIN_STALL_TIMEOUT_MINUTES = 10  # если цепочка не прод
 # Воронка инфографики Дэна (обложка + слайды) — время жизни готового набора в Redis,
 # пока Марта не подтвердит/отклонит публикацию (Фаза 4, plans/2026-07-19-dan-marketplace-funnel.md)
 config.FUNNEL_READY_TTL_SECONDS = 24 * 3600  # 24 часа
+
+# Публичный репозиторий-хостинг сгенерированных изображений (raw.githubusercontent.com URL)
+# для загрузки набора картинок на карточку Ozon/WB через их URL-based media API
+# (Фаза 3, plans/2026-07-19-dan-marketplace-funnel.md)
+config.GITHUB_ASSETS_REPO = "ai-office-assets"
