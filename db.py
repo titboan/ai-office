@@ -6,6 +6,8 @@ import os
 from loguru import logger
 import asyncpg
 
+from config import config
+
 _pool: asyncpg.Pool | None = None
 
 async def get_pool() -> asyncpg.Pool:
@@ -243,6 +245,55 @@ async def _create_schema() -> None:
                 created_at       TIMESTAMPTZ DEFAULT NOW(),
                 UNIQUE (chat_id, added_by)
             );
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS product_mapping (
+                id                      BIGSERIAL    PRIMARY KEY,
+                wb_article              TEXT,
+                ozon_offer_id           TEXT,
+                display_name            TEXT,
+                ozon_sku                TEXT,
+                wb_price                NUMERIC(10,2),
+                ozon_price              NUMERIC(10,2),
+                prices_updated_at       TIMESTAMPTZ,
+                wb_nm_id                TEXT,
+                category                TEXT,
+                infographic_updated_at  TIMESTAMPTZ,
+                recommended_price_wb    NUMERIC(10,2),
+                recommended_price_ozon  NUMERIC(10,2),
+                wb_barcodes             TEXT[],
+                ozon_barcodes           TEXT[],
+                CONSTRAINT product_mapping_wb_article_ozon_offer_id_key UNIQUE (wb_article, ozon_offer_id),
+                CONSTRAINT product_mapping_name_uniq UNIQUE (display_name)
+            )
+        """)
+        # product_mapping.chat_id — изоляция по владельцу (Фаза 4,
+        # plans/2026-07-18-product-mapping-chat-id-isolation.md). Колонка
+        # физически НЕ существовала в проде до этой миграции, хотя
+        # save/get/clear_price_recommendations уже обращались к ней в WHERE —
+        # эти запросы падали с UndefinedColumnError. Добавление колонки
+        # чинит это как побочный эффект.
+        await conn.execute("""
+            ALTER TABLE product_mapping
+            ADD COLUMN IF NOT EXISTS chat_id BIGINT
+        """)
+        if config.OWNER_CHAT_ID:
+            await conn.execute(
+                "UPDATE product_mapping SET chat_id = $1 WHERE chat_id IS NULL",
+                config.OWNER_CHAT_ID,
+            )
+        else:
+            logger.warning(
+                "[db] OWNER_CHAT_ID не задан — backfill product_mapping.chat_id пропущен"
+            )
+        # Уникальность display_name была глобальной на все чаты — меняем на
+        # (chat_id, display_name), т.к. бот теперь различает владельцев данных.
+        await conn.execute("""
+            ALTER TABLE product_mapping DROP CONSTRAINT IF EXISTS product_mapping_name_uniq
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS product_mapping_chat_display_uniq
+            ON product_mapping (chat_id, display_name)
         """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS product_costs (
@@ -1418,9 +1469,10 @@ async def get_low_stocks(chat_id: int, threshold: int = 20) -> list[dict]:
                    COALESCE(m.display_name, s.product_name, s.product_id) AS display_name
             FROM marketplace_stocks s
             LEFT JOIN product_mapping m
-                   ON (s.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.'))
+                   ON ((s.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.'))
                                                = LOWER(REPLACE(s.product_id,  ',', '.')))
-                   OR (s.marketplace = 'ozon' AND m.ozon_sku = s.product_id)
+                   OR (s.marketplace = 'ozon' AND m.ozon_sku = s.product_id))
+                  AND m.chat_id = $1
             WHERE s.chat_id = $1 AND s.stock <= $2
             ORDER BY s.marketplace, display_name, s.stock ASC
             """,
@@ -2103,7 +2155,7 @@ async def get_top_keywords_for_competitors(limit: int = 10) -> list[str]:
 
 
 
-async def find_product_id_in_text(text: str) -> str | None:
+async def find_product_id_in_text(text: str, chat_id: int) -> str | None:
     """Ищет в тексте wb_article, ozon_offer_id или display_name из product_mapping.
 
     Возвращает wb_nm_id (приоритет) или ozon_offer_id первого совпадения.
@@ -2115,8 +2167,10 @@ async def find_product_id_in_text(text: str) -> str | None:
             """
             SELECT wb_article, wb_nm_id, ozon_offer_id, display_name
             FROM product_mapping
-            WHERE wb_article IS NOT NULL OR ozon_offer_id IS NOT NULL
-            """
+            WHERE (wb_article IS NOT NULL OR ozon_offer_id IS NOT NULL)
+              AND chat_id = $1
+            """,
+            chat_id,
         )
 
     text_lower = text.lower()
@@ -2424,7 +2478,8 @@ async def _auto_populate_side(
         try:
             async with conn.transaction():  # savepoint на товар
                 exists = await conn.fetchval(
-                    f"SELECT 1 FROM product_mapping WHERE {id_col} = $1", pid
+                    f"SELECT 1 FROM product_mapping WHERE {id_col} = $1 AND chat_id = $2",
+                    pid, chat_id,
                 )
                 if exists:
                     continue
@@ -2432,9 +2487,9 @@ async def _auto_populate_side(
                 merge_row = await conn.fetchrow(
                     f"""
                     SELECT id FROM product_mapping
-                     WHERE LOWER(display_name) = LOWER($1) AND {id_col} IS NULL
+                     WHERE LOWER(display_name) = LOWER($1) AND {id_col} IS NULL AND chat_id = $2
                     """,
-                    display_name,
+                    display_name, chat_id,
                 )
                 if merge_row:
                     await conn.execute(
@@ -2447,8 +2502,8 @@ async def _auto_populate_side(
                 try:
                     async with conn.transaction():  # savepoint на попытку INSERT
                         await conn.execute(
-                            f"INSERT INTO product_mapping (display_name, {id_col}) VALUES ($1, $2)",
-                            display_name, pid,
+                            f"INSERT INTO product_mapping (display_name, {id_col}, chat_id) VALUES ($1, $2, $3)",
+                            display_name, pid, chat_id,
                         )
                     created += 1
                 except asyncpg.UniqueViolationError:
@@ -2458,8 +2513,8 @@ async def _auto_populate_side(
                     try:
                         async with conn.transaction():
                             await conn.execute(
-                                f"INSERT INTO product_mapping (display_name, {id_col}) VALUES ($1, $2)",
-                                alt_name, pid,
+                                f"INSERT INTO product_mapping (display_name, {id_col}, chat_id) VALUES ($1, $2, $3)",
+                                alt_name, pid, chat_id,
                             )
                         created += 1
                     except asyncpg.UniqueViolationError:
@@ -2475,7 +2530,7 @@ async def _auto_populate_side(
     return created, merged
 
 
-async def collect_and_save_barcodes(marketplace: str, stock_items: list[dict]) -> None:
+async def collect_and_save_barcodes(marketplace: str, stock_items: list[dict], chat_id: int) -> None:
     """Группирует barcode по product_id из уже полученного списка остатков
     (WBClient.get_stocks/OzonClient.get_stocks) и аппендит (не перезаписывает)
     в product_mapping.wb_barcodes/ozon_barcodes. Штрихкоды копятся между
@@ -2513,9 +2568,9 @@ async def collect_and_save_barcodes(marketplace: str, stock_items: list[dict]) -
                        SET {barcode_col} = (
                            SELECT ARRAY(SELECT DISTINCT unnest(COALESCE({barcode_col}, '{{}}') || $2::text[]))
                        )
-                     WHERE {id_col} = $1
+                     WHERE {id_col} = $1 AND chat_id = $3
                     """,
-                    pid, list(barcodes),
+                    pid, list(barcodes), chat_id,
                 )
             except Exception as e:
                 logger.warning(
@@ -2599,7 +2654,7 @@ async def merge_product_rows(keep_id: int, remove_id: int) -> None:
             logger.info(f"[merge_product_rows] слито remove_id={remove_id} в keep_id={keep_id}")
 
 
-async def find_barcode_merge_candidates() -> list[dict]:
+async def find_barcode_merge_candidates(chat_id: int) -> list[dict]:
     """Ищет пары строк product_mapping (одна wb-only, другая ozon-only) с
     пересекающимися штрихкодами — кандидаты на объединение (Фаза 3 предлагает
     их пользователю кнопками Да/Нет). Исключает пары, уже отклонённые через
@@ -2618,11 +2673,12 @@ async def find_barcode_merge_candidates() -> list[dict]:
                AND b.ozon_offer_id IS NOT NULL AND b.wb_article IS NULL
                AND a.wb_barcodes IS NOT NULL AND array_length(a.wb_barcodes, 1) > 0
                AND b.ozon_barcodes IS NOT NULL AND array_length(b.ozon_barcodes, 1) > 0
+               AND a.chat_id = $1 AND b.chat_id = $1
                AND NOT EXISTS (
                    SELECT 1 FROM product_merge_dismissed d
                     WHERE d.wb_mapping_id = a.id AND d.ozon_mapping_id = b.id
                )
-        """)
+        """, chat_id)
         return [dict(r) for r in rows]
 
 
@@ -2677,12 +2733,25 @@ async def auto_populate_product_mapping(chat_id: int) -> dict:
     return {"created": created_total, "merged": merged_total}
 
 
-async def set_product_cost(mapping_id: int, marketplace: str, cost: float) -> None:
+async def set_product_cost(mapping_id: int, marketplace: str, cost: float, chat_id: int) -> None:
     """Задать/обновить себестоимость товара на площадке (product_costs).
     Используется и ручным /cost, и проактивным мастером себестоимости
-    (Фаза 3, plans/2026-07-14-guided-onboarding-analytics.md)."""
+    (Фаза 3, plans/2026-07-14-guided-onboarding-analytics.md).
+
+    chat_id проверяет, что mapping_id принадлежит вызывающему чату — product_costs
+    физически не имеет своей колонки chat_id, изоляция идёт через product_mapping
+    (Фаза 4, plans/2026-07-18-product-mapping-chat-id-isolation.md)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
+        owned = await conn.fetchval(
+            "SELECT 1 FROM product_mapping WHERE id = $1 AND chat_id = $2",
+            mapping_id, chat_id,
+        )
+        if not owned:
+            logger.warning(
+                f"[set_product_cost] mapping_id={mapping_id} не принадлежит chat_id={chat_id} — отказ"
+            )
+            return
         await conn.execute(
             """
             INSERT INTO product_costs (mapping_id, marketplace, cost, updated_at)
@@ -2696,7 +2765,7 @@ async def set_product_cost(mapping_id: int, marketplace: str, cost: float) -> No
 
 async def set_product_cost_breakdown(
     mapping_id: int, marketplace: str, purchase_logistics: float, packaging_marking: float,
-    changed_by: int | None = None,
+    chat_id: int, changed_by: int | None = None,
 ) -> None:
     """Задать себестоимость товара на площадке через две статьи расходов
     (закупка+логистика, упаковка+маркировка) — дашборд-редактор (Фаза 1,
@@ -2705,10 +2774,23 @@ async def set_product_cost_breakdown(
 
     Каждый вызов также пишет запись в product_cost_history (Фаза 1,
     plans/2026-07-16-cost-editor-history-mobile.md) — журнал изменений
-    себестоимости для дашборда, changed_by — chat_id из initData."""
+    себестоимости для дашборда, changed_by — chat_id из initData.
+
+    chat_id проверяет владение mapping_id через product_mapping (Фаза 4,
+    plans/2026-07-18-product-mapping-chat-id-isolation.md)."""
     pool = await get_pool()
     cost = purchase_logistics + packaging_marking
     async with pool.acquire() as conn:
+        owned = await conn.fetchval(
+            "SELECT 1 FROM product_mapping WHERE id = $1 AND chat_id = $2",
+            mapping_id, chat_id,
+        )
+        if not owned:
+            logger.warning(
+                f"[set_product_cost_breakdown] mapping_id={mapping_id} не принадлежит "
+                f"chat_id={chat_id} — отказ"
+            )
+            return
         await conn.execute(
             """
             INSERT INTO product_costs
@@ -2729,22 +2811,27 @@ async def set_product_cost_breakdown(
         )
 
 
-async def get_cost_history(mapping_id: int, marketplace: str, limit: int = 20) -> list[dict]:
+async def get_cost_history(mapping_id: int, marketplace: str, chat_id: int, limit: int = 20) -> list[dict]:
     """Последние изменения себестоимости товара на площадке (product_cost_history),
     по убыванию даты — для попапа истории в дашборде (Фаза 1,
-    plans/2026-07-16-cost-editor-history-mobile.md)."""
+    plans/2026-07-16-cost-editor-history-mobile.md).
+
+    chat_id проверяет владение mapping_id через product_mapping — закрывает IDOR
+    (Фаза 4, plans/2026-07-18-product-mapping-chat-id-isolation.md): без этой
+    проверки любой mapping_id из query-параметра отдавал чужую историю себестоимости."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, mapping_id, marketplace, purchase_logistics, packaging_marking,
-                   cost, changed_by, created_at
-              FROM product_cost_history
-             WHERE mapping_id = $1 AND marketplace = $2
-             ORDER BY created_at DESC
-             LIMIT $3
+            SELECT h.id, h.mapping_id, h.marketplace, h.purchase_logistics, h.packaging_marking,
+                   h.cost, h.changed_by, h.created_at
+              FROM product_cost_history h
+              JOIN product_mapping m ON m.id = h.mapping_id
+             WHERE h.mapping_id = $1 AND h.marketplace = $2 AND m.chat_id = $3
+             ORDER BY h.created_at DESC
+             LIMIT $4
             """,
-            mapping_id, marketplace, limit,
+            mapping_id, marketplace, chat_id, limit,
         )
         return [dict(r) for r in rows]
 
@@ -2754,11 +2841,7 @@ async def get_product_costs_for_dashboard(chat_id: int) -> list[dict]:
     редактируемой таблицы дашборда (Фаза 1,
     plans/2026-07-15-cost-price-dashboard-editor.md). Одна строка на товар,
     поля по площадкам плоские: cost_wb/purchase_logistics_wb/packaging_marking_wb,
-    аналогично для ozon.
-
-    ПРИМЕЧАНИЕ: product_mapping нигде в проекте не фильтруется по chat_id
-    (см. Фаза 2 плана) — параметр chat_id пока не используется, оставлен
-    для совместимости на будущее."""
+    аналогично для ozon."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -2776,28 +2859,26 @@ async def get_product_costs_for_dashboard(chat_id: int) -> list[dict]:
               FROM product_mapping m
               LEFT JOIN product_costs cw ON cw.mapping_id = m.id AND cw.marketplace = 'wb'
               LEFT JOIN product_costs co ON co.mapping_id = m.id AND co.marketplace = 'ozon'
-             WHERE m.wb_article IS NOT NULL OR m.ozon_offer_id IS NOT NULL
+             WHERE (m.wb_article IS NOT NULL OR m.ozon_offer_id IS NOT NULL)
+               AND m.chat_id = $1
              ORDER BY m.display_name
-            """
+            """,
+            chat_id,
         )
         return [dict(r) for r in rows]
 
 
-async def get_products_without_cost(chat_id: int | None = None) -> list[dict]:
+async def get_products_without_cost(chat_id: int) -> list[dict]:
     """Товары (пары mapping_id+marketplace), для которых ещё не задана
     себестоимость в product_costs. Используется проактивным мастером
-    себестоимости (Фаза 3).
-
-    ПРИМЕЧАНИЕ: product_mapping нигде в проекте не фильтруется по chat_id
-    (см. Фаза 2 плана) — параметр chat_id пока не используется, оставлен
-    для совместимости на будущее."""
+    себестоимости (Фаза 3)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT m.id AS mapping_id, m.display_name, 'wb' AS marketplace
               FROM product_mapping m
-             WHERE m.wb_article IS NOT NULL
+             WHERE m.wb_article IS NOT NULL AND m.chat_id = $1
                AND NOT EXISTS (
                    SELECT 1 FROM product_costs c
                     WHERE c.mapping_id = m.id AND c.marketplace = 'wb'
@@ -2805,24 +2886,27 @@ async def get_products_without_cost(chat_id: int | None = None) -> list[dict]:
             UNION ALL
             SELECT m.id AS mapping_id, m.display_name, 'ozon' AS marketplace
               FROM product_mapping m
-             WHERE m.ozon_offer_id IS NOT NULL
+             WHERE m.ozon_offer_id IS NOT NULL AND m.chat_id = $1
                AND NOT EXISTS (
                    SELECT 1 FROM product_costs c
                     WHERE c.mapping_id = m.id AND c.marketplace = 'ozon'
                )
             ORDER BY display_name
-            """
+            """,
+            chat_id,
         )
         return [dict(r) for r in rows]
 
 
-async def count_products() -> int:
+async def count_products(chat_id: int) -> int:
     """Сколько товаров всего в реестре product_mapping — используется чтобы
     отличить «каталог пуст» от «у всех уже задана себестоимость»
     (Фаза 4, plans/2026-07-14-guided-onboarding-analytics.md)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        return await conn.fetchval("SELECT COUNT(*) FROM product_mapping")
+        return await conn.fetchval(
+            "SELECT COUNT(*) FROM product_mapping WHERE chat_id = $1", chat_id,
+        )
 
 
 async def create_user_plan(

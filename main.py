@@ -1080,16 +1080,21 @@ async def run_all_async() -> None:
             async with pool.acquire() as conn:
                 if mp == "wb":
                     row = await conn.fetchrow(
-                        "SELECT id FROM product_mapping WHERE wb_article = $1", product_id,
+                        "SELECT id FROM product_mapping WHERE wb_article = $1 AND chat_id = $2",
+                        product_id, chat_id,
                     )
                 else:
                     row = await conn.fetchrow(
-                        "SELECT id FROM product_mapping WHERE ozon_offer_id = $1", product_id,
+                        "SELECT id FROM product_mapping WHERE ozon_offer_id = $1 AND chat_id = $2",
+                        product_id, chat_id,
                     )
             if not row:
                 return web.Response(status=404, text="Not Found", headers=cors)
             mapping_id = row["id"]
-            await set_product_cost_breakdown(mapping_id, mp, purchase_logistics, packaging_marking, changed_by=chat_id)
+            await set_product_cost_breakdown(
+                mapping_id, mp, purchase_logistics, packaging_marking,
+                chat_id=chat_id, changed_by=chat_id,
+            )
         except Exception as e:
             logger.error(f"[set_cost] error: {e}", exc_info=True)
             return web.Response(status=500, text="Internal Error", headers=cors)
@@ -1128,7 +1133,7 @@ async def run_all_async() -> None:
             return web.Response(status=400, text="Bad Request", headers=cors)
         try:
             from db import get_cost_history
-            rows = await get_cost_history(mapping_id, marketplace)
+            rows = await get_cost_history(mapping_id, marketplace, chat_id)
             numeric_fields = ("purchase_logistics", "packaging_marking", "cost")
             history = []
             for row in rows:
@@ -1205,8 +1210,9 @@ async def run_all_async() -> None:
 
         Заменяет /map (agents/max.py::cmd_map) и текстовую часть пошагового Redis-wizard
         /add (agents/max.py::cmd_add, `catalog_add:{chat_id}`) — тот же
-        INSERT ... ON CONFLICT (display_name) DO UPDATE, что и там. Поведение 1:1: name —
-        уникальный ключ (совпадение по display_name перезаписывает существующую строку),
+        INSERT ... ON CONFLICT (chat_id, display_name) DO UPDATE, что и там. Поведение 1:1: name —
+        уникальный ключ в рамках чата (совпадение по display_name у того же chat_id
+        перезаписывает существующую строку),
         wb_article/ozon_offer_id перезаписываются присланным значением (в т.ч. пустым —
         как и в /map), category — COALESCE (пустое значение не затирает уже сохранённую
         категорию). Не переносит себестоимость — она уже отдельно в /api/set_cost.
@@ -1245,14 +1251,14 @@ async def run_all_async() -> None:
             async with pool.acquire() as conn:
                 await conn.execute(
                     """
-                    INSERT INTO product_mapping (display_name, wb_article, ozon_offer_id, category)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (display_name)
+                    INSERT INTO product_mapping (display_name, wb_article, ozon_offer_id, category, chat_id)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (chat_id, display_name)
                     DO UPDATE SET wb_article    = EXCLUDED.wb_article,
                                   ozon_offer_id = EXCLUDED.ozon_offer_id,
                                   category      = COALESCE(EXCLUDED.category, product_mapping.category)
                     """,
-                    name, wb_article, ozon_offer_id, category,
+                    name, wb_article, ozon_offer_id, category, chat_id,
                 )
         except Exception as e:
             logger.error(f"[product] error: {e}", exc_info=True)
@@ -1303,12 +1309,12 @@ async def run_all_async() -> None:
             pool = await get_pool()
             async with pool.acquire() as conn:
                 wb_row = await conn.fetchrow(
-                    "SELECT id FROM product_mapping WHERE wb_article = $1 AND ozon_offer_id IS NULL",
-                    wb_article,
+                    "SELECT id FROM product_mapping WHERE wb_article = $1 AND ozon_offer_id IS NULL AND chat_id = $2",
+                    wb_article, chat_id,
                 )
                 ozon_row = await conn.fetchrow(
-                    "SELECT id FROM product_mapping WHERE ozon_offer_id = $1 AND wb_article IS NULL",
-                    ozon_offer_id,
+                    "SELECT id FROM product_mapping WHERE ozon_offer_id = $1 AND wb_article IS NULL AND chat_id = $2",
+                    ozon_offer_id, chat_id,
                 )
             if not wb_row or not ozon_row:
                 return web.json_response({"ok": False, "error": "not_found"}, status=404, headers=cors)

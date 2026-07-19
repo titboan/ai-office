@@ -92,7 +92,8 @@ class ElinaAgent(BaseAgent):
                 try:
                     async with pool.acquire() as conn:
                         rows = await conn.fetch(
-                            "SELECT ozon_offer_id FROM product_mapping WHERE ozon_offer_id IS NOT NULL"
+                            "SELECT ozon_offer_id FROM product_mapping WHERE ozon_offer_id IS NOT NULL AND chat_id=$1",
+                            chat_id,
                         )
                     offer_ids = [r["ozon_offer_id"] for r in rows]
                     if offer_ids:
@@ -235,7 +236,7 @@ class ElinaAgent(BaseAgent):
                 # 2. Артикул / display_name из product_mapping
                 if not product_id:
                     from db import find_product_id_in_text
-                    product_id = await find_product_id_in_text(task)
+                    product_id = await find_product_id_in_text(task, chat_id)
 
                 if product_id:
                     logger.info(f"[Элина] SEO auto-detect → product_id={product_id}, chat_id={chat_id}")
@@ -321,7 +322,7 @@ class ElinaAgent(BaseAgent):
         # Если не числовой nm_id — пробуем резолюцию через product_mapping
         if not _PRODUCT_ID_RE.fullmatch(product_id):
             from db import find_product_id_in_text
-            resolved = await find_product_id_in_text(product_id)
+            resolved = await find_product_id_in_text(product_id, chat_id)
             if resolved:
                 product_id = resolved
             else:

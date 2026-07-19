@@ -283,8 +283,9 @@ class PeterAgent(BaseAgent):
                 FROM marketplace_orders o
                 LEFT JOIN marketplace_shops ms ON ms.id = o.shop_id
                 LEFT JOIN product_mapping m
-                       ON m.wb_article = o.product_id
-                       OR m.ozon_sku   = o.product_id
+                       ON (m.wb_article = o.product_id
+                       OR m.ozon_sku   = o.product_id)
+                      AND m.chat_id = $1
                 WHERE o.chat_id = $1 AND o.order_date >= $2
                 GROUP BY o.marketplace, o.shop_id, ms.shop_name, o.product_id, m.display_name
                 ORDER BY revenue DESC
@@ -308,7 +309,7 @@ class PeterAgent(BaseAgent):
                               ) / SUM(o.seller_price * o.quantity) * 100, 1)
                     ELSE 0 END                                    AS profitability
                 FROM marketplace_orders o
-                JOIN product_mapping m ON m.wb_article = o.product_id
+                JOIN product_mapping m ON m.wb_article = o.product_id AND m.chat_id = $1
                 JOIN product_costs c   ON c.mapping_id = m.id AND c.marketplace = 'wb'
                 WHERE o.chat_id = $1 AND o.marketplace = 'wb' AND o.order_date >= $2
                 GROUP BY o.product_id, m.display_name
@@ -335,7 +336,7 @@ class PeterAgent(BaseAgent):
                     ELSE 0 END                                    AS profitability
                 FROM marketplace_orders o
                 LEFT JOIN marketplace_shops ms ON ms.id = o.shop_id
-                JOIN product_mapping m ON m.ozon_sku = o.product_id
+                JOIN product_mapping m ON m.ozon_sku = o.product_id AND m.chat_id = $1
                 JOIN product_costs c   ON c.mapping_id = m.id AND c.marketplace = 'ozon'
                 WHERE o.chat_id = $1 AND o.marketplace = 'ozon' AND o.order_date >= $2
                 GROUP BY o.product_id, o.shop_id, ms.shop_name, m.display_name
@@ -383,12 +384,13 @@ class PeterAgent(BaseAgent):
                 FROM marketplace_financial_report f
                 LEFT JOIN product_mapping m
                        -- WB: sa_name (wb_article) или nm_id (wb_nm_id) — зависит от того, что пришло в API
-                       ON (f.marketplace = 'wb' AND (
+                       ON ((f.marketplace = 'wb' AND (
                                LOWER(REPLACE(m.wb_article, ',', '.')) = LOWER(REPLACE(f.product_id, ',', '.'))
                                OR m.wb_nm_id::text = f.product_id
                            ))
                        -- Ozon: /v3/finance/transaction/list отдаёт items[].sku, не offer_id
-                       OR (f.marketplace = 'ozon' AND m.ozon_sku = f.product_id)
+                       OR (f.marketplace = 'ozon' AND m.ozon_sku = f.product_id))
+                      AND m.chat_id = $1
                 LEFT JOIN product_costs c ON c.mapping_id = m.id AND c.marketplace = f.marketplace
                 WHERE f.chat_id = $1 AND (
                     (f.marketplace = 'wb'   AND f.report_date >= $2)
@@ -422,8 +424,9 @@ class PeterAgent(BaseAgent):
                        (SUM(o.seller_price * o.quantity) / SUM(o.quantity))::numeric(12,2) AS avg_price
                 FROM marketplace_orders o
                 LEFT JOIN product_mapping m
-                       ON (o.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.')) = LOWER(REPLACE(o.product_id, ',', '.')))
-                       OR (o.marketplace = 'ozon' AND m.ozon_sku = o.product_id)
+                       ON ((o.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.')) = LOWER(REPLACE(o.product_id, ',', '.')))
+                       OR (o.marketplace = 'ozon' AND m.ozon_sku = o.product_id))
+                      AND m.chat_id = $1
                 WHERE o.chat_id = $1 AND o.order_date >= $2
                   AND o.seller_price IS NOT NULL AND o.seller_price > 0
                 GROUP BY o.marketplace, COALESCE(m.display_name, o.product_id)
@@ -603,7 +606,7 @@ class PeterAgent(BaseAgent):
                        ON (p.product_id = m.wb_nm_id::text OR p.product_id = m.ozon_sku)
                       AND p.chat_id = $1
                       AND p.stat_date >= (m.infographic_updated_at - INTERVAL '14 days')::date
-                WHERE m.infographic_updated_at IS NOT NULL
+                WHERE m.infographic_updated_at IS NOT NULL AND m.chat_id = $1
                 GROUP BY m.display_name, m.wb_article, m.infographic_updated_at, p.marketplace
                 ORDER BY m.infographic_updated_at DESC
                 LIMIT 10
@@ -716,8 +719,9 @@ class PeterAgent(BaseAgent):
                          ELSE NULL END                              AS drr
                 FROM product_adv_stats p
                 LEFT JOIN product_mapping m
-                       ON m.wb_nm_id  = p.product_id
-                       OR m.ozon_sku  = p.product_id
+                       ON (m.wb_nm_id  = p.product_id
+                       OR m.ozon_sku  = p.product_id)
+                      AND m.chat_id = $1
                 LEFT JOIN (
                     -- Реальные выплаты из финотчётов: WB = ppvz_for_pay, Ozon = accruals
                     -- WB: financial_report.product_id = wb_article (sa_name) → транслируем в nm_id
@@ -735,6 +739,7 @@ class PeterAgent(BaseAgent):
                               LOWER(REPLACE(mm.wb_article, ',', '.')) = LOWER(REPLACE(f.product_id, ',', '.'))
                               OR mm.wb_nm_id::text = f.product_id
                           )
+                          AND mm.chat_id = $1
                     WHERE f.chat_id = $1
                       AND f.report_date >= DATE_TRUNC('week', $2::date)
                     GROUP BY f.marketplace,
@@ -762,8 +767,9 @@ class PeterAgent(BaseAgent):
                          ELSE 999 END                              AS days_left
                 FROM marketplace_stocks s
                 LEFT JOIN product_mapping m
-                       ON (s.marketplace = 'wb'   AND m.wb_article    = s.product_id)
-                       OR (s.marketplace = 'ozon' AND m.ozon_offer_id = s.product_id)
+                       ON ((s.marketplace = 'wb'   AND m.wb_article    = s.product_id)
+                       OR (s.marketplace = 'ozon' AND m.ozon_offer_id = s.product_id))
+                      AND m.chat_id = $1
                 LEFT JOIN (
                     SELECT
                         o.marketplace,
@@ -774,7 +780,7 @@ class PeterAgent(BaseAgent):
                         ROUND(SUM(o.quantity)::numeric / $3, 2) AS daily_orders
                     FROM marketplace_orders o
                     LEFT JOIN product_mapping mm
-                           ON mm.ozon_sku = o.product_id
+                           ON mm.ozon_sku = o.product_id AND mm.chat_id = $1
                     WHERE o.chat_id = $1 AND o.order_date >= $2
                     GROUP BY o.marketplace,
                              CASE WHEN o.marketplace = 'ozon'
@@ -808,7 +814,8 @@ class PeterAgent(BaseAgent):
                          ELSE 0 END AS cart_to_order_pct
                 FROM product_funnel_stats f
                 LEFT JOIN product_mapping m
-                       ON m.wb_article = f.product_id OR m.ozon_sku = f.product_id
+                       ON (m.wb_article = f.product_id OR m.ozon_sku = f.product_id)
+                      AND m.chat_id = $1
                 WHERE f.chat_id = $1 AND f.stat_date >= $2
                 GROUP BY f.product_id, m.display_name, f.marketplace
                 ORDER BY views DESC
@@ -825,7 +832,7 @@ class PeterAgent(BaseAgent):
                 FROM marketplace_orders o
                 LEFT JOIN product_mapping m ON (
                     m.wb_article = o.product_id OR m.ozon_sku = o.product_id
-                )
+                ) AND m.chat_id = $1
                 WHERE o.chat_id = $1 AND o.order_date >= $2
                 GROUP BY o.product_id, o.marketplace, m.display_name
                 ORDER BY revenue DESC
@@ -1479,8 +1486,9 @@ class PeterAgent(BaseAgent):
                     AVG(f.avg_position)::numeric(6,1)           AS avg_position
                 FROM product_funnel_stats f
                 LEFT JOIN product_mapping m
-                       ON m.wb_article = f.product_id
-                       OR m.ozon_sku   = f.product_id
+                       ON (m.wb_article = f.product_id
+                       OR m.ozon_sku   = f.product_id)
+                      AND m.chat_id = $1
                 WHERE f.chat_id = $1 AND f.stat_date >= $2
                 GROUP BY f.marketplace, f.product_id, m.display_name
                 ORDER BY views DESC
@@ -1655,7 +1663,8 @@ class PeterAgent(BaseAgent):
         async with pool.acquire() as conn:
             sku_rows = await conn.fetch(
                 "SELECT ozon_sku::text AS sku, ozon_offer_id FROM product_mapping "
-                "WHERE ozon_sku IS NOT NULL AND ozon_offer_id IS NOT NULL",
+                "WHERE ozon_sku IS NOT NULL AND ozon_offer_id IS NOT NULL AND chat_id = $1",
+                chat_id,
             )
         sku_to_offer: dict[str, str] = {r["sku"]: r["ozon_offer_id"] for r in sku_rows}
 
@@ -1704,8 +1713,9 @@ class PeterAgent(BaseAgent):
                        MAX(m.category) AS category
                 FROM marketplace_stocks s
                 LEFT JOIN product_mapping m
-                       ON (s.marketplace = 'wb'   AND m.wb_article    = s.product_id)
-                       OR (s.marketplace = 'ozon' AND m.ozon_offer_id = s.product_id)
+                       ON ((s.marketplace = 'wb'   AND m.wb_article    = s.product_id)
+                       OR (s.marketplace = 'ozon' AND m.ozon_offer_id = s.product_id))
+                      AND m.chat_id = $1
                 WHERE s.chat_id = $1
                 GROUP BY s.marketplace, s.product_id, s.warehouse_name, m.display_name
             """, chat_id)
@@ -1720,11 +1730,11 @@ class PeterAgent(BaseAgent):
                 FROM marketplace_orders o
                 LEFT JOIN LATERAL (
                     SELECT ozon_offer_id, display_name FROM product_mapping
-                    WHERE ozon_sku = o.product_id LIMIT 1
+                    WHERE ozon_sku = o.product_id AND chat_id = $1 LIMIT 1
                 ) moz ON o.marketplace = 'ozon'
                 LEFT JOIN LATERAL (
                     SELECT display_name FROM product_mapping
-                    WHERE wb_article = o.product_id LIMIT 1
+                    WHERE wb_article = o.product_id AND chat_id = $1 LIMIT 1
                 ) mwb ON o.marketplace = 'wb'
                 WHERE o.chat_id = $1 AND o.order_date >= $3
                 GROUP BY o.marketplace,
@@ -2003,8 +2013,9 @@ class PeterAgent(BaseAgent):
                        SUM(s.stock)::int                              AS total_stock
                 FROM marketplace_stocks s
                 LEFT JOIN product_mapping m
-                       ON (s.marketplace = 'wb'   AND m.wb_article    = s.product_id)
-                       OR (s.marketplace = 'ozon' AND m.ozon_offer_id = s.product_id)
+                       ON ((s.marketplace = 'wb'   AND m.wb_article    = s.product_id)
+                       OR (s.marketplace = 'ozon' AND m.ozon_offer_id = s.product_id))
+                      AND m.chat_id = $1
                 LEFT JOIN product_costs c
                        ON c.mapping_id = m.id AND c.marketplace = s.marketplace
                 WHERE s.chat_id = $1
@@ -2024,11 +2035,11 @@ class PeterAgent(BaseAgent):
                 FROM marketplace_orders o
                 LEFT JOIN LATERAL (
                     SELECT ozon_offer_id, display_name FROM product_mapping
-                    WHERE ozon_sku = o.product_id LIMIT 1
+                    WHERE ozon_sku = o.product_id AND chat_id = $1 LIMIT 1
                 ) moz ON o.marketplace = 'ozon'
                 LEFT JOIN LATERAL (
                     SELECT display_name FROM product_mapping
-                    WHERE wb_article = o.product_id LIMIT 1
+                    WHERE wb_article = o.product_id AND chat_id = $1 LIMIT 1
                 ) mwb ON o.marketplace = 'wb'
                 WHERE o.chat_id = $1 AND o.order_date >= $3
                 GROUP BY o.marketplace,
@@ -2238,8 +2249,9 @@ class PeterAgent(BaseAgent):
                     COALESCE(JSONB_ARRAY_LENGTH(pc.characteristics), 0)              AS chars_count
                 FROM funnel f
                 LEFT JOIN product_mapping m ON
-                    (f.marketplace = 'wb'   AND m.wb_nm_id        = f.product_id) OR
-                    (f.marketplace = 'ozon' AND m.ozon_sku::text  = f.product_id)
+                    ((f.marketplace = 'wb'   AND m.wb_nm_id        = f.product_id) OR
+                    (f.marketplace = 'ozon' AND m.ozon_sku::text  = f.product_id))
+                    AND m.chat_id = $1
                 LEFT JOIN product_cards pc ON pc.chat_id = $1
                     AND pc.marketplace = f.marketplace
                     AND (
@@ -2773,7 +2785,7 @@ net_margin_period.wb и net_margin_period.ozon — РАЗНЫЕ окна дат 
                 LEFT JOIN product_mapping m ON (
                     m.wb_article = ra.product_id OR
                     m.ozon_offer_id = ra.product_id
-                )
+                ) AND m.chat_id = $1
                 WHERE ra.chat_id = $1 AND ra.stat_date >= $2
                 GROUP BY ra.product_id, ra.marketplace, ra.product_name, m.display_name
                 ORDER BY avg_rate DESC NULLS LAST, total_returns DESC

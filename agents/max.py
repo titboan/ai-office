@@ -1561,7 +1561,7 @@ class MaxAgent(BaseAgent):
             # см. plans/2026-07-14-cross-marketplace-product-merge.md, Фаза 1
             try:
                 from db import collect_and_save_barcodes
-                await collect_and_save_barcodes(mp, stocks)
+                await collect_and_save_barcodes(mp, stocks, chat_id)
             except Exception as e:
                 logger.error(f"[Макс/sync] штрихкоды {mp_label}: {e}", exc_info=True)
 
@@ -1693,7 +1693,8 @@ class MaxAgent(BaseAgent):
                     async with _pool.acquire() as conn:
                         uncategorized = await conn.fetch(
                             "SELECT ozon_offer_id FROM product_mapping "
-                            "WHERE ozon_offer_id IS NOT NULL AND category IS NULL"
+                            "WHERE ozon_offer_id IS NOT NULL AND category IS NULL AND chat_id = $1",
+                            chat_id,
                         )
                     if uncategorized:
                         offer_ids = [r["ozon_offer_id"] for r in uncategorized]
@@ -1703,8 +1704,8 @@ class MaxAgent(BaseAgent):
                                 for offer_id, cat_name in cat_map.items():
                                     await conn.execute(
                                         "UPDATE product_mapping SET category = $1 "
-                                        "WHERE ozon_offer_id = $2 AND category IS NULL",
-                                        cat_name, offer_id,
+                                        "WHERE ozon_offer_id = $2 AND category IS NULL AND chat_id = $3",
+                                        cat_name, offer_id, chat_id,
                                     )
                             logger.info(f"[Макс/sync] Ozon категории: обновлено {len(cat_map)} товаров")
                 except Exception as e:
@@ -1732,8 +1733,9 @@ class MaxAgent(BaseAgent):
                             result = await conn.execute(
                                 """UPDATE product_mapping
                                    SET wb_price = $1, prices_updated_at = NOW()
-                                   WHERE LOWER(REPLACE(wb_article, ',', '.')) = LOWER(REPLACE($2, ',', '.'))""",
-                                p["price"], p["product_id"],
+                                   WHERE LOWER(REPLACE(wb_article, ',', '.')) = LOWER(REPLACE($2, ',', '.'))
+                                     AND chat_id = $3""",
+                                p["price"], p["product_id"], chat_id,
                             )
                             if result.split()[-1] != "0":
                                 updated += 1
@@ -1742,7 +1744,8 @@ class MaxAgent(BaseAgent):
                 elif mp == "ozon":
                     async with pool.acquire() as conn:
                         rows = await conn.fetch(
-                            "SELECT ozon_sku FROM product_mapping WHERE ozon_sku IS NOT NULL"
+                            "SELECT ozon_sku FROM product_mapping WHERE ozon_sku IS NOT NULL AND chat_id = $1",
+                            chat_id,
                         )
                     skus = [int(r["ozon_sku"]) for r in rows if r["ozon_sku"]]
                     if skus:
@@ -1754,8 +1757,8 @@ class MaxAgent(BaseAgent):
                                 result = await conn.execute(
                                     """UPDATE product_mapping
                                        SET ozon_price = $1, prices_updated_at = NOW()
-                                       WHERE ozon_offer_id = $2""",
-                                    p["price"], p["product_id"],
+                                       WHERE ozon_offer_id = $2 AND chat_id = $3""",
+                                    p["price"], p["product_id"], chat_id,
                                 )
                                 if result.split()[-1] != "0":
                                     updated += 1
@@ -1881,7 +1884,8 @@ class MaxAgent(BaseAgent):
                         async with pool.acquire() as conn:
                             needs_sync = await conn.fetch(
                                 "SELECT id, wb_article FROM product_mapping "
-                                "WHERE wb_article IS NOT NULL AND wb_nm_id IS NULL"
+                                "WHERE wb_article IS NOT NULL AND wb_nm_id IS NULL AND chat_id = $1",
+                                chat_id,
                             )
                         if needs_sync:
                             nm_map = await client.get_nm_id_mapping(stats_token)
@@ -1900,8 +1904,9 @@ class MaxAgent(BaseAgent):
                                         )
                                         continue
                                     result = await conn.execute(
-                                        "UPDATE product_mapping SET wb_nm_id = $1 WHERE id = $2 AND wb_nm_id IS NULL",
-                                        nm_id, row["id"],
+                                        "UPDATE product_mapping SET wb_nm_id = $1 "
+                                        "WHERE id = $2 AND wb_nm_id IS NULL AND chat_id = $3",
+                                        nm_id, row["id"], chat_id,
                                     )
                                     if result.split()[-1] != "0":
                                         updated_count += 1
@@ -2318,7 +2323,7 @@ class MaxAgent(BaseAgent):
         _bot = bot if bot is not None else self.app.bot
         try:
             from db import find_barcode_merge_candidates
-            candidates = await find_barcode_merge_candidates()
+            candidates = await find_barcode_merge_candidates(chat_id)
             for c in candidates:
                 text = (
                     f"🔗 По штрихкоду похоже, что «{c['wb_name']}» (WB) и "
@@ -2413,7 +2418,8 @@ class MaxAgent(BaseAgent):
                 ORDER BY marketplace, discount_pct DESC NULLS LAST
             """, chat_id, today)
             mapping = await conn.fetch(
-                "SELECT wb_article, ozon_offer_id, display_name FROM product_mapping"
+                "SELECT wb_article, ozon_offer_id, display_name FROM product_mapping WHERE chat_id = $1",
+                chat_id,
             )
 
         if not active:
@@ -2513,7 +2519,9 @@ class MaxAgent(BaseAgent):
                     pool = await get_pool()
                     async with pool.acquire() as conn:
                         rows = await conn.fetch(
-                            "SELECT ozon_offer_id FROM product_mapping WHERE ozon_offer_id IS NOT NULL"
+                            "SELECT ozon_offer_id FROM product_mapping "
+                            "WHERE ozon_offer_id IS NOT NULL AND chat_id = $1",
+                            chat_id,
                         )
                     offer_ids = [r["ozon_offer_id"] for r in rows]
                     if offer_ids:
@@ -2578,7 +2586,7 @@ class MaxAgent(BaseAgent):
                      ON o.chat_id=n.chat_id AND o.marketplace=n.marketplace
                         AND o.product_id=n.product_id AND o.keyword=n.keyword
                         AND o.stat_date=$3
-                   LEFT JOIN product_mapping m ON m.wb_nm_id = n.product_id::bigint
+                   LEFT JOIN product_mapping m ON m.wb_nm_id = n.product_id::bigint AND m.chat_id = $1
                    WHERE n.chat_id=$1 AND n.marketplace='wb' AND n.stat_date=$2
                      AND (n.position - o.position) >= $4
                    ORDER BY drop DESC""",
@@ -3808,11 +3816,11 @@ class MaxAgent(BaseAgent):
             logger.error(f"[Макс/sync_sku] ошибка: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
 
-    async def _get_catalog_products(self) -> list[dict]:
+    async def _get_catalog_products(self, chat_id: int) -> list[dict]:
         """Реестр товаров: название, WB/Ozon артикулы, цены, признак заданной с/с и когда
         обновлялись цены — общий источник для _catalog_text (полная таблица, /products в
         меню), краткой сводки /products (Фаза 4) и дашборда (вкладка «Каталог»).
-        product_mapping не привязан к chat_id — реестр общий на все чаты бота (см. db-schema)."""
+        Фильтрован по chat_id (Фаза 4, plans/2026-07-18-product-mapping-chat-id-isolation.md)."""
         from db import get_pool
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -3823,15 +3831,16 @@ class MaxAgent(BaseAgent):
                        MAX(c.cost) FILTER (WHERE c.marketplace = 'ozon') AS cost_ozon
                 FROM product_mapping m
                 LEFT JOIN product_costs c ON c.mapping_id = m.id
+                WHERE m.chat_id = $1
                 GROUP BY m.id, m.display_name, m.wb_article, m.ozon_offer_id,
                          m.wb_price, m.ozon_price, m.prices_updated_at
                 ORDER BY m.display_name
-            """)
+            """, chat_id)
         return [dict(r) for r in rows]
 
     async def _catalog_text(self, chat_id: int) -> str:
         """Каталог товаров: с/с и текущие цены в виде <pre>-таблицы."""
-        rows = await self._get_catalog_products()
+        rows = await self._get_catalog_products(chat_id)
         if not rows:
             return "📦 Реестр пуст.\nДобавь товар: <code>/map name=КБ50 wb=БК50гр ozon=КБ50</code>"
 
@@ -3882,7 +3891,7 @@ class MaxAgent(BaseAgent):
         full-expansion.md) — раньше выводилась простыней прямо в чат."""
         chat_id = update.effective_chat.id
         try:
-            rows = await self._get_catalog_products()
+            rows = await self._get_catalog_products(chat_id)
             if not rows:
                 await update.message.reply_text(
                     "📦 Реестр пуст.\nДобавь товар: <code>/map name=КБ50 wb=БК50гр ozon=КБ50</code>",
@@ -3965,10 +3974,11 @@ class MaxAgent(BaseAgent):
                        MAX(c.cost) FILTER (WHERE c.marketplace = 'ozon') AS cost_ozon
                 FROM product_mapping m
                 JOIN product_costs c ON c.mapping_id = m.id
+                WHERE m.chat_id = $1
                 GROUP BY m.id, m.display_name, m.wb_article, m.ozon_sku,
                          m.wb_price, m.ozon_price
                 ORDER BY m.display_name
-            """)
+            """, chat_id)
             if not cost_rows:
                 return {
                     "rows": [], "period_label": period_label, "missing_fin": False,
@@ -3986,8 +3996,11 @@ class MaxAgent(BaseAgent):
                     SUM(f.payout)   FILTER (WHERE f.marketplace = 'ozon')::numeric(12,2) AS payout_ozon
                 FROM marketplace_financial_report f
                 LEFT JOIN product_mapping m
-                    ON (f.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.')) = LOWER(REPLACE(f.product_id, ',', '.')))
-                    OR (f.marketplace = 'ozon' AND m.ozon_sku = f.product_id)
+                    ON m.chat_id = f.chat_id
+                    AND (
+                        (f.marketplace = 'wb'   AND LOWER(REPLACE(m.wb_article, ',', '.')) = LOWER(REPLACE(f.product_id, ',', '.')))
+                        OR (f.marketplace = 'ozon' AND m.ozon_sku = f.product_id)
+                    )
                 WHERE f.chat_id = $1 AND (
                     (f.marketplace = 'wb'   AND f.report_date >= $2)
                     OR
@@ -4201,18 +4214,19 @@ class MaxAgent(BaseAgent):
         wb = params.get("wb") or None
         ozon = params.get("ozon") or None
         category = params.get("category") or None
+        chat_id = update.effective_user.id
         try:
             from db import get_pool
             pool = await get_pool()
             async with pool.acquire() as conn:
                 await conn.execute("""
-                    INSERT INTO product_mapping (display_name, wb_article, ozon_offer_id, category)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (display_name)
+                    INSERT INTO product_mapping (display_name, wb_article, ozon_offer_id, category, chat_id)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (chat_id, display_name)
                     DO UPDATE SET wb_article    = EXCLUDED.wb_article,
                                   ozon_offer_id = EXCLUDED.ozon_offer_id,
                                   category      = COALESCE(EXCLUDED.category, product_mapping.category)
-                """, name, wb, ozon, category)
+                """, name, wb, ozon, category, chat_id)
             cat_str = f" | Категория: {category}" if category else ""
             await update.message.reply_text(
                 f"✅ Товар '{name}' сохранён.\nWB={wb or '—'} OZ={ozon or '—'}{cat_str}\n"
@@ -4255,8 +4269,9 @@ class MaxAgent(BaseAgent):
                         """SELECT wb_nm_id FROM product_mapping
                            WHERE wb_nm_id IS NOT NULL
                              AND (display_name ILIKE $1 OR wb_article ILIKE $1)
+                             AND chat_id = $2
                            LIMIT 1""",
-                        name,
+                        name, chat_id,
                     )
                     if row and row["wb_nm_id"]:
                         nm_ids.append(row["wb_nm_id"])
@@ -4300,20 +4315,22 @@ class MaxAgent(BaseAgent):
         except ValueError:
             await update.message.reply_text(f"❌ '{cost_str}' — не число")
             return
+        chat_id = update.effective_user.id
         try:
             from db import get_pool, set_product_cost
             pool = await get_pool()
             async with pool.acquire() as conn:
                 row = await conn.fetchrow("""
                     SELECT id, display_name FROM product_mapping
-                    WHERE display_name = $1 OR wb_article = $1 OR ozon_offer_id = $1
-                """, ident)
+                    WHERE (display_name = $1 OR wb_article = $1 OR ozon_offer_id = $1)
+                      AND chat_id = $2
+                """, ident, chat_id)
                 if not row:
                     await update.message.reply_text(
                         f"❌ Товар '{ident}' не найден. Добавь: /add"
                     )
                     return
-            await set_product_cost(row["id"], mp, cost)
+            await set_product_cost(row["id"], mp, cost, chat_id)
             await update.message.reply_text(
                 f"✅ {row['display_name']} [{mp.upper()}]: с/с = {cost} ₽"
             )
@@ -4355,7 +4372,7 @@ class MaxAgent(BaseAgent):
         from db import get_products_without_cost, count_products
         items = await get_products_without_cost(chat_id)
         if not items:
-            if await count_products() == 0:
+            if await count_products(chat_id) == 0:
                 await bot.send_message(
                     chat_id=chat_id,
                     text=(
@@ -4425,7 +4442,7 @@ class MaxAgent(BaseAgent):
 
         item = items[index]
         from db import set_product_cost
-        await set_product_cost(item["mapping_id"], item["marketplace"], cost)
+        await set_product_cost(item["mapping_id"], item["marketplace"], cost, chat_id)
         mp_label = "WB" if item["marketplace"] == "wb" else "Ozon"
         await update.message.reply_text(f"✅ {item['display_name']} ({mp_label}): {cost} ₽")
 
@@ -4478,7 +4495,8 @@ class MaxAgent(BaseAgent):
                 pool = await get_pool()
                 async with pool.acquire() as conn:
                     rows = await conn.fetch(
-                        "SELECT id, display_name FROM product_mapping ORDER BY display_name"
+                        "SELECT id, display_name FROM product_mapping WHERE chat_id = $1 ORDER BY display_name",
+                        chat_id,
                     )
                 if not rows:
                     await query.edit_message_text("Реестр пуст. Добавь товар: /add")
@@ -4514,7 +4532,8 @@ class MaxAgent(BaseAgent):
                 pool = await get_pool()
                 async with pool.acquire() as conn:
                     row = await conn.fetchrow(
-                        "SELECT display_name FROM product_mapping WHERE id = $1", mapping_id
+                        "SELECT display_name FROM product_mapping WHERE id = $1 AND chat_id = $2",
+                        mapping_id, chat_id,
                     )
                 if not row:
                     await query.edit_message_text("Товар не найден.")
@@ -4543,14 +4562,16 @@ class MaxAgent(BaseAgent):
         if update.effective_chat.type in (Chat.GROUP, Chat.SUPERGROUP):
             await update.message.reply_text("Управление каталогом — только в личке.")
             return
+        chat_id = update.effective_chat.id
         try:
             from db import get_pool
             pool = await get_pool()
             async with pool.acquire() as conn:
                 rows = await conn.fetch(
                     "SELECT id, display_name FROM product_mapping "
-                    "WHERE wb_article IS NOT NULL AND ozon_offer_id IS NULL "
-                    "ORDER BY display_name"
+                    "WHERE wb_article IS NOT NULL AND ozon_offer_id IS NULL AND chat_id = $1 "
+                    "ORDER BY display_name",
+                    chat_id,
                 )
             if not rows:
                 await update.message.reply_text("Нет товаров с WB-артикулом без пары на Ozon.")
@@ -4598,8 +4619,9 @@ class MaxAgent(BaseAgent):
                 async with pool.acquire() as conn:
                     rows = await conn.fetch(
                         "SELECT id, display_name FROM product_mapping "
-                        "WHERE ozon_offer_id IS NOT NULL AND wb_article IS NULL "
-                        "ORDER BY display_name"
+                        "WHERE ozon_offer_id IS NOT NULL AND wb_article IS NULL AND chat_id = $1 "
+                        "ORDER BY display_name",
+                        chat_id,
                     )
                 if not rows:
                     await query.edit_message_text("Нет товаров с Ozon-артикулом без пары на WB.")
@@ -4642,10 +4664,12 @@ class MaxAgent(BaseAgent):
                 pool = await get_pool()
                 async with pool.acquire() as conn:
                     wb_row = await conn.fetchrow(
-                        "SELECT display_name FROM product_mapping WHERE id = $1", wb_id
+                        "SELECT display_name FROM product_mapping WHERE id = $1 AND chat_id = $2",
+                        wb_id, chat_id,
                     )
                     ozon_row = await conn.fetchrow(
-                        "SELECT display_name FROM product_mapping WHERE id = $1", ozon_id
+                        "SELECT display_name FROM product_mapping WHERE id = $1 AND chat_id = $2",
+                        ozon_id, chat_id,
                     )
                 if not wb_row or not ozon_row:
                     await query.edit_message_text("Товар не найден.")
@@ -4708,13 +4732,30 @@ class MaxAgent(BaseAgent):
             from db import get_pool
             pool = await get_pool()
             async with pool.acquire() as conn:
+                # product_costs не имеет своей колонки chat_id — проверяем владение
+                # mapping_id через product_mapping (см. db.set_product_cost, тот же паттерн)
+                owned = await conn.fetchval(
+                    "SELECT 1 FROM product_mapping WHERE id = $1 AND chat_id = $2",
+                    state["mapping_id"], chat_id,
+                )
+                if not owned:
+                    logger.warning(
+                        f"[Макс/cost_text] mapping_id={state['mapping_id']} не принадлежит "
+                        f"chat_id={chat_id} — отказ"
+                    )
+                    await update.message.reply_text("❌ Товар не найден.")
+                    return
                 await conn.execute("""
                     INSERT INTO product_costs (mapping_id, marketplace, cost, updated_at)
                     VALUES ($1, $2, $3, now())
                     ON CONFLICT (mapping_id, marketplace)
                     DO UPDATE SET cost = $3, updated_at = now()
                 """, state["mapping_id"], state["marketplace"], cost)
-                total = await conn.fetchval("SELECT COUNT(*) FROM product_costs")
+                total = await conn.fetchval(
+                    "SELECT COUNT(*) FROM product_costs c "
+                    "JOIN product_mapping m ON m.id = c.mapping_id WHERE m.chat_id = $1",
+                    chat_id,
+                )
             await update.message.reply_text(
                 f"✅ {state['name']} [{state['marketplace'].upper()}]: с/с = {cost} ₽\n"
                 f"Записей с себестоимостью: {total}"
@@ -4823,14 +4864,14 @@ class MaxAgent(BaseAgent):
             pool = await get_pool()
             async with pool.acquire() as conn:
                 row = await conn.fetchrow("""
-                    INSERT INTO product_mapping (display_name, wb_article, ozon_offer_id, category)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (display_name)
+                    INSERT INTO product_mapping (display_name, wb_article, ozon_offer_id, category, chat_id)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (chat_id, display_name)
                     DO UPDATE SET wb_article    = EXCLUDED.wb_article,
                                   ozon_offer_id = EXCLUDED.ozon_offer_id,
                                   category      = COALESCE(EXCLUDED.category, product_mapping.category)
                     RETURNING id
-                """, name, wb, ozon, category)
+                """, name, wb, ozon, category, chat_id)
                 if cost is not None:
                     await conn.execute("""
                         INSERT INTO product_costs (mapping_id, cost, updated_at)
@@ -5246,7 +5287,7 @@ class MaxAgent(BaseAgent):
                                0
                            ) AS daily_velocity
                     FROM marketplace_stocks s
-                    LEFT JOIN product_mapping m ON (
+                    LEFT JOIN product_mapping m ON m.chat_id = s.chat_id AND (
                         (s.marketplace = 'wb'   AND m.wb_article    = s.product_id) OR
                         (s.marketplace = 'ozon' AND m.ozon_offer_id = s.product_id)
                     )
@@ -5461,6 +5502,7 @@ class MaxAgent(BaseAgent):
                     ) AS days_ozon
                 FROM product_mapping m
                 JOIN product_costs c ON c.mapping_id = m.id
+                WHERE m.chat_id = $1
                 GROUP BY m.id, m.display_name, m.wb_article, m.wb_nm_id,
                          m.ozon_offer_id, m.ozon_sku, m.wb_price, m.ozon_price
             """, chat_id)
@@ -5718,8 +5760,8 @@ class MaxAgent(BaseAgent):
                 f"""SELECT m.{price_col} AS current_price, c.cost
                     FROM product_mapping m
                     LEFT JOIN product_costs c ON c.mapping_id = m.id AND c.marketplace = $1
-                    WHERE m.{id_col} = $2""",
-                mp, product_id,
+                    WHERE m.{id_col} = $2 AND m.chat_id = $3""",
+                mp, product_id, chat_id,
             )
         current_price = float(row["current_price"]) if row and row["current_price"] else None
         cost = float(row["cost"]) if row and row["cost"] else None
@@ -5748,8 +5790,8 @@ class MaxAgent(BaseAgent):
                 pool = await get_pool()
                 async with pool.acquire() as conn:
                     rows = await conn.fetch(
-                        "SELECT wb_nm_id FROM product_mapping WHERE wb_article = $1",
-                        product_id,
+                        "SELECT wb_nm_id FROM product_mapping WHERE wb_article = $1 AND chat_id = $2",
+                        product_id, chat_id,
                     )
                 if not rows:
                     logger.error(f"[Макс/reprice] wb_nm_id не найден для {product_id}")
@@ -5780,8 +5822,9 @@ class MaxAgent(BaseAgent):
                     pool = await get_pool()
                     async with pool.acquire() as conn:
                         await conn.execute(
-                            "UPDATE product_mapping SET ozon_price = $1, prices_updated_at = NOW() WHERE ozon_offer_id = $2",
-                            float(new_price), product_id,
+                            "UPDATE product_mapping SET ozon_price = $1, prices_updated_at = NOW() "
+                            "WHERE ozon_offer_id = $2 AND chat_id = $3",
+                            float(new_price), product_id, chat_id,
                         )
                     logger.info(f"[Макс/reprice] ozon {product_id} → {new_price} ₽ ✓")
                     return {"ok": True, "detail": f"Цена обновлена → {new_price} ₽"}
@@ -5818,7 +5861,7 @@ class MaxAgent(BaseAgent):
                         GROUP BY marketplace, product_id
                         HAVING SUM(spend) > 500
                     ) p
-                    LEFT JOIN product_mapping m ON (
+                    LEFT JOIN product_mapping m ON m.chat_id = $1 AND (
                         (p.marketplace = 'wb'   AND m.wb_nm_id  = p.product_id)
                         OR (p.marketplace = 'ozon' AND m.ozon_sku = p.product_id)
                     )
@@ -5835,6 +5878,7 @@ class MaxAgent(BaseAgent):
                         FROM marketplace_financial_report f
                         LEFT JOIN product_mapping mm
                                ON f.marketplace = 'wb'
+                              AND mm.chat_id = $1
                               AND (
                                   LOWER(REPLACE(mm.wb_article, ',', '.')) = LOWER(REPLACE(f.product_id, ',', '.'))
                                   OR mm.wb_nm_id::text = f.product_id
@@ -5970,7 +6014,7 @@ class MaxAgent(BaseAgent):
                         a.spend_7d,
                         COALESCE(o.revenue_7d, 0) AS revenue_7d
                     FROM adv a
-                    LEFT JOIN product_mapping m ON (
+                    LEFT JOIN product_mapping m ON m.chat_id = $1 AND (
                         m.wb_nm_id = a.product_id OR m.ozon_sku = a.product_id
                     )
                     LEFT JOIN orders o ON (
@@ -6961,7 +7005,7 @@ class MaxAgent(BaseAgent):
             except Exception:
                 pass
 
-        rows = await self._get_catalog_products()
+        rows = await self._get_catalog_products(chat_id)
         products = [{
             "name": r["display_name"],
             "wb_article": r["wb_article"],
