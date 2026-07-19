@@ -51,6 +51,11 @@ class Config:
     GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
     GITHUB_USERNAME: str = os.getenv("GITHUB_USERNAME", "")
 
+    # Генерация изображений (Дэн) — RU-реселлер OpenAI-совместимого API (ProxyAPI/AITUNNEL)
+    IMAGE_GEN_API_KEY: str = os.getenv("IMAGE_GEN_API_KEY", "")
+    IMAGE_GEN_BASE_URL: str = os.getenv("IMAGE_GEN_BASE_URL", "https://api.proxyapi.ru/openai")
+    IMAGE_GEN_MODEL: str = os.getenv("IMAGE_GEN_MODEL", "gpt-image-1.5")
+
     # Макс — отзывы на маркетплейсах
     MAX_BOT_TOKEN: str = os.getenv("MAX_BOT_TOKEN", "")
 
