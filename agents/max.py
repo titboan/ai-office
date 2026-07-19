@@ -5236,18 +5236,18 @@ class MaxAgent(BaseAgent):
             "ставки 06:30 МСК, KPI/воронка/возвраты — ежедневно ночью"
         )
 
-    async def _check_stock_alerts(self, chat_id: int, *, deduplicate: bool = False) -> None:
-        """Проверяет остатки и шлёт алерт если stock_days < threshold или stock = 0.
-
-        Показывает ВСЕ позиции. lead_time и safety_days берутся из настроек пользователя.
-        deduplicate=True: пропускает товары, по которым алерт уже отправлялся сегодня.
-        """
+    async def _compute_stock_alert_items(
+        self, chat_id: int, *, deduplicate: bool = False
+    ) -> tuple[list[dict], int, int]:
+        """Считает позиции с остатком ниже порога (stock=0 или days_left < threshold).
+        lead_time и safety_days берутся из настроек пользователя. Общий источник данных
+        для `_check_stock_alerts` (авто-уведомление) и `_handle_stock_remind_callback`
+        (кнопка «Напомнить о заказе», Фаза 4, plans/2026-07-05-backlog-remaining-recommendations.md).
+        Возвращает (items, lead_time, safety_days)."""
         from config import config as _cfg
         import datetime
         from db import get_pool, get_user_setting
-        from telegram import Bot as _TGBot
 
-        # Читаем настройки пользователя (те же что и у Питера)
         raw_lead   = await get_user_setting(chat_id, "supply_lead_days")
         raw_safety = await get_user_setting(chat_id, "supply_safety_days")
         try:
@@ -5261,85 +5261,101 @@ class MaxAgent(BaseAgent):
 
         threshold = lead_time + safety_days  # порог алерта = срок поставки + страховой запас
 
-        try:
-            pool = await get_pool()
-            async with pool.acquire() as conn:
-                rows = await conn.fetch("""
-                    SELECT s.marketplace, s.product_id,
-                           COALESCE(m.display_name, s.product_id) AS name,
-                           SUM(s.stock)::int AS total_stock,
-                           COALESCE(
-                               (SELECT qty FROM marketplace_in_transit it
-                                WHERE it.chat_id = $1
-                                  AND it.marketplace = s.marketplace
-                                  AND it.product_id = s.product_id
-                                LIMIT 1), 0
-                           )::int AS in_transit,
-                           COALESCE(
-                               (SELECT SUM(o.quantity) / 14.0
-                                FROM marketplace_orders o
-                                WHERE o.chat_id = $1
-                                  AND o.marketplace = s.marketplace
-                                  AND o.product_id  = CASE WHEN s.marketplace = 'ozon'
-                                                            THEN COALESCE(m.ozon_sku, s.product_id)
-                                                            ELSE s.product_id END
-                                  AND o.order_date >= NOW() - INTERVAL '14 days'),
-                               0
-                           ) AS daily_velocity
-                    FROM marketplace_stocks s
-                    LEFT JOIN product_mapping m ON m.chat_id = s.chat_id AND (
-                        (s.marketplace = 'wb'   AND m.wb_article    = s.product_id) OR
-                        (s.marketplace = 'ozon' AND m.ozon_offer_id = s.product_id)
-                    )
-                    WHERE s.chat_id = $1
-                    GROUP BY s.marketplace, s.product_id, m.display_name, m.ozon_sku
-                """, chat_id)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT s.marketplace, s.product_id,
+                       COALESCE(m.display_name, s.product_id) AS name,
+                       SUM(s.stock)::int AS total_stock,
+                       COALESCE(
+                           (SELECT qty FROM marketplace_in_transit it
+                            WHERE it.chat_id = $1
+                              AND it.marketplace = s.marketplace
+                              AND it.product_id = s.product_id
+                            LIMIT 1), 0
+                       )::int AS in_transit,
+                       COALESCE(
+                           (SELECT SUM(o.quantity) / 14.0
+                            FROM marketplace_orders o
+                            WHERE o.chat_id = $1
+                              AND o.marketplace = s.marketplace
+                              AND o.product_id  = CASE WHEN s.marketplace = 'ozon'
+                                                        THEN COALESCE(m.ozon_sku, s.product_id)
+                                                        ELSE s.product_id END
+                              AND o.order_date >= NOW() - INTERVAL '14 days'),
+                           0
+                       ) AS daily_velocity
+                FROM marketplace_stocks s
+                LEFT JOIN product_mapping m ON m.chat_id = s.chat_id AND (
+                    (s.marketplace = 'wb'   AND m.wb_article    = s.product_id) OR
+                    (s.marketplace = 'ozon' AND m.ozon_offer_id = s.product_id)
+                )
+                WHERE s.chat_id = $1
+                GROUP BY s.marketplace, s.product_id, m.display_name, m.ozon_sku
+            """, chat_id)
 
-            today = datetime.date.today()
-            items: list[dict] = []
+        today = datetime.date.today()
+        items: list[dict] = []
 
-            for r in rows:
-                stock      = int(r["total_stock"] or 0)
-                in_transit = int(r["in_transit"] or 0)
-                vel        = float(r["daily_velocity"] or 0)
-                days_left  = (stock / vel) if vel > 0 else (999 if stock > 0 else 0)
+        for r in rows:
+            stock      = int(r["total_stock"] or 0)
+            in_transit = int(r["in_transit"] or 0)
+            vel        = float(r["daily_velocity"] or 0)
+            days_left  = (stock / vel) if vel > 0 else (999 if stock > 0 else 0)
 
-                if stock == 0:
-                    severity      = "critical"
-                    raw_order     = int((lead_time + safety_days) * vel) if vel > 0 else 0
-                    qty_to_order  = max(0, raw_order - in_transit)
-                    covered       = False
-                    days_to_order = None
-                    order_by_date = None
-                elif days_left < threshold:
-                    severity      = "low"
-                    days_to_order = max(0, int(days_left) - lead_time)
-                    order_by_date = today + datetime.timedelta(days=days_to_order)
-                    raw_order     = int((lead_time + safety_days) * vel) if vel > 0 else 0
-                    qty_to_order  = max(0, raw_order - in_transit)
-                    covered       = raw_order > 0 and in_transit >= raw_order
-                else:
+            if stock == 0:
+                severity      = "critical"
+                raw_order     = int((lead_time + safety_days) * vel) if vel > 0 else 0
+                qty_to_order  = max(0, raw_order - in_transit)
+                covered       = False
+                days_to_order = None
+                order_by_date = None
+            elif days_left < threshold:
+                severity      = "low"
+                days_to_order = max(0, int(days_left) - lead_time)
+                order_by_date = today + datetime.timedelta(days=days_to_order)
+                raw_order     = int((lead_time + safety_days) * vel) if vel > 0 else 0
+                qty_to_order  = max(0, raw_order - in_transit)
+                covered       = raw_order > 0 and in_transit >= raw_order
+            else:
+                continue
+
+            if deduplicate:
+                rkey = f"stock_alert:{chat_id}:{r['marketplace']}:{r['product_id']}:{severity}"
+                if await self._redis_get(rkey):
                     continue
+                await self._redis_set(rkey, "1", ttl=23 * 3600)
 
-                if deduplicate:
-                    rkey = f"stock_alert:{chat_id}:{r['marketplace']}:{r['product_id']}:{severity}"
-                    if await self._redis_get(rkey):
-                        continue
-                    await self._redis_set(rkey, "1", ttl=23 * 3600)
+            items.append({
+                "marketplace":  r["marketplace"],
+                "name":         r["name"],
+                "stock":        stock,
+                "vel":          vel,
+                "days_left":    days_left if stock > 0 else None,
+                "severity":     severity,
+                "qty_to_order": qty_to_order,
+                "days_to_order": days_to_order,
+                "order_by_date": order_by_date,
+                "covered":      covered,
+                "in_transit":   in_transit,
+            })
 
-                items.append({
-                    "marketplace":  r["marketplace"],
-                    "name":         r["name"],
-                    "stock":        stock,
-                    "vel":          vel,
-                    "days_left":    days_left if stock > 0 else None,
-                    "severity":     severity,
-                    "qty_to_order": qty_to_order,
-                    "days_to_order": days_to_order,
-                    "order_by_date": order_by_date,
-                    "covered":      covered,
-                    "in_transit":   in_transit,
-                })
+        return items, lead_time, safety_days
+
+    async def _check_stock_alerts(self, chat_id: int, *, deduplicate: bool = False) -> None:
+        """Проверяет остатки и шлёт алерт если stock_days < threshold или stock = 0.
+
+        Показывает ВСЕ позиции. lead_time и safety_days берутся из настроек пользователя.
+        deduplicate=True: пропускает товары, по которым алерт уже отправлялся сегодня.
+        """
+        from config import config as _cfg
+        import datetime
+
+        try:
+            items, lead_time, safety_days = await self._compute_stock_alert_items(
+                chat_id, deduplicate=deduplicate
+            )
+            today = datetime.date.today()
 
             if not items:
                 return
@@ -5407,11 +5423,65 @@ class MaxAgent(BaseAgent):
 
             markdown = "\n\n".join(md_parts)
 
+            # Кнопка «Напомнить о заказе» — только если есть позиции, которые ещё не
+            # горят, но заказ уже нужно запланировать (severity=low, не покрыто
+            # транзитом, days_to_order > 0). Критичные (stock=0) и срочные (days_to_order=0)
+            # нужно заказывать сейчас, а не переносить напоминанием.
+            planned = [
+                it for it in items
+                if it["severity"] == "low" and not it["covered"] and (it["days_to_order"] or 0) > 0
+            ]
+            reply_markup = None
+            if planned:
+                reply_markup = {
+                    "inline_keyboard": [[
+                        {"text": "🔔 Напомнить о заказе", "callback_data": "stock_remind:go"}
+                    ]]
+                }
+
             from utils.tg_rich import send_rich_or_fallback
-            await send_rich_or_fallback(_cfg.MARTA_BOT_TOKEN, chat_id, markdown)
+            await send_rich_or_fallback(
+                _cfg.MARTA_BOT_TOKEN, chat_id, markdown, reply_markup_dict=reply_markup
+            )
             logger.info(f"[Макс/stock_alerts] chat={chat_id} алертов: {len(items)} (lead={lead_time}, safety={safety_days})")
         except Exception as e:
             logger.error(f"[Макс/stock_alerts] ошибка: {e}", exc_info=True)
+
+    async def _handle_stock_remind_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Кнопка «🔔 Напомнить о заказе» под сток-алертом. Нет прямого API-действия для
+        заказа у поставщика (это не запись в WB/Ozon) — вместо этого планирует одно
+        напоминание через Алекса на дату, когда нужно оформить заказ (Фаза 4,
+        plans/2026-07-05-backlog-remaining-recommendations.md). Пересчитывает позиции
+        заново на момент клика — остатки могли измениться с момента отправки алерта."""
+        query = update.callback_query
+        chat_id = update.effective_user.id
+
+        items, _, _ = await self._compute_stock_alert_items(chat_id)
+        planned = [
+            it for it in items
+            if it["severity"] == "low" and not it["covered"] and (it["days_to_order"] or 0) > 0
+        ]
+        if not planned:
+            await query.answer("Список пуст — остатки уже изменились, проверь /reprice", show_alert=True)
+            return
+
+        earliest = min(it["order_by_date"] for it in planned)
+        names = ", ".join(f"{it['name']} ({it['qty_to_order']} шт)" for it in planned)
+        text = f"📦 Пора заказать у поставщика: {names}"
+
+        from datetime import datetime as _dt, time as _time
+        from zoneinfo import ZoneInfo
+        from task_queue import create_reminder
+        remind_at = _dt.combine(earliest, _time(9, 0), tzinfo=ZoneInfo("Europe/Moscow"))
+
+        task_id, _ = await create_reminder(chat_id, text, remind_at, from_agent="alex")
+        if task_id is None:
+            await query.answer("⚠️ Не удалось сохранить напоминание, попробуй ещё раз", show_alert=True)
+            return
+
+        await query.answer(f"🔔 Напомню {earliest.strftime('%d.%m')} о заказе", show_alert=True)
 
     # ─── Репрайсинг ───────────────────────────────────────────────────────────
 
@@ -7507,6 +7577,9 @@ class MaxAgent(BaseAgent):
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_price_apply_callback, pattern=r"^price_apply:")
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_stock_remind_callback, pattern=r"^stock_remind:")
         )
         self.app.add_handler(
             CallbackQueryHandler(self._handle_reprice_callback, pattern=r"^rp:")
