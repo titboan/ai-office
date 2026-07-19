@@ -24,42 +24,39 @@
 
 ## Фазы
 
-- [ ] **Фаза 1**: `tools/image_gen.py` — клиент генерации изображений
-  - Async-клиент к ProxyAPI/AITUNNEL (OpenAI-совместимый `/v1/images/generations`), по образцу `_request()` из `tools/marketplace.py`
-  - `generate_image(prompt, size, quality) -> bytes` с ретраями и логированием (как у остальных tools)
-  - Ключ из `config.IMAGE_GEN_API_KEY` / `config.IMAGE_GEN_BASE_URL` (обе точки — ProxyAPI и AITUNNEL — OpenAI-совместимы, base_url меняется одной переменной)
+- [x] **Фаза 1**: `tools/image_gen.py` — клиент генерации изображений
+  - `generate_image(prompt, size, quality) -> bytes` через ProxyAPI/AITUNNEL (`/v1/images/generations`, OpenAI-совместимый), обрабатывает и `b64_json`, и `url` в ответе
+  - `config.IMAGE_GEN_API_KEY` / `IMAGE_GEN_BASE_URL` / `IMAGE_GEN_MODEL` (дефолт `gpt-image-1.5`)
 
-- [ ] **Фаза 2**: `agents/dan.py` — переписать под воронку WB/Ozon вместо лендингов
-  - Убрать `create_repo`/`generate_image`(Pollinations)/`list_repo_images` (лендинговая логика, GitHub assets)
-  - Новый system-промпт: дизайнер маркетплейс-инфографики, роль слайдов из Контекста, без явных цен/скидок на картинке (юридическое ограничение WB)
-  - Новые инструменты: `plan_funnel(article, category)` — Claude сам решает набор из 6-9 ролей слайдов под категорию товара; `generate_slide(role, prompt)` — рисует один слайд через `tools/image_gen.py`; `regenerate_slide(index, new_prompt)` — точечный редрafт
-  - `handle_task()` возвращает **набор** (список base64-картинок + подписи-роли), ничего не публикует сам — просто формирует пакет для подтверждения
+- [x] **Фаза 2**: `agents/dan.py` — переписан под воронку WB/Ozon
+  - Один инструмент `generate_slide(role, prompt, size)` — Claude сам в рамках tool-use loop решает набор ролей слайдов и вызывает его по очереди (отдельный `plan_funnel` не понадобился — это просто рассуждение модели перед вызовами)
+  - `handle_task()` принимает и JSON `{"action": "build_funnel", ...}` (машинный вызов), и обычную фразу человека
+  - Готовый набор кладётся в Redis `funnel_ready:{chat_id}` (не в `pending_infographic` — это отдельный, самостоятельный флоу, не расширение старого)
 
-- [ ] **Фаза 3**: Ozon-загрузка изображений
-  - `tools/marketplace.py` → `OzonClient.upload_product_photos(offer_id, urls: list[str])` (`/v3/product/pictures/import` принимает публичные URL, не файлы)
-  - Хостинг сгенерированных картинок: переиспользовать `tools/github.py create_file` (публичный репо assets, `raw.githubusercontent.com` URL) — уже есть готовый паттерн у старого Дэна, не нужен новый сервис хранения
-  - `WBClient.upload_product_photo` — проверить/расширить на пакетную загрузку по порядку слотов (сейчас похоже на append одной картинки, для воронки важен порядок)
+- [x] **Фаза 3**: Ozon-загрузка + хостинг
+  - `OzonClient.get_product_id`/`upload_product_pictures` (`/v1/product/pictures/import`)
+  - `WBClient.upload_product_photos_by_url` — **новый** метод (JSON+URL, по официальной спецификации `/content/v3/media/save`), старый `upload_product_photo` (multipart) не тронут — заметно несоответствие спецификации у старого метода, см. «Известные ограничения»
+  - `tools/image_gen.host_slides()` — хостинг через `tools/github.py create_binary_file` (новая функция, не переиспользует текстовую `create_file` — там был риск двойного base64) в **публичном** репо `config.GITHUB_ASSETS_REPO` — подтверждено с пользователем явно
 
-- [ ] **Фаза 4**: `agents/marta.py` — подтверждение набора, а не одной фотографии
-  - Расширить `pending_infographic:{chat_id}`: вместо одной ожидаемой фотографии — сгенерированный Дэном альбом (список картинок + роли)
-  - Новые callback-паттерны: `funnel_regenerate:{index}` (перегенерировать один слайд), `funnel_publish_all` (опубликовать весь набор), `funnel_skip`
-  - Альбом слайдов шлётся в Telegram через `send_media_group` с подписями ролей под каждым слайдом
+- [x] **Фаза 4**: `agents/marta.py` + `agents/dan.py` — подтверждение набора
+  - Дэн сам активно шлёт альбом (`send_media_group` через бота Марты) + клавиатуру, а не Марта его ждёт/детектит
+  - `funnel_regenerate:{index}` (передел одного слайда тем же промптом через `edit_message_media`), `funnel_publish_all` (ставит `upload_funnel` Максу), `funnel_skip`
 
-- [ ] **Фаза 5**: Триггеры
-  - Существующий (Питер, низкий CTR) — расширить payload в `pending_infographic` полем `category` (уже есть в `product_mapping.category`), чтобы Дэн подбирал стиль
-  - Новый (Макс) — товар без инфографики вообще (`infographic_updated_at IS NULL` и товар синхронизирован > N дней) → `enqueue_task(assigned_agent="dan", ...)`
-  - Новый (Макс) — смена цены/акции у товара → предложение обновить только слайд с УТП/сценарием, не всю воронку
-  - Ручной — команда пользователя Дэну в Telegram: «сделай воронку для <артикул>»
+- [x] **Фаза 5**: Триггеры
+  - Питер (низкий CTR) — теперь ПАРАЛЛЕЛЬНО со старым флоу «пришли фото» ставит Дэну `build_funnel` с категорией товара
+  - Макс — новый ежедневный `_check_missing_infographics` (12:00 UTC): товары без инфографики (`infographic_updated_at IS NULL`, уже синхронизированы) получают AI-воронку, дедупликация 7 дней
+  - Смена цены/акции — **отложено**, нет истории цен для детекта реального изменения (см. «Известные ограничения»)
+  - Ручной вызов человеком — работает через свободный текст в `handle_task` Дэна, отдельного кода не потребовалось
 
-- [ ] **Фаза 6**: `config.py` — CONSTANTS
-  - `IMAGE_GEN_API_KEY`, `IMAGE_GEN_BASE_URL` (ProxyAPI/AITUNNEL), `IMAGE_GEN_MODEL` (по умолчанию `gpt-image-1.5`)
-  - `FUNNEL_SLIDE_COUNT_DEFAULT = 7`
-  - `GITHUB_ASSETS_REPO` — репозиторий-хостинг для Ozon URL (переиспользовать текущий `GITHUB_USERNAME`)
+- [x] **Фаза 6**: `config.py` — CONSTANTS
+  - Добавлялись по мере надобности в каждой фазе, а не единым блоком: `IMAGE_GEN_*` (Фаза 1), `FUNNEL_READY_TTL_SECONDS` (Фаза 2), `GITHUB_ASSETS_REPO` (Фаза 3), `MISSING_INFOGRAPHIC_HOUR_UTC` (Фаза 5). `FUNNEL_SLIDE_COUNT_DEFAULT` не понадобился — количество слайдов (6-9) задаётся текстом в system-промпте Дэна, не читается кодом как параметр
 
 - [ ] **Фаза 7**: Деплой и проверка
-  - Ключи в Railway env
-  - Ручной прогон: `/дэн сделай воронку для <тестовый артикул>` → альбом в Telegram → подтверждение → публикация на WB (Ozon — если готова Фаза 3)
-  - Убедиться, что `infographic_updated_at` проставляется и Питер видит новую пару CTR до/после через 14 дней
+  - [ ] Завести `IMAGE_GEN_API_KEY`, `IMAGE_GEN_BASE_URL` в Railway env (ProxyAPI или AITUNNEL — оплата в рублях)
+  - [ ] Убедиться, что `GITHUB_TOKEN`/`GITHUB_USERNAME` в Railway актуальны (нужны для публикации в `ai-office-assets`)
+  - [ ] Ручной прогон: написать Дэну «сделай воронку для <тестовый товар>, категория <...>» → альбом в Telegram → `funnel_regenerate` на одном слайде → `funnel_publish_all` → проверить карточку на WB (и Ozon, если товар там есть)
+  - [ ] Проверить, что `product_mapping.infographic_updated_at` проставился и Питер через 14 дней увидит пару CTR до/после
+  - [ ] Живой тест старого `WBClient.upload_product_photo` (несоответствие спецификации, см. ниже) — отдельно от этого плана, при наличии реального WB-токена
 
 ---
 
@@ -68,6 +65,8 @@
 - Recraft (GenAPI) — не в MVP, только GPT Image через ProxyAPI/AITUNNEL. Добавить отдельной фазой, если качества GPT Image не хватит
 - Видео-обложка и рич-контент/Premium-контент — отдельный, более крупный контур, не в этом плане
 - Текст на слайдах (цифры/состав) всё равно требует взгляда человека перед публикацией — даже у лучших моделей ошибка в тексте не исключена, поэтому шаг подтверждения в Марте — обязательный, не опциональный
+- Триггер «смена цены/акции» не реализован — нет истории цен (`product_mapping` хранит только текущую `wb_price`/`ozon_price`), детект реального изменения потребует отдельной механики (история или лог событий) — не изобретали её вслепую в рамках этой фазы
+- `WBClient.upload_product_photo` (старый, однофотографийный, используется ручным флоу `_handle_infographic_callback`) шлёт multipart на `/content/v3/media/save`, а официальная спецификация этого эндпоинта — JSON+URL. Не тронут в рамках этого плана (риск сломать существующий рабочий флоу без возможности проверить живым вызовом — нет тестового WB-токена локально). Новый `upload_product_photos_by_url` (используется воронкой) соответствует спецификации. Стоит проверить живым вызовом при первом реальном деплое и решить отдельно, чинить ли старый метод
 
 ---
 
@@ -84,10 +83,12 @@
 
 | Файл | Изменение |
 |---|---|
-| `tools/image_gen.py` | Создан — клиент генерации изображений (ProxyAPI/AITUNNEL) |
-| `agents/dan.py` | Переписан — воронка WB/Ozon вместо лендингов |
-| `tools/marketplace.py` | +`OzonClient.upload_product_photos`, проверка/доработка WB на пакетную загрузку по слотам |
-| `agents/marta.py` | `pending_infographic` → набор слайдов, новые callback-паттерны, альбом через `send_media_group` |
-| `agents/peter.py` | `pending_infographic` payload +`category` |
-| `agents/max.py` | Новые триггеры: товар без инфографики, смена цены/акции |
-| `config.py` | +IMAGE_GEN_API_KEY, +IMAGE_GEN_BASE_URL, +CONSTANTS (модель, дефолт кол-ва слайдов, assets-репо) |
+| `tools/image_gen.py` | Создан — `generate_image` (ProxyAPI/AITUNNEL) + `host_slides` (хостинг набора на GitHub) |
+| `tools/github.py` | +`create_binary_file` — публикация бинарных файлов без двойного base64 |
+| `tools/marketplace.py` | +`WBClient.upload_product_photos_by_url`, +`OzonClient.get_product_id`/`upload_product_pictures` |
+| `agents/dan.py` | Переписан — воронка слайдов вместо лендингов; сам шлёт альбом+клавиатуру через бота Марты |
+| `agents/marta.py` | +`_handle_funnel_regenerate`/`_handle_funnel_publish_all`/`_handle_funnel_skip` (независимо от старого `pending_infographic`) |
+| `agents/max.py` | +`_upload_funnel` (публикация набора на WB/Ozon), +`_check_missing_infographics` (ежедневный триггер) |
+| `agents/peter.py` | Низкий CTR теперь параллельно ставит Дэну `build_funnel` |
+| `main.py` | +`_missing_infographics_task` (ежедневный цикл, 12:00 UTC) |
+| `config.py` | +IMAGE_GEN_API_KEY/BASE_URL/MODEL, +FUNNEL_READY_TTL_SECONDS, +GITHUB_ASSETS_REPO, +MISSING_INFOGRAPHIC_HOUR_UTC |
