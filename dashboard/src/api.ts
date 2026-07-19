@@ -282,6 +282,29 @@ export async function setCost(
   return res.json()
 }
 
+export interface CostHistoryRow {
+  id: number
+  mapping_id: number
+  marketplace: 'wb' | 'ozon'
+  purchase_logistics: number | null
+  packaging_marking: number | null
+  cost: number | null
+  changed_by: number | null
+  created_at: string
+}
+
+// История изменений себестоимости — тот же принцип, что и getCosts:
+// только настоящий Telegram initData, без ?token=.
+export async function getCostHistory(mappingId: number, marketplace: 'wb' | 'ozon'): Promise<CostHistoryRow[]> {
+  const tg = (window as any).Telegram?.WebApp
+  const res = await fetchWithTimeout(
+    `${API_URL}/api/cost_history?mapping_id=${mappingId}&marketplace=${marketplace}`,
+    { headers: { 'X-Telegram-Init-Data': tg?.initData ?? '' } },
+  )
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json().then(d => d.history)
+}
+
 // Тот же принцип, что и setCost — только настоящий Telegram initData, без ?token=.
 // Заменяет /map и текстовую часть /add у Макса (agents/max.py). name — обязателен и
 // является натуральным ключом (совпадение с уже существующим товаром обновляет его,

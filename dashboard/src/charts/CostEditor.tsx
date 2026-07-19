@@ -1,10 +1,11 @@
 import { ChangeEvent, KeyboardEvent, useEffect, useRef, useState } from 'react'
-import { CostRow, getCosts, setCost } from '../api'
+import { CostHistoryRow, CostRow, getCostHistory, getCosts, setCost } from '../api'
 import Card from '../components/Card'
 import EmptyState from '../components/EmptyState'
 
 type Field = { purchaseLogistics: string; packagingMarking: string }
 type RowStatus = 'applied' | 'error'
+type HistoryState = CostHistoryRow[] | 'loading' | 'error'
 
 const numOrEmpty = (v: number | null) => (v === null ? '' : String(v))
 
@@ -30,15 +31,49 @@ type CostFieldsProps = {
   keyName: string
   marketplace: 'wb' | 'ozon'
   productId: string
+  mappingId: number
   save: (key: string, marketplace: 'wb' | 'ozon', productId: string) => void
   updateField: (key: string, part: Partial<Field>) => void
   status: RowStatus | undefined
   compact: boolean
+  isHistoryOpen: boolean
+  historyState: HistoryState | undefined
+  onToggleHistory: () => void
+}
+
+// Список последних записей истории под "Итого" — общий для compact- и card-варианта.
+// "было" для записи i берётся из следующей (более старой) записи в этом же массиве,
+// уже отсортированном сервером по created_at DESC.
+function HistoryList({ historyState }: { historyState: HistoryState | undefined }) {
+  if (historyState === undefined) return null
+  return (
+    <div className="mt-1 space-y-0.5">
+      {historyState === 'loading' && (
+        <div className="text-xs text-gray-500 dark:text-gray-400">Загрузка…</div>
+      )}
+      {historyState === 'error' && (
+        <div className="text-xs text-gray-500 dark:text-gray-400">Не удалось загрузить</div>
+      )}
+      {Array.isArray(historyState) && historyState.map((item, i) => {
+        const prev = historyState[i + 1]
+        const wasLabel = prev ? `${prev.cost?.toLocaleString('ru-RU') ?? '—'} ₽` : '—'
+        const becameLabel = `${item.cost?.toLocaleString('ru-RU') ?? '—'} ₽`
+        return (
+          <div key={item.id} className="text-xs text-gray-500 dark:text-gray-400">
+            {new Date(item.created_at).toLocaleDateString('ru-RU')} · {wasLabel} → {becameLabel}
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 // Рендер пары полей (закупка+логистика, упаковка+маркировка) + итого для одной площадки.
 // compact=true — три <td> для десктопной таблицы, compact=false — подписанные поля для карточки.
-function CostFields({ field, keyName, marketplace, productId, save, updateField, status, compact }: CostFieldsProps) {
+function CostFields({
+  field, keyName, marketplace, productId, save, updateField, status, compact,
+  isHistoryOpen, historyState, onToggleHistory,
+}: CostFieldsProps) {
   const commonProps = (part: keyof Field) => ({
     type: 'number' as const,
     min: '0',
@@ -49,13 +84,13 @@ function CostFields({ field, keyName, marketplace, productId, save, updateField,
   })
 
   const totalNode = (
-    <>
+    <button type="button" onClick={onToggleHistory} className="underline decoration-dotted cursor-pointer">
       {sumLabel(field?.purchaseLogistics ?? '', field?.packagingMarking ?? '')}
       {status === 'applied' && <span className="text-green-600 ml-1">✓</span>}
       {status === 'error' && (
         <span className="text-red-500 ml-1" title="Не удалось сохранить, попробуй ещё раз">⚠</span>
       )}
-    </>
+    </button>
   )
 
   if (compact) {
@@ -67,7 +102,10 @@ function CostFields({ field, keyName, marketplace, productId, save, updateField,
         <td className="text-right py-1.5">
           <input className={tableInputClass} {...commonProps('packagingMarking')} />
         </td>
-        <td className="text-right py-1.5 font-medium">{totalNode}</td>
+        <td className="text-right py-1.5 font-medium">
+          {totalNode}
+          {isHistoryOpen && <HistoryList historyState={historyState} />}
+        </td>
       </>
     )
   }
@@ -79,6 +117,7 @@ function CostFields({ field, keyName, marketplace, productId, save, updateField,
       <label className="text-xs text-gray-500 dark:text-gray-400 mt-2 block">Упаковка+маркировка</label>
       <input className={cardInputClass} {...commonProps('packagingMarking')} />
       <div className="text-sm font-medium mt-2">Итого: {totalNode}</div>
+      {isHistoryOpen && <HistoryList historyState={historyState} />}
     </div>
   )
 }
@@ -89,6 +128,8 @@ export default function CostEditor() {
   const [fields, setFields] = useState<Record<string, Field>>({})
   const [status, setStatus] = useState<Record<string, RowStatus>>({})
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
+  const [history, setHistory] = useState<Record<string, HistoryState>>({})
+  const [historyOpen, setHistoryOpen] = useState<Set<string>>(new Set())
   const statusTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
 
   // Мобильная клавиатура (Telegram Mini App) не закрывается сама при скролле —
@@ -127,6 +168,22 @@ export default function CostEditor() {
 
   const updateField = (key: string, part: Partial<Field>) => {
     setFields(f => ({ ...f, [key]: { ...f[key], ...part } }))
+  }
+
+  // Раскрывает/сворачивает попап истории под "Итого"; при первом открытии подгружает
+  // последние 5 записей (не перезапрашивает, если история для key уже загружена).
+  const toggleHistory = (key: string, mappingId: number, marketplace: 'wb' | 'ozon') => {
+    setHistoryOpen(s => {
+      const next = new Set(s)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+    if (key in history) return
+    setHistory(h => ({ ...h, [key]: 'loading' }))
+    getCostHistory(mappingId, marketplace)
+      .then(data => setHistory(h => ({ ...h, [key]: data.slice(0, 5) })))
+      .catch(() => setHistory(h => ({ ...h, [key]: 'error' })))
   }
 
   // Пустая статья расходов = 0, не блокирует сохранение. Невалидное число (NaN) — игнорируем запрос.
@@ -201,7 +258,9 @@ export default function CostEditor() {
                   {r.wb_article ? (
                     <CostFields
                       field={fields[keyWb]} keyName={keyWb} marketplace="wb" productId={r.wb_article}
-                      save={save} updateField={updateField} status={status[keyWb]} compact
+                      mappingId={r.mapping_id} save={save} updateField={updateField} status={status[keyWb]} compact
+                      isHistoryOpen={historyOpen.has(keyWb)} historyState={history[keyWb]}
+                      onToggleHistory={() => toggleHistory(keyWb, r.mapping_id, 'wb')}
                     />
                   ) : (
                     <>
@@ -213,7 +272,9 @@ export default function CostEditor() {
                   {r.ozon_offer_id ? (
                     <CostFields
                       field={fields[keyOzon]} keyName={keyOzon} marketplace="ozon" productId={r.ozon_offer_id}
-                      save={save} updateField={updateField} status={status[keyOzon]} compact
+                      mappingId={r.mapping_id} save={save} updateField={updateField} status={status[keyOzon]} compact
+                      isHistoryOpen={historyOpen.has(keyOzon)} historyState={history[keyOzon]}
+                      onToggleHistory={() => toggleHistory(keyOzon, r.mapping_id, 'ozon')}
                     />
                   ) : (
                     <>
@@ -266,7 +327,9 @@ export default function CostEditor() {
                       <div className="text-xs text-gray-400 uppercase mb-1">WB</div>
                       <CostFields
                         field={fields[keyWb]} keyName={keyWb} marketplace="wb" productId={r.wb_article}
-                        save={save} updateField={updateField} status={status[keyWb]} compact={false}
+                        mappingId={r.mapping_id} save={save} updateField={updateField} status={status[keyWb]}
+                        compact={false} isHistoryOpen={historyOpen.has(keyWb)} historyState={history[keyWb]}
+                        onToggleHistory={() => toggleHistory(keyWb, r.mapping_id, 'wb')}
                       />
                     </div>
                   )}
@@ -275,7 +338,9 @@ export default function CostEditor() {
                       <div className="text-xs text-gray-400 uppercase mb-1">Ozon</div>
                       <CostFields
                         field={fields[keyOzon]} keyName={keyOzon} marketplace="ozon" productId={r.ozon_offer_id}
-                        save={save} updateField={updateField} status={status[keyOzon]} compact={false}
+                        mappingId={r.mapping_id} save={save} updateField={updateField} status={status[keyOzon]}
+                        compact={false} isHistoryOpen={historyOpen.has(keyOzon)} historyState={history[keyOzon]}
+                        onToggleHistory={() => toggleHistory(keyOzon, r.mapping_id, 'ozon')}
                       />
                     </div>
                   )}

@@ -1,7 +1,7 @@
 # Себестоимость: история изменений + мобильный вид карточками
 
 **Дата:** 2026-07-16
-**Статус:** в работе
+**Статус:** завершён (код всех фаз; живая проверка в Telegram Mini App на телефоне не выполнена — нет окружения из песочницы)
 
 ## Контекст
 
@@ -28,7 +28,7 @@
 
 ## Фазы
 
-### Фаза 1 — db.py: таблица истории
+### Фаза 1 — db.py: таблица истории [x]
 - `CREATE TABLE IF NOT EXISTS product_cost_history` (по образцу `product_costs`,
   `db.py:248-256`): `id BIGSERIAL PK`, `mapping_id BIGINT REFERENCES product_mapping(id)`,
   `marketplace TEXT`, `purchase_logistics NUMERIC`, `packaging_marking NUMERIC`,
@@ -40,13 +40,13 @@
 - `get_cost_history(mapping_id: int, marketplace: str, limit: int = 20) -> list[dict]` —
   последние записи по товару+площадке, `ORDER BY created_at DESC`.
 
-### Фаза 2 — main.py: API
+### Фаза 2 — main.py: API [x]
 - `POST /api/set_cost` (`main.py:1033-1090`) — передать `chat_id` (уже есть в хендлере,
   строка 1054) в `set_product_cost_breakdown(..., changed_by=chat_id)`.
 - `GET /api/cost_history?mapping_id=&marketplace=` — по образцу `_handle_get_costs`
   (`main.py:991-1031`), тот же initData-only паттерн без `?token=`, rate-limit.
 
-### Фаза 3 — dashboard: показать историю
+### Фаза 3 — dashboard: показать историю [x]
 - `dashboard/src/api.ts`: тип `CostHistoryRow`, функция `getCostHistory(mappingId,
   marketplace)`.
 - В `CostEditor.tsx` — при клике на "Итого" (или отдельная иконка часов рядом) открыть
@@ -65,13 +65,20 @@
   сломался).
 
 ### Фаза 5 — проверка
-- Прогнать миграцию Фазы 1 на локальном Postgres (как в Фазе 4 предыдущего плана —
-  `pg_ctlcluster` в песочнице), проверить: `set_product_cost_breakdown` пишет и в
-  `product_costs`, и в `product_cost_history`; `get_cost_history` отдаёт записи по
-  убыванию даты; старый вызов без `changed_by` не падает (дефолт `None`).
-- `npx tsc --noEmit` в `dashboard/`.
-- Живой клик в браузере (или попросить пользователя проверить на телефоне) — сузить
-  окно до мобильной ширины, убедиться что карточки читаемы и попап истории открывается.
+- [x] Прогнал миграцию Фазы 1 на локальном Postgres 16 в песочнице (`pg_ctlcluster`),
+  на пустой БД (`product_mapping` создан вручную — известный пробел, отдельный план
+  `plans/2026-07-18-product-mapping-chat-id-isolation.md`, не в рамках этой фичи).
+  Проверено напрямую через `db.py` (без HTTP-слоя, как в Фазе 4 предыдущего плана):
+  `set_product_cost_breakdown` пишет и в `product_costs` (cost = сумма статей,
+  расчёт NET-маржи Питера не задет), и в `product_cost_history`; `get_cost_history`
+  отдаёт записи по убыванию `created_at`; старый вызов без `changed_by` не падает
+  (дефолт `None`, запись в истории с `changed_by = NULL`); повторный `init_db()` на
+  уже заполненной БД — идемпотентен, без ошибок.
+- [x] `npx tsc --noEmit` в `dashboard/` — чисто (проверено дважды: субагентом в
+  Фазе 3 и повторно оркестратором).
+- [ ] Живой клик в браузере / на телефоне — не выполнено в этой сессии (нет
+  Telegram Mini App окружения в песочнице). Визуальную проверку карточного вида
+  и попапа истории на реальном устройстве нужно сделать отдельно.
 
 ## Файлы
 
