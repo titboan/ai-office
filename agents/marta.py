@@ -18,6 +18,7 @@ from utils.tg_format import clean_agent_output as _clean_output
 from utils.tg_rich import send_rich_or_fallback as _send_rich, looks_like_html
 from task_queue import create_task as enqueue_task, get_active_tasks, get_recent_tasks, enqueue_chain_task
 from .base_agent import BaseAgent, _AGENT_NAMES, with_company_context
+from .registry import AGENTS, agent_emoji, agent_label
 
 _HEAVY_SYNC_PAYLOADS = {
     "__sync__", "__sync_adv__", "__sync_fin__",
@@ -457,16 +458,10 @@ class MartaAgent(BaseAgent):
             await self._delete_pending_chain(chat_id)
             if plan:
                 await self._start_chain(plan, user_text, chat_id)
-                _ce = {
-                    "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
-                    "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
-                    "dan": "🎨", "tina": "📋", "digest": "📰",
-                }
-                _cn = {
-                    "kasper": "Каспер", "kevin": "Кевин", "peter": "Питер",
-                    "elina": "Элина", "alex": "Алекс", "marta": "Марта",
-                    "dan": "Дэн", "tina": "Тина", "digest": "Дайджест",
-                }
+                _ce = {k: agent_emoji(k) for k in AGENTS}
+                _ce["digest"] = "📰"
+                _cn = {k: AGENTS[k]["name"] for k in AGENTS}
+                _cn["digest"] = "Дайджест"
                 chain_line = " → ".join(
                     f"{_ce.get(s['agent'], '🤖')} {_cn.get(s['agent'], s['agent'])}"
                     for s in plan.get("steps", [])
@@ -521,9 +516,7 @@ class MartaAgent(BaseAgent):
         _QUICK_ACTIONS = {
             "📊 Отчёт":  ("peter", "Дай сводный отчёт по продажам WB и Ozon за последние 7 дней"),
         }
-        _AGENT_QUICK_LABEL = {
-            "peter": "📊 Питер",
-        }
+        _AGENT_QUICK_LABEL = {k: agent_label(k) for k in AGENTS}
         btn = user_text.strip()
 
         if btn == "📈 Дашборд":
@@ -619,16 +612,10 @@ class MartaAgent(BaseAgent):
                 return
 
             if plan and plan.get("is_chain"):
-                _CHAIN_AGENT_EMOJI = {
-                    "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
-                    "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
-                    "dan": "🎨", "tina": "📋", "digest": "📰",
-                }
-                _CHAIN_AGENT_NAMES = {
-                    "kasper": "Каспер", "kevin": "Кевин", "peter": "Питер",
-                    "elina": "Элина", "alex": "Алекс", "marta": "Марта",
-                    "dan": "Дэн", "tina": "Тина", "digest": "Дайджест",
-                }
+                _CHAIN_AGENT_EMOJI = {k: agent_emoji(k) for k in AGENTS}
+                _CHAIN_AGENT_EMOJI["digest"] = "📰"
+                _CHAIN_AGENT_NAMES = {k: AGENTS[k]["name"] for k in AGENTS}
+                _CHAIN_AGENT_NAMES["digest"] = "Дайджест"
                 steps = plan.get("steps", [])
                 steps_lines = ""
                 for i, step in enumerate(steps, 1):
@@ -659,11 +646,7 @@ class MartaAgent(BaseAgent):
             if agent:
                 prio = _detect_priority(user_text)
                 prio_label = {20: " 🔴 СРОЧНО", 10: " 🟠 ВАЖНО", 0: ""}.get(prio, "")
-                _AGENT_LABEL_MAP = {
-                    "kasper": "🔍 Каспер", "kevin": "👨‍💻 Кевин", "peter": "📊 Питер",
-                    "elina": "✍️ Элина", "alex": "🗓️ Алекс", "dan": "🎨 Дэн",
-                    "max": "🛒 Макс", "tina": "📋 Тина",
-                }
+                _AGENT_LABEL_MAP = {k: agent_label(k) for k in AGENTS}
                 label = _AGENT_LABEL_MAP.get(agent_key, agent_key)
                 task_id, corr_id = await enqueue_task(
                     assigned_agent=agent_key,
@@ -819,10 +802,7 @@ class MartaAgent(BaseAgent):
                         from_agent="user",
                         chat_id=chat_id,
                     )
-                    _AGENT_LABEL = {
-                        "max": "🛒 Макс", "peter": "📊 Питер", "kasper": "🔍 Каспер",
-                        "elina": "✍️ Элина", "alex": "🗓️ Алекс", "kevin": "👨‍💻 Кевин",
-                    }
+                    _AGENT_LABEL = {k: agent_label(k) for k in AGENTS}
                     label = _AGENT_LABEL.get(agent_key, agent_key)
                     await reply(f"✅ Передала ответ {label} — пришлю результат когда готово.")
                 return
@@ -1189,11 +1169,8 @@ class MartaAgent(BaseAgent):
         """/status — показать состояние офиса."""
         from task_queue import get_recent_tasks
 
-        _AGENT_EMOJI = {
-            "kasper": "🔍", "kevin": "👨‍💻", "peter": "📊",
-            "elina": "✍️", "alex": "🗓️", "marta": "👩‍💼",
-            "dan": "🎨", "tina": "📋", "digest": "📰",
-        }
+        _AGENT_EMOJI = {k: agent_emoji(k) for k in AGENTS}
+        _AGENT_EMOJI["digest"] = "📰"
         _STATUS_EMOJI = {
             "queued": "🕐", "acknowledged": "👀",
             "running": "⚙️", "failed": "🔴", "timeout": "⏱️",
@@ -1542,10 +1519,7 @@ class MartaAgent(BaseAgent):
         "tenders_report": ("tina", "tenders_report"),
     }
 
-    _MMENU_AGENT_LABEL: dict[str, str] = {
-        "peter": "📊 Питер", "max": "🛒 Макс",
-        "tina": "🏛️ Тина",  "alex": "🗓️ Алекс",
-    }
+    _MMENU_AGENT_LABEL: dict[str, str] = {k: agent_label(k) for k in AGENTS}
 
     # command_key → (точный текст команды, короткое описание) — для команд, которые
     # нельзя запустить кнопкой напрямую (интерактивный флоу/мастер ввода, нужен
@@ -1798,10 +1772,7 @@ class MartaAgent(BaseAgent):
                     "queued": "🕐", "acknowledged": "👀",
                     "running": "⚙️", "failed": "🔴", "timeout": "⏱️",
                 }
-                _AGENT_EMOJI = {
-                    "peter": "📊", "max": "🛒", "elina": "✍️", "alex": "🗓️",
-                    "kasper": "🔍", "kevin": "👨‍💻", "tina": "🏛️", "marta": "👩‍💼",
-                }
+                _AGENT_EMOJI = {k: agent_emoji(k) for k in AGENTS}
                 if not tasks:
                     text = "✅ <b>Статус очереди</b>\n\nВсе агенты свободны."
                 else:
@@ -1821,10 +1792,7 @@ class MartaAgent(BaseAgent):
                     text = "📜 <b>История задач</b>\n\nЗадач пока нет."
                 else:
                     lines = ["📜 <b>Последние задачи</b>\n"]
-                    _AGENT_EMOJI = {
-                        "peter": "📊", "max": "🛒", "elina": "✍️", "alex": "🗓️",
-                        "kasper": "🔍", "kevin": "👨‍💻", "tina": "🏛️", "marta": "👩‍💼",
-                    }
+                    _AGENT_EMOJI = {k: agent_emoji(k) for k in AGENTS}
                     for t in rows_db:
                         ae = _AGENT_EMOJI.get(t["assigned_agent"], "🤖")
                         short = t["payload"][:60] + ("…" if len(t["payload"]) > 60 else "")
@@ -1923,11 +1891,7 @@ class MartaAgent(BaseAgent):
             priority=0,
             timeout_seconds=_task_timeout(agent_key, task),
         )
-        _AGENT_LABEL = {
-            "peter": "📊 Питер", "max": "🛒 Макс", "kasper": "🔍 Каспер",
-            "elina": "✍️ Элина", "alex": "🗓️ Алекс", "kevin": "👨‍💻 Кевин",
-            "tina": "🏛️ Тина",
-        }
+        _AGENT_LABEL = {k: agent_label(k) for k in AGENTS}
         label = _AGENT_LABEL.get(agent_key, agent_key)
         await _send_rich(
             self.bot_token, update.effective_chat.id,
@@ -2463,11 +2427,7 @@ class MartaAgent(BaseAgent):
         if not stats:
             return None
 
-        emoji_map = {
-            "marta": "👩‍💼", "kevin": "👨‍💻", "kasper": "🔍",
-            "peter": "📊", "elina": "✍️", "alex": "🗓️",
-            "dan": "🎨", "eva": "📰", "max": "🛒",
-        }
+        emoji_map = {k: agent_emoji(k) for k in AGENTS}
 
         total_ok = sum(v["completed"] for v in stats.values())
         total_fail = sum(v["failed"] + v["timeout"] for v in stats.values())
