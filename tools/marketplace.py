@@ -895,7 +895,7 @@ class WBClient:
         """
         import json as _json
         _STATS_BASE = "https://statistics-api.wildberries.ru"
-        headers = {"Authorization": statistics_token}
+        headers = {"Authorization": f"Bearer {statistics_token}"}
         results: list[dict] = []
         rrdid = 0
         # Агрегируем в памяти: (nm_id, week) → суммы
